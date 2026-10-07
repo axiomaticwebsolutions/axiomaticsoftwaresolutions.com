@@ -1,0 +1,73 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/.next-*/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+!.env.example
+# the production template (no secrets; scripts/gen-prod-env.mjs reads it on the server)
+!/deploy/.env.production.example
+
+# prisma generated client
+/generated
+
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# local dev storage (signed-URL driver)
+/.storage/
+
+# local tool config
+/.claude/
+
+# screenshots from scripts/shot.mjs
+/.shots/
+
+# dev-only embedded Postgres data (scripts/dev-db.mjs)
+/.pgdata/
+
+# aaPanel's own files in the site folder (the server's git checkout lives there)
+/.user.ini
+/index.html
+/404.html
+/.htaccess
+/.well-known/

@@ -1,0 +1,173 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@config "../tailwind.config.mts";
+
+/* The import path "@/components/store/container" would make Tailwind emit its unused .container utility (its
+   nested breakpoint queries come before the variant queries). The storefront uses <Container> instead. */
+@source not inline("container");
+
+/* Design tokens live in lib/design/tokens.ts (loaded through tailwind.config.mts). Do not add colours here. */
+
+/*
+ * Metric-matched stand-in for Manrope while it loads (the overrides next/font computes for Manrope over Arial),
+ * limited to the characters of the Manrope subsets we load (latin, latin-ext). Glyphs Manrope lacks, such as the
+ * arrow in "Browse all software →", fall through to system-ui as in the prototype (font-family: Manrope, system-ui)
+ * instead of Arial. app/layout.tsx lists this family right after Manrope (adjustFontFallback: false).
+ */
+@font-face {
+  font-family: "Manrope Metric Fallback";
+  src: local("Arial");
+  ascent-override: 103.31%;
+  descent-override: 29.07%;
+  line-gap-override: 0%;
+  size-adjust: 103.19%;
+  unicode-range:
+    U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F,
+    U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD, U+0100-02BA, U+02BD-02C5, U+02C7-02CC,
+    U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    @apply border-line;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+    color-scheme: light;
+  }
+
+  /*
+   * Storefront (WCAG 2.4.11, technique C43): keyboard focus and anchor jumps stop clear of the sticky header, the
+   * product page's sticky in-page nav (--store-sticky-extra) and the catalog's fixed compare tray (--compare-tray-h,
+   * 20px above the bottom). The bars write these variables on <html> while they are on screen; 108px is the header's
+   * server default until HeaderHeightSync measures it. Anchor targets add only a small scroll-margin of their own.
+   */
+  html:has([data-store-shell]) {
+    scroll-padding-top: calc(var(--store-header-h, 108px) + var(--store-sticky-extra, 0px) + 12px);
+    scroll-padding-bottom: calc(var(--compare-tray-h, 0px) + 32px);
+  }
+
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+    font-size: 16px;
+    line-height: 1.6;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    @apply bg-primary-ring text-ink;
+  }
+
+  /* README: outline 2px #6355CF, offset 2px on :focus-visible. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-primary;
+  }
+
+
+  [hidden] {
+    display: none !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/*
+ * Inputs: primary border + 4px lavender ring on focus (README > Focus). Controls carry these as plain
+ * focus-visible: utilities (components/ui/input.tsx, textarea.tsx). This alias must stay an @utility: in
+ * @layer components it loses to border-line-input, because Tailwind's utilities layer always wins.
+ */
+@utility field-focus {
+  &:focus-visible {
+    @apply border-primary shadow-focus outline-hidden;
+  }
+}
+
+@layer components {
+  .skeleton {
+    @apply bg-skeleton animate-skeleton rounded-8;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/*
+ * Price display (components/store/price.tsx, lib/storefront/price-display.ts). Every price renders both variants;
+ * <html data-price="excl|incl"> shows one. No attribute = excluding GST. Unlayered on purpose, so these rules win
+ * over any display utility on the same element.
+ */
+html:not([data-price="incl"]) .price-incl,
+html[data-price="incl"] .price-excl {
+  display: none;
+}
+
+/* PriceToggle: the pressed option follows <html data-price> from first paint (aria-pressed catches up on hydration). */
+html:not([data-price="incl"]) [data-price-toggle] > button:first-child,
+html[data-price="incl"] [data-price-toggle] > button:last-child {
+  @apply bg-lavender-bg text-lavender-fg;
+}
+
+html:not([data-price="incl"]) [data-price-toggle] > button:last-child,
+html[data-price="incl"] [data-price-toggle] > button:first-child {
+  @apply bg-transparent text-ink-2 hover:text-ink;
+}
+
+/*
+ * Forced colours (Windows contrast themes; docs/accessibility.md). The browser swaps our colours for the user’s system
+ * colours and drops backgrounds and box-shadows, so states drawn only with a background (selected tab, pressed toggle,
+ * current page or step, highlighted menu or list option) would vanish. They use the system highlight instead, with
+ * their content in the highlight text colour. Unlayered, so it wins over the utilities. Focus rings of text fields
+ * survive through outline-hidden (a transparent outline the browser paints in forced colours).
+ */
+@media (forced-colors: active) {
+  :is(
+      [aria-pressed="true"],
+      [aria-current]:not([aria-current="false"]),
+      [role="tab"][aria-selected="true"],
+      [role="option"][aria-selected="true"],
+      [role="option"][data-highlighted],
+      [role^="menuitem"][data-highlighted]
+    ) {
+    forced-color-adjust: none;
+    background-color: Highlight;
+    color: HighlightText;
+  }
+  :is(
+      [aria-pressed="true"],
+      [aria-current]:not([aria-current="false"]),
+      [role="tab"][aria-selected="true"],
+      [role="option"][aria-selected="true"],
+      [role="option"][data-highlighted],
+      [role^="menuitem"][data-highlighted]
+    )
+    * {
+    background-color: transparent;
+    border-color: currentColor;
+    color: inherit;
+  }
+  /* The price toggle shows its pressed option from <html data-price> before hydration sets aria-pressed. */
+  html:not([data-price="incl"]) [data-price-toggle] > button:first-child,
+  html[data-price="incl"] [data-price-toggle] > button:last-child {
+    forced-color-adjust: none;
+    background-color: Highlight;
+    color: HighlightText;
+  }
+}

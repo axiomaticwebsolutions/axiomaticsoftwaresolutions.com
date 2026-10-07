@@ -1,0 +1,817 @@
+// Axiomatic Software Solutions - PostgreSQL schema (Prisma 7).
+// Ported from design_handoff_axiomatic/prisma/schema.prisma. Deviations are listed in docs/decisions.md.
+// Money is stored in paise (Int), excluding GST unless the field says otherwise. Timestamps are UTC.
+// The connection URL lives in prisma.config.ts (Prisma 7 no longer accepts a datasource url here).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Users, staff, sessions ----------
+enum UserKind {
+  CUSTOMER
+  STAFF
+}
+
+enum StaffRole {
+  OWNER
+  ADMIN
+  SUPPORT
+  FINANCE
+}
+
+enum StaffStatus {
+  ACTIVE
+  INVITED
+  DEACTIVATED
+}
+
+enum TeamRole {
+  OWNER
+  BILLING
+  TECHNICAL
+  VIEWER
+}
+
+enum MemberStatus {
+  ACTIVE
+  INVITED
+}
+
+model User {
+  id                String       @id @default(cuid())
+  kind              UserKind     @default(CUSTOMER)
+  email             String       @unique // stored lower-case
+  name              String
+  phone             String?
+  passwordHash      String? // argon2id; null for invited users and sample users who cannot sign in
+  emailVerifiedAt   DateTime?
+  twoStepEnabled    Boolean      @default(false)
+  securityEpoch     Int          @default(0) // bumped on password reset, deactivation and role changes; invalidates trusted-device cookies
+  staffRole         StaffRole? // only for kind = STAFF
+  staffStatus       StaffStatus? // only for kind = STAFF
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  lastActiveAt      DateTime?
+  notificationPrefs Json? // { renewals, updates, tickets, offers, offersConsentAt } - email preferences (portal)
+
+  sessions        Session[]
+  memberships     AccountMember[]
+  authTokens      AuthToken[]
+  notifications   Notification[]
+  auditEvents     AuditLog[]      @relation("AuditActor")
+  ticketMessages  TicketMessage[]
+  assignedTickets SupportTicket[] @relation("TicketAssignee")
+  placedOrders    Order[]         @relation("OrderPlacedBy")
+  openedTickets   SupportTicket[] @relation("TicketOpenedBy")
+  uploads         Upload[]
+}
+
+model Session {
+  id              String    @id @default(cuid())
+  tokenHash       String    @unique // SHA-256 of the opaque cookie token; the token itself is never stored
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeAccountId String? // server-side active BusinessAccount for customers; never taken from the client
+  userAgent       String?
+  ipPrefix        String? // truncated IP for display, e.g. "103.21.44.x"
+  createdAt       DateTime  @default(now())
+  lastSeenAt      DateTime  @default(now())
+  expiresAt       DateTime
+  revokedAt       DateTime?
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+  TEAM_INVITE
+  GUEST_CLAIM
+  LOGIN_OTP // two-step sign-in code, emailed
+  STAFF_INVITE // admin console staff invitation (meta: { staffRole, invitedById })
+}
+
+model AuthToken {
+  id        String        @id @default(cuid())
+  type      AuthTokenType
+  userId    String?
+  user      User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email     String
+  codeHash  String // SHA-256 of the 6-digit code or URL token
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int           @default(0)
+  meta      Json? // e.g. LOGIN_OTP: { next, trustDevice }; never secrets
+  createdAt DateTime      @default(now())
+
+  @@index([email, type])
+  @@index([userId])
+}
+
+// Postgres fallback for rate limits (REDIS_URL takes over when set; required at production scale).
+model RateLimitBucket {
+  key     String   @id // e.g. "signin:email:<sha256>", "activate:key:<hash>"
+  count   Int
+  resetAt DateTime
+
+  @@index([resetAt])
+}
+
+// ---------- Business accounts (customer workspace) ----------
+model BusinessAccount {
+  id        String            @id @default(cuid())
+  legalName String
+  gstin     String? // ^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$
+  address   String?
+  city      String?
+  state     String? // place of supply
+  pin       String?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  members   AccountMember[]
+  locations Location[]
+  orders    Order[]
+  licenses  License[]
+  tickets   SupportTicket[]
+  activity  AccountActivity[]
+}
+
+model AccountMember {
+  id        String          @id @default(cuid())
+  accountId String
+  account   BusinessAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      TeamRole
+  status    MemberStatus    @default(ACTIVE)
+  invitedAt DateTime?
+  createdAt DateTime        @default(now())
+
+  @@unique([accountId, userId])
+  @@index([userId])
+}
+
+model Location {
+  id        String             @id @default(cuid())
+  accountId String
+  account   BusinessAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name      String
+  devices   DeviceActivation[]
+
+  @@index([accountId])
+}
+
+model AccountActivity {
+  id        String          @id @default(cuid())
+  accountId String
+  account   BusinessAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  actorId   String? // user id when a person did it; null for System / staff-side actions
+  actorName String
+  action    String
+  target    String
+  kind      String // license | security | billing | team | ticket | download
+  createdAt DateTime        @default(now())
+
+  @@index([accountId, createdAt])
+  @@index([accountId, kind, createdAt])
+}
+
+// ---------- Catalog ----------
+model Category {
+  id        String    @id // slug, e.g. "pharmacy"
+  name      String
+  blurb     String?
+  tone      String // sage | peach | blue | lavender | pink (maps to design tokens)
+  icon      String // Material Symbols name
+  sortOrder Int       @default(0)
+  products  Product[]
+}
+
+enum PublishStatus {
+  DRAFT
+  PUBLISHED
+  HIDDEN
+}
+
+model Product {
+  id          String        @id // slug, e.g. "medical-billing"
+  code        String        @unique // license key prefix, ^[A-Z]{3}$, immutable once licenses exist
+  name        String
+  shortName   String
+  tagline     String
+  summary     String
+  icon        String // Material Symbols name (differs from the category icon)
+  tone        String? // optional override; defaults to category.tone
+  categoryId  String
+  category    Category      @relation(fields: [categoryId], references: [id])
+  platforms   String[] // windows | macos | android
+  status      PublishStatus @default(DRAFT)
+  demoEnabled Boolean       @default(true)
+  rank        Int           @default(0)
+  content     Json // { features[], benefits[], requirements[] } validated with Zod; FAQs live in Faq(page = slug)
+  relatedIds  String[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  plans       Plan[]
+  releases    Release[]
+  licenses    License[]
+
+  @@index([status, rank])
+}
+
+enum PlanType {
+  TRIAL
+  ONE_TIME
+  ANNUAL
+  SUBSCRIPTION
+  DEVICE_ADDON
+  MAINTENANCE
+}
+
+enum BillingInterval {
+  MONTH
+  YEAR
+}
+
+model Plan {
+  id            String           @id // e.g. "med-annual"
+  productId     String
+  product       Product          @relation(fields: [productId], references: [id])
+  type          PlanType
+  name          String
+  summary       String?
+  includes      String[]
+  pricePaise    Int // EXCLUDING GST
+  interval      BillingInterval? // ANNUAL / SUBSCRIPTION / MAINTENANCE
+  trialDays     Int?
+  deviceLimit   Int? // null for DEVICE_ADDON and MAINTENANCE
+  perUnit       String? // "terminal" when quantity = device count
+  maxQty        Int?
+  multiDevice   Boolean          @default(false)
+  updatesMonths Int? // ONE_TIME: months of updates included
+  popular       Boolean          @default(false)
+  archived      Boolean          @default(false)
+  sortOrder     Int              @default(0)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  orderItems    OrderItem[]
+  licenses      License[]
+
+  @@index([productId, sortOrder])
+}
+
+// ---------- Releases & protected files ----------
+enum ReleaseStatus {
+  DRAFT
+  PUBLISHED
+  WITHDRAWN
+}
+
+model Release {
+  id         String        @id @default(cuid())
+  productId  String
+  product    Product       @relation(fields: [productId], references: [id])
+  version    String // semver
+  channel    String        @default("stable")
+  status     ReleaseStatus @default(DRAFT)
+  releasedAt DateTime?
+  notes      String[]
+  files      ReleaseFile[]
+  createdAt  DateTime      @default(now())
+
+  @@unique([productId, version])
+  @@index([productId, status])
+}
+
+model ReleaseFile {
+  id         String          @id @default(cuid())
+  releaseId  String
+  release    Release         @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+  platform   String // windows | macos | android
+  fileName   String
+  storageKey String // private bucket object key, never exposed directly
+  sizeBytes  BigInt // convert to number/string before JSON or RSC props
+  sha256     String
+  downloads  DownloadEvent[]
+
+  @@index([releaseId])
+}
+
+model DownloadEvent {
+  id        String      @id @default(cuid())
+  fileId    String
+  file      ReleaseFile @relation(fields: [fileId], references: [id])
+  userId    String
+  licenseId String
+  createdAt DateTime    @default(now())
+  expiresAt DateTime // signed URL expiry
+
+  @@index([fileId])
+  @@index([licenseId, createdAt])
+}
+
+// ---------- Orders, payments, invoices ----------
+enum OrderStatus {
+  AWAITING_PAYMENT
+  CONFIRMING
+  PENDING
+  PAID
+  FAILED
+  CANCELED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  REVIEW
+}
+
+// MAINTENANCE purchases are RENEWAL items whose plan.type is MAINTENANCE (fulfilment dispatches on kind + plan.type).
+enum ItemKind {
+  NEW
+  RENEWAL
+  UPGRADE
+  ADDON
+}
+
+model Order {
+  id              String           @id // human id from Counter "order", e.g. "AX-10301"
+  accountId       String?
+  account         BusinessAccount? @relation(fields: [accountId], references: [id])
+  placedByUserId  String?
+  placedBy        User?            @relation("OrderPlacedBy", fields: [placedByUserId], references: [id])
+  email           String // guest orders are claimed by matching verified email
+  billing         Json // snapshot: name, business, address, city, state, pin, gstin, phone
+  status          OrderStatus      @default(AWAITING_PAYMENT)
+  couponCode      String?
+  subtotalPaise   Int
+  discountPaise   Int              @default(0)
+  taxablePaise    Int
+  cgstPaise       Int              @default(0)
+  sgstPaise       Int              @default(0)
+  igstPaise       Int              @default(0)
+  totalPaise      Int
+  placeOfSupply   String
+  failReason      String?
+  termsAcceptedAt DateTime?
+  termsVersion    String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  paidAt          DateTime?
+  refundedAt      DateTime?
+  items           OrderItem[]
+  payments        Payment[]
+  invoice         Invoice?
+
+  @@index([email])
+  @@index([status, createdAt])
+  @@index([accountId, createdAt])
+  @@index([placedByUserId])
+}
+
+model OrderItem {
+  id              String    @id @default(cuid())
+  orderId         String
+  order           Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  planId          String
+  plan            Plan      @relation(fields: [planId], references: [id])
+  kind            ItemKind  @default(NEW)
+  quantity        Int       @default(1)
+  unitPricePaise  Int // snapshot at purchase, excluding GST
+  creditPaise     Int       @default(0) // upgrade credit (0 until a credit rule is defined)
+  discountPaise   Int       @default(0) // this line's share of the order discount (largest remainder)
+  taxablePaise    Int // unit x qty - credit - discount
+  taxPaise        Int // this line's share of the order GST (largest remainder)
+  targetLicenseId String? // for RENEWAL / UPGRADE / ADDON
+  issuedLicenseId String?   @unique
+  fulfilledAt     DateTime? // idempotency marker: fulfil each item once
+  termsBefore     Json? // target license terms before RENEWAL/ADDON/UPGRADE fulfilment (refund reversal)
+  termsAfter      Json? // target license terms right after fulfilment; reversal only when the license still matches
+
+  @@index([orderId])
+  @@index([targetLicenseId])
+}
+
+enum PaymentStatus {
+  CREATED
+  AUTHORIZED
+  PENDING
+  CAPTURED
+  FAILED
+  CANCELED
+  REFUNDED
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  orderId           String
+  order             Order         @relation(fields: [orderId], references: [id])
+  provider          String // "razorpay" | "cashfree" | "mock" (adapter key)
+  providerOrderId   String        @unique
+  providerPaymentId String?       @unique
+  method            String? // UPI | Card | Net banking (no card numbers / VPAs stored)
+  amountPaise       Int
+  status            PaymentStatus @default(CREATED)
+  failureReason     String?
+  createdAt         DateTime      @default(now())
+  capturedAt        DateTime?
+  refunds           Refund[]
+
+  @@index([orderId])
+}
+
+// Idempotency guard: one row per signature-valid provider event, inserted inside the order transaction.
+model WebhookEvent {
+  provider    String
+  id          String // provider event id
+  type        String
+  orderId     String?
+  result      String // fulfilled | already_paid | amount_mismatch | marked_failed | refund_processed | unknown_order
+  payload     Json // redacted: no card/VPA data
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+
+  @@id([provider, id])
+  @@index([orderId])
+}
+
+// Every delivery attempt, including invalid signatures, duplicates and admin replays (admin webhook stats).
+model WebhookDelivery {
+  id           String   @id @default(cuid())
+  provider     String
+  eventId      String? // null when the body could not be parsed
+  type         String?
+  orderId      String?
+  signatureOk  Boolean
+  result       String // fulfilled | duplicate_ignored | already_paid | amount_mismatch | marked_failed | invalid_signature | unknown_order | refund_processed
+  replayedById String? // staff user id when replayed from the admin console
+  receivedAt   DateTime @default(now())
+
+  @@index([eventId])
+  @@index([receivedAt])
+  @@index([orderId])
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
+
+model Refund {
+  id               String       @id @default(cuid())
+  paymentId        String
+  payment          Payment      @relation(fields: [paymentId], references: [id])
+  providerRefundId String?      @unique
+  amountPaise      Int
+  reason           String
+  createdById      String
+  createdAt        DateTime     @default(now())
+  creditNoteNo     String?      @unique // e.g. AXC/26-27/0001
+  status           RefundStatus @default(PENDING)
+  processedAt      DateTime?
+  failureReason    String?
+
+  @@index([paymentId])
+}
+
+model Invoice {
+  id       String   @id @default(cuid())
+  number   String   @unique // e.g. AXS/26-27/1181, allocated inside the payment transaction
+  orderId  String   @unique
+  order    Order    @relation(fields: [orderId], references: [id])
+  sac      String   @default("997331")
+  seller   Json // snapshot of the business settings at issue time: legalName, gstin, address, city, state
+  issuedAt DateTime @default(now())
+  pdfKey   String? // generated PDF in private storage
+}
+
+// Gap-free counters, allocated with UPDATE ... RETURNING inside the caller's transaction.
+// Keys: "order", "license", "ticket", "invoice:26-27", "creditnote:26-27".
+model Counter {
+  key  String @id
+  next Int
+}
+
+// ---------- Licenses & activations ----------
+// EXPIRED / EXPIRING are derived from expiresAt.
+enum LicenseStatus {
+  ACTIVE
+  TRIAL
+  SUSPENDED
+  REVOKED
+}
+
+model License {
+  id                String             @id // human id from Counter "license", e.g. "LIC-24017"
+  accountId         String? // null for unclaimed guest purchases; set when the buyer verifies the order email
+  account           BusinessAccount?   @relation(fields: [accountId], references: [id])
+  productId         String
+  product           Product            @relation(fields: [productId], references: [id])
+  planId            String
+  plan              Plan               @relation(fields: [planId], references: [id])
+  orderId           String?
+  keyHash           String             @unique // HMAC-SHA256(LICENSE_KEY_PEPPER, normalized key)
+  keyCiphertext     String // "v1.<iv>.<tag>.<ciphertext>" base64url, AES-256-GCM with LICENSE_KEY_ENC_KEY
+  keyLast4          String
+  keyDeliveredAt    DateTime? // first time the full key was shown to the purchaser
+  status            LicenseStatus      @default(ACTIVE)
+  issuedAt          DateTime           @default(now())
+  expiresAt         DateTime? // null = perpetual (ONE_TIME)
+  updatesUntil      DateTime // download eligibility cutoff
+  deviceLimit       Int
+  selfServiceResets Int                @default(0) // used in resetsYear
+  resetsYear        Int // calendar year (IST) the counter applies to
+  autoRenew         Boolean            @default(false)
+  revokedAt         DateTime?
+  revokedReason     String?
+  devices           DeviceActivation[]
+  events            LicenseEvent[]
+
+  @@index([accountId])
+  @@index([orderId])
+  @@index([productId])
+  @@index([productId, accountId])
+  @@index([status, expiresAt])
+}
+
+// High-volume table at scale: /validate updates lastSeenAt at most once per throttle window, never per call.
+model DeviceActivation {
+  id            String    @id @default(cuid())
+  licenseId     String
+  license       License   @relation(fields: [licenseId], references: [id])
+  fingerprint   String // SHA-256 of hardware identifiers, computed on the device
+  name          String
+  os            String
+  appVersion    String?
+  locationId    String?
+  location      Location? @relation(fields: [locationId], references: [id])
+  activatedAt   DateTime  @default(now())
+  lastSeenAt    DateTime  @default(now())
+  deactivatedAt DateTime?
+  deactivatedBy String? // customer | device | staff
+
+  @@index([licenseId, fingerprint])
+  @@index([locationId])
+}
+
+// Business events only. Routine /validate calls are NOT recorded here (they would add millions of rows a day).
+model LicenseEvent {
+  id        String   @id @default(cuid())
+  licenseId String
+  license   License  @relation(fields: [licenseId], references: [id])
+  type      String // issued | activated | deactivated | key_revealed | key_delivered | suspended | reinstated | revoked | extended | renewed | upgraded | devices_added | devices_reset | trial_started | trial_ended | updates_ended
+  actor     String // "System" | user name | "Device"
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([licenseId, createdAt])
+}
+
+// ---------- Coupons ----------
+enum CouponType {
+  PERCENT
+  FLAT
+}
+
+model Coupon {
+  code           String             @id // upper-case
+  type           CouponType
+  value          Int // percent, or paise for FLAT
+  label          String // shown at checkout, e.g. "10% off orders above Rs 2,000"
+  minSubtotal    Int? // paise, compared with the whole cart subtotal
+  productIds     String[]
+  planTypes      PlanType[]
+  startsAt       DateTime
+  endsAt         DateTime
+  maxRedemptions Int?
+  redemptions    Int                @default(0)
+  active         Boolean            @default(true) // false = paused
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  redemptionRows CouponRedemption[]
+}
+
+model CouponRedemption {
+  id         String   @id @default(cuid())
+  couponCode String
+  coupon     Coupon   @relation(fields: [couponCode], references: [code])
+  orderId    String   @unique
+  accountId  String?
+  createdAt  DateTime @default(now())
+
+  @@index([couponCode])
+}
+
+// ---------- Support ----------
+enum TicketStatus {
+  OPEN
+  AWAITING_CUSTOMER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+model SupportTicket {
+  id              String          @id // human id from Counter "ticket", e.g. "T-3018"
+  accountId       String
+  account         BusinessAccount @relation(fields: [accountId], references: [id])
+  productId       String?
+  licenseId       String?
+  subject         String
+  priority        TicketPriority  @default(NORMAL)
+  status          TicketStatus    @default(OPEN)
+  assigneeId      String?
+  assignee        User?           @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  openedById      String?
+  openedBy        User?           @relation("TicketOpenedBy", fields: [openedById], references: [id])
+  firstResponseAt DateTime?
+  resolvedAt      DateTime?
+  closedAt        DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  messages        TicketMessage[]
+
+  @@index([accountId, status])
+  @@index([assigneeId])
+  @@index([status, updatedAt])
+}
+
+model TicketMessage {
+  id          String        @id @default(cuid())
+  ticketId    String
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId    String
+  author      User          @relation(fields: [authorId], references: [id])
+  isStaff     Boolean
+  internal    Boolean       @default(false) // staff-only notes
+  body        String
+  attachments Json // [{ name, sizeBytes, storageKey }]
+  createdAt   DateTime      @default(now())
+
+  @@index([ticketId, createdAt])
+  @@index([authorId])
+}
+
+// ---------- Email outbox ----------
+// Business emails are rendered and inserted in the same transaction as the change that triggers them, then sent by
+// the dispatcher (after commit, plus /api/cron/emails). Auth emails with codes or reset links are sent directly and
+// never stored. Bodies never contain full license keys.
+enum EmailStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+}
+
+model OutboxEmail {
+  id         String      @id @default(cuid())
+  templateId String // NotificationTemplate id, e.g. "order_confirmation"
+  to         String
+  subject    String
+  html       String
+  text       String
+  dedupeKey  String?     @unique // e.g. "order_confirmation:AX-10312" so retries never send twice
+  status     EmailStatus @default(PENDING)
+  attempts   Int         @default(0)
+  lastError  String?
+  sendAfter  DateTime    @default(now())
+  createdAt  DateTime    @default(now())
+  sentAt     DateTime?
+
+  @@index([status, sendAfter])
+}
+
+// ---------- Leads (contact and demo requests from the storefront) ----------
+enum LeadKind {
+  DEMO
+  CONTACT
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  SCHEDULED
+  CLOSED
+  SPAM
+}
+
+model Lead {
+  id             String     @id // human id from Counter "lead": "DEMO-1001" or "MSG-1001"
+  kind           LeadKind
+  status         LeadStatus @default(NEW)
+  name           String
+  businessName   String?
+  email          String
+  phone          String?
+  productId      String? // null = "Not sure yet"
+  countersBand   String? // e.g. "1", "2-3", "4-10", "10+"
+  preferredDate  String? // IST calendar date YYYY-MM-DD
+  preferredSlot  String? // e.g. "10:00-12:00"
+  topic          String?
+  message        String?
+  marketingOptIn Boolean    @default(false) // explicit, unticked by default (DPDP)
+  source         String? // page or CTA that led here, e.g. "product:medical-billing"
+  ipPrefix       String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@index([status, createdAt])
+  @@index([email])
+}
+
+// ---------- Uploads (ticket attachments) ----------
+enum UploadStatus {
+  PENDING // presigned PUT issued, not yet attached
+  ATTACHED
+}
+
+model Upload {
+  id              String       @id @default(cuid())
+  accountId       String
+  uploadedById    String
+  uploadedBy      User         @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+  storageKey      String       @unique // private bucket key, never exposed directly
+  fileName        String
+  contentType     String // image/png | image/jpeg | application/pdf | text/plain
+  sizeBytes       Int
+  status          UploadStatus @default(PENDING)
+  ticketMessageId String?
+  createdAt       DateTime     @default(now())
+  attachedAt      DateTime?
+
+  @@index([accountId, status])
+  @@index([ticketMessageId])
+}
+
+// ---------- Notifications, content, templates, settings, audit ----------
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // renewal | update | ticket | billing | security
+  title     String
+  body      String
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+}
+
+model NotificationTemplate {
+  id        String   @id // e.g. "renewal_30"
+  name      String
+  channel   String   @default("email")
+  subject   String
+  body      String // {{variable}} placeholders
+  active    Boolean  @default(true)
+  updatedAt DateTime @updatedAt
+}
+
+model Faq {
+  id        String  @id @default(cuid())
+  page      String // home | pricing | support | product slug
+  question  String
+  answer    String
+  href      String? // optional "Read the guide" link (support FAQs), e.g. /docs/activation
+  published Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  @@index([page, sortOrder])
+}
+
+model SiteSetting {
+  key       String   @id // business | tax | licensing | content.banner | content.sampleNotice
+  value     Json // validated with Zod in lib/config.ts
+  updatedAt DateTime @updatedAt
+}
+
+// Append-only: no update/delete code paths. Written in the same transaction as the change.
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id])
+  actorRole  String // owner | admin | support | finance | system
+  action     String
+  target     String // human-readable target label
+  targetType String? // order | license | plan | product | coupon | customer | staff | settings | webhook | ...
+  targetId   String?
+  reason     String? // required (at least 4 chars) for destructive actions
+  detail     String? // human-readable; NEVER secrets, full keys or payment data
+  ipPrefix   String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@index([actorId, createdAt])
+}

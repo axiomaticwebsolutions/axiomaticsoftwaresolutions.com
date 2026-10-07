@@ -1,0 +1,18 @@
+# Single-package project. pnpm 11 reads its settings from this file.
+
+# The E: drive is exFAT (no symlinks), so use a flat npm-style node_modules.
+nodeLinker: hoisted
+
+# Dependencies allowed to run install scripts (pnpm 11 blocks them by default).
+allowBuilds:
+  sharp: true
+  esbuild: true
+  unrs-resolver: true
+  '@prisma/engines': true
+  prisma: true
+  argon2: true
+  # Dev-only embedded PostgreSQL (scripts/dev-db.mjs): its postinstall only recreates symlinks listed in the package.
+  '@embedded-postgres/windows-x64': true
+  '@embedded-postgres/linux-x64': true
+  '@embedded-postgres/darwin-arm64': true
+  '@embedded-postgres/darwin-x64': true
