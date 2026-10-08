@@ -20,8 +20,10 @@ import { getStoreProducts, getStoreSettings } from "@/lib/storefront/data";
 type Params = { slug: string };
 type PageProps = { params: Promise<Params> };
 
-// Only the guides in content/docs/guides.ts exist; any other slug is a 404.
-export const dynamicParams = false;
+// No `dynamicParams = false` here (decisions.md 2026-10-08): with it, Next.js 15.5 answers 404 for a prerendered path
+// once an Admin edit has called revalidateTag() for a tag this page uses (settings, catalog, faqs). The cache then
+// reports a miss, and production treats a miss under `fallback: false` as "never prerendered" (NoFallbackError).
+// Unknown slugs still get the 404 page from notFound() below, and Next.js does not cache those 404s.
 
 export function generateStaticParams(): Params[] {
   return DOC_GUIDES.map((guide) => ({ slug: guide.slug }));

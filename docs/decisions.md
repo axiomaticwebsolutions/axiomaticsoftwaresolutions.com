@@ -1255,3 +1255,18 @@ build decisions, "Shell and foundation").
   whose codes appear at /dev/mailbox.
 - Before live sales, once SMTP works, the Owner and Finance staff turn two-step on in Admin > My profile
   (`docs/go-live-checklist.md`).
+
+## No `dynamicParams = false` on ISR pages (2026-10-08, live incident)
+
+- Symptom: after the Owner's first Admin session on the live site, every `/legal/*` and `/docs/*` page answered 404
+  (`x-nextjs-cache: HIT`, `x-nextjs-prerender: 1`); the app log showed `Error: Internal: NoFallbackError` from
+  `legal/[doc]/page.js` and `docs/[slug]/page.js`. A restart brought them back until the next Admin edit.
+- Cause (Next.js 15.5.27): Admin catalog, content and settings saves call `revalidateTag()` for `catalog`, `faqs` or
+  `settings`, which every storefront page carries. The file-system cache then reports a miss for those pages. For a page
+  with `dynamicParams = false` (`fallback: false`), the production render path treats any cache miss as "this path was
+  never prerendered" and throws `NoFallbackError` (it checks `isProduction || !isPrerendered`), so a 404 is rendered and
+  cached. Time-based revalidation is unaffected, which is why local checks and the first smoke test passed.
+- Decision: no page or layout uses `dynamicParams = false`. `legal/[doc]` and `docs/[slug]` keep
+  `generateStaticParams` and reject unknown slugs with `notFound()`, like `software/[slug]`. Next.js does not write those
+  404s to the page cache (checked: unknown `/software/<slug>` requests leave no cache files). Guard:
+  `tests/unit/no-fallback-false-pages.test.ts`. Check after any Next.js upgrade before allowing it again.

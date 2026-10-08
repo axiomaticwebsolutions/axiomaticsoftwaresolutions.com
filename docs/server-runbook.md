@@ -498,6 +498,7 @@ grep -n proxy_pass /www/server/panel/vhost/nginx/proxy/axiomaticsoftwaresolution
 - 503: `systemctl restart axsstore-redis` (logs: `journalctl -u axsstore-redis`), or start PostgreSQL in aaPanel > App
   Store (shared with other sites).
 - `proxy_pass` is not 3210, or the proxy file is missing: 8.1.
+- Storefront pages answer 404 and the app log shows `NoFallbackError`: a page uses `dynamicParams = false` again (decisions.md "No `dynamicParams = false` on ISR pages"). `restart.sh` is the stop-gap; the fix is in the code.
 - The app's own log files: `/www/wwwroot/axiomatic/shared/logs/app-out.log` and `app-error.log`. Never check this app on
   port 3000 (another app) or with a bare `pm2` as root.
 
