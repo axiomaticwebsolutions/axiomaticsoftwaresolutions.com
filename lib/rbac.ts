@@ -41,6 +41,11 @@ export const PERMS = {
   "staff.manage": ["OWNER"],
   "audit.view": ["OWNER", "ADMIN"],
   "settings.manage": ["OWNER"],
+  /**
+   * Payment, email and storage credentials (Admin > Settings > Integrations; docs/admin-integrations-design.md): save,
+   * clear a secret, remove saved settings and the test buttons. Save, clear and remove also re-check the password.
+   */
+  "integrations.manage": ["OWNER"],
 } as const satisfies Record<string, readonly StaffRole[]>;
 
 export type Permission = keyof typeof PERMS;
@@ -165,7 +170,7 @@ export const ADMIN_MODULES = [
   { key: "audit", label: "Audit log", title: "Audit log", icon: "policy", viewPerm: "audit.view", group: "ADMINISTRATION",
     description: "Append-only record of administrative and system actions. Secrets, full keys and payment details are never logged." },
   { key: "settings", label: "Settings", title: "Business & integration settings", icon: "settings", viewPerm: "settings.manage", group: "ADMINISTRATION",
-    description: "Company details, tax and invoicing, licensing policy and integrations. Secrets live in environment variables and are never shown here." },
+    description: "Company details, tax and invoicing, licensing policy and integrations. Secrets are encrypted and never shown in full." },
 ] as const satisfies readonly AdminModule[];
 
 export type AdminModuleKey = (typeof ADMIN_MODULES)[number]["key"];

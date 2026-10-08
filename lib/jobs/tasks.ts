@@ -121,16 +121,27 @@ export type UploadBatchResult = {
  * is attached to a deleted file). A file that cannot be deleted keeps its row for the next run; `skipIds` keeps this
  * run from picking it again. If the transaction fails after files were deleted, the rows stay PENDING with no file
  * behind them and the next run removes them (a missing file counts as deleted).
+ * Whether a stale upload exists is checked first, outside any transaction; only then is the storage driver resolved
+ * (it may read the integration settings), so no configuration lookup ever happens inside the transaction. Storage not
+ * configured -> StorageError("not_configured") from `storage()`, before anything is locked.
  */
 export async function deleteStaleUploadsBatch(
   client: PrismaClient,
   cutoffs: MaintenanceCutoffs,
   limit: number,
-  storage: () => StorageDriver,
+  storage: () => Promise<StorageDriver>,
   skipIds: ReadonlySet<string> = new Set(),
 ): Promise<UploadBatchResult> {
   const createdBefore = cutoffs.uploadsCreatedBefore;
   const skip = [...skipIds];
+  const due = await client.$queryRaw<Array<{ one: number }>>`
+    SELECT 1 AS "one" FROM "Upload"
+    WHERE "status" = 'PENDING'::"UploadStatus"
+      AND "createdAt" < ${createdBefore}::timestamp(3)
+      AND NOT ("id" = ANY(${skip}::text[]))
+    LIMIT ${1}::int`;
+  if (due.length === 0) return { handled: 0, deleted: 0, failedIds: [] };
+  const driver = await storage();
   return client.$transaction(
     async (tx) => {
       const rows = await tx.$queryRaw<Array<{ id: string; storageKey: string }>>`
@@ -141,7 +152,6 @@ export async function deleteStaleUploadsBatch(
         LIMIT ${limit}::int
         FOR UPDATE SKIP LOCKED`;
       if (rows.length === 0) return { handled: 0, deleted: 0, failedIds: [] };
-      const driver = storage();
       const removed = await Promise.all(rows.map((row) => deleteStoredObject(driver, row)));
       const done = rows.filter((_row, i) => removed[i]).map((row) => row.id);
       const failedIds = rows.filter((_row, i) => !removed[i]).map((row) => row.id);

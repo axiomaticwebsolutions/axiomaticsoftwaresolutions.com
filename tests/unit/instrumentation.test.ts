@@ -2,9 +2,11 @@
  * instrumentation.ts register(): a production server with an invalid environment must exit (PM2 then counts restarts
  * and stops at max_restarts) instead of staying "online" and answering 500 to every request.
  */
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { register } from "@/instrumentation";
 import { resetEnvCache } from "@/lib/env";
+import { integrationSlot, invalidateIntegrations } from "@/lib/integrations/slot";
 
 beforeEach(() => {
   resetEnvCache();
@@ -41,6 +43,40 @@ describe("instrumentation register()", () => {
     await register();
     expect(exit).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
+  });
+
+  it("warms the integration settings cache once the environment is valid", async () => {
+    const pair = generateKeyPairSync("ed25519", {
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      publicKeyEncoding: { type: "spki", format: "pem" },
+    });
+    const env: Record<string, string> = {
+      APP_URL: "http://localhost:3000",
+      NODE_ENV: "development",
+      SESSION_SECRET: randomBytes(48).toString("base64url"),
+      CSRF_SECRET: randomBytes(32).toString("base64url"),
+      ORDER_TOKEN_SECRET: randomBytes(32).toString("base64url"),
+      CRON_SECRET: randomBytes(32).toString("base64url"),
+      DATABASE_URL: "postgresql://axiomatic:axiomatic@localhost:5432/axiomatic?schema=public",
+      LICENSE_KEY_PEPPER: randomBytes(32).toString("hex"),
+      LICENSE_KEY_ENC_KEY: randomBytes(32).toString("base64"),
+      LICENSE_SIGNING_PRIVATE_KEY: pair.privateKey,
+      LICENSE_SIGNING_PUBLIC_KEY: pair.publicKey,
+    };
+    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
+    const slot = integrationSlot();
+    const previous = slot.loader;
+    const loader = vi.fn(async () => []);
+    slot.loader = loader;
+    invalidateIntegrations();
+    try {
+      await register();
+      expect(loader).toHaveBeenCalledTimes(1);
+      expect(slot.snapshot).not.toBeNull();
+    } finally {
+      slot.loader = previous;
+      invalidateIntegrations();
+    }
   });
 
   it("does nothing during next build or in the edge runtime", async () => {

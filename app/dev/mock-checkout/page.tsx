@@ -57,7 +57,7 @@ async function loadView(orderParam: string | null, token: string | null): Promis
  * PAYMENT_PROVIDER=mock. A 404 in production (app/dev/layout.tsx) and whenever another provider is configured.
  */
 export default async function MockCheckoutPage({ searchParams }: { searchParams: SearchParams }) {
-  if (!mockCheckoutEnabled()) notFound();
+  if (!(await mockCheckoutEnabled())) notFound();
   const params = await searchParams;
   const view = await loadView(single(params.order), single(params.t));
   return <MockCheckout view={view} />;

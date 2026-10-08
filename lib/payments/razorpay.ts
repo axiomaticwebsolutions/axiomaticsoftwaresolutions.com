@@ -15,7 +15,6 @@
 import { createHmac } from "node:crypto";
 import { z } from "zod";
 import { safeEqual } from "@/lib/auth/tokens";
-import { getEnv } from "@/lib/env";
 import { log } from "@/lib/log";
 import {
   PaymentProviderError,
@@ -256,9 +255,9 @@ export function normalizeRazorpayWebhook(body: unknown, eventIdHeader: string | 
 }
 
 export type RazorpayConfig = {
-  keyId?: string;
-  keySecret?: string;
-  webhookSecret?: string;
+  keyId: string;
+  keySecret: string;
+  webhookSecret: string;
   /** Defaults to https://api.razorpay.com/v1 (tests point it elsewhere). */
   baseUrl?: string;
   timeoutMs?: number;
@@ -302,7 +301,10 @@ function errorDescription(data: unknown): { code: string; description: string } 
 
 type RequestOptions = { method: "GET" | "POST"; path: string; label: string; body?: unknown };
 
-/** Razorpay PaymentProvider. Secrets default to PAYMENT_KEY_ID / PAYMENT_KEY_SECRET / PAYMENT_WEBHOOK_SECRET. */
+/**
+ * Razorpay PaymentProvider. The keys come from the caller: lib/payments/index.ts createPaymentProvider() hands it the
+ * effective configuration (Admin > Settings > Integrations, else the env fallback; lib/integrations/resolver.ts).
+ */
 export class RazorpayProvider implements PaymentProvider {
   readonly key = "razorpay" as const;
   readonly keyId: string;
@@ -312,12 +314,10 @@ export class RazorpayProvider implements PaymentProvider {
   readonly #timeoutMs: number;
   readonly #fetch: typeof fetch;
 
-  constructor(config: RazorpayConfig = {}) {
-    const needsEnv = config.keyId === undefined || config.keySecret === undefined || config.webhookSecret === undefined;
-    const env = needsEnv ? getEnv() : null;
-    this.keyId = requireSecret(config.keyId ?? env?.PAYMENT_KEY_ID, "PAYMENT_KEY_ID");
-    this.#keySecret = requireSecret(config.keySecret ?? env?.PAYMENT_KEY_SECRET, "PAYMENT_KEY_SECRET");
-    this.#webhookSecret = requireSecret(config.webhookSecret ?? env?.PAYMENT_WEBHOOK_SECRET, "PAYMENT_WEBHOOK_SECRET");
+  constructor(config: RazorpayConfig) {
+    this.keyId = requireSecret(config.keyId, "The Key ID");
+    this.#keySecret = requireSecret(config.keySecret, "The key secret");
+    this.#webhookSecret = requireSecret(config.webhookSecret, "The webhook secret");
     this.#baseUrl = (config.baseUrl ?? RAZORPAY_API_BASE).replace(/\/+$/, "");
     this.#timeoutMs = config.timeoutMs ?? RAZORPAY_DEFAULT_TIMEOUT_MS;
     this.#fetch = config.fetch ?? ((input, init) => fetch(input, init));
@@ -460,5 +460,20 @@ export class RazorpayProvider implements PaymentProvider {
       refundEntity,
     );
     return normalizeRazorpayRefund(refund);
+  }
+
+  /**
+   * Admin "Test Razorpay keys" (lib/integrations/probes.ts): one authenticated, read-only call (GET /orders?count=1).
+   * "rejected" when Razorpay answers 401 (wrong Key ID or key secret); any other failure throws provider_error.
+   * Never echoes a key.
+   */
+  async checkCredentials(): Promise<"ok" | "rejected"> {
+    try {
+      await this.#request({ method: "GET", path: "/orders?count=1", label: "/orders" }, z.looseObject({}));
+      return "ok";
+    } catch (error) {
+      if (error instanceof PaymentProviderError && error.code === "not_configured") return "rejected";
+      throw new PaymentProviderError("provider_error", "Could not check the keys with Razorpay", "razorpay");
+    }
   }
 }

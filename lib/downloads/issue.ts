@@ -95,7 +95,7 @@ export async function issueDownload(db: PrismaClient, input: IssueDownloadInput)
 
   let link: PresignedGet;
   try {
-    link = await (input.storage ?? getStorage()).presignGet(file.storageKey, { ttlSec, downloadName: file.fileName });
+    link = await (input.storage ?? (await getStorage())).presignGet(file.storageKey, { ttlSec, downloadName: file.fileName });
   } catch (error) {
     log.error("download_presign_failed", { fileId: file.id, error });
     throw new ApiError(503, "download_unavailable", DOWNLOAD_UNAVAILABLE_MESSAGE);

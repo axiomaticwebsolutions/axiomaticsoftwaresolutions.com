@@ -15,6 +15,7 @@ export function SettingsCard({
   action,
   children,
   as = "section",
+  headingLevel = 2,
   onSubmit,
   className,
 }: {
@@ -26,10 +27,13 @@ export function SettingsCard({
   action?: React.ReactNode;
   children: React.ReactNode;
   as?: "section" | "form";
+  /** 3 inside a titled group (the integration cards under "Integrations"). */
+  headingLevel?: 2 | 3;
   onSubmit?: React.FormEventHandler<HTMLFormElement>;
   className?: string;
 }) {
   const headingId = `${id}-title`;
+  const Heading = headingLevel === 3 ? "h3" : "h2";
   const inner = (
     <>
       <div className="flex items-center gap-2.5 border-b border-line-subtle px-4 py-3">
@@ -37,9 +41,9 @@ export function SettingsCard({
           <Icon name={icon} size={18} />
         </span>
         <div className="min-w-0">
-          <h2 id={headingId} className="m-0 text-[14.5px] font-extrabold">
+          <Heading id={headingId} className="m-0 text-[14.5px] font-extrabold">
             {title}
-          </h2>
+          </Heading>
           <p className="m-0 mt-px text-[12px] text-ink-2">{description}</p>
         </div>
       </div>

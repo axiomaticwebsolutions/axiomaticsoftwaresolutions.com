@@ -37,7 +37,7 @@ const bodySchema = z.strictObject({
 });
 
 export const POST = route(async (req) => {
-  assertMockCheckoutEnabled();
+  await assertMockCheckoutEnabled();
   const env = getEnv();
   const auth = await getCurrentAuth();
   assertCsrf(req, { binding: csrfBinding(auth?.session.id), secret: env.CSRF_SECRET, appUrl: env.APP_URL });

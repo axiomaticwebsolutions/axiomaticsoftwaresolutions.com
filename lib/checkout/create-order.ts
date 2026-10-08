@@ -5,14 +5,17 @@
  * 2. Re-prices the cart from server data only (quote.ts); any refused line -> 422 `cart_invalid` with `issues`;
  *    a coupon that no longer applies -> 422 with the coupon message on `couponCode` (the buyer never pays more than
  *    the total they were shown without being told).
- * 3. "Create an account" (guests only): register rate limit, 409 `email_taken`, argon2id hash, all before any write.
+ * 3. The active payment provider (lib/payments activePaymentProviderOrNull): none configured -> 503
+ *    `payments_unavailable`, before any rate-limit hit, password hash, account or provider call.
+ *    "Create an account" (guests only): register rate limit, 409 `email_taken`, argon2id hash, all before any write.
  * 4. Allocates the order id (its own short transaction; order ids may have gaps, invoice numbers may not), then calls
  *    the payment provider OUTSIDE any transaction. Provider failure -> 502 `payment_unavailable`, nothing stored.
  * 5. One transaction: the coupon row locked and re-checked against the slots unpaid orders hold
  *    (lib/checkout/coupon-hold; a code used up meanwhile -> 422 on `couponCode`), optional customer + account + OWNER
  *    membership + verification code, Order(AWAITING_PAYMENT)
  *    with the billing snapshot, price snapshot and per-line discount/taxable/tax shares, terms acceptance, and
- *    Payment(CREATED) with the provider order id. So an order never exists without a payment attempt.
+ *    Payment(CREATED) with the provider order id and the key id it was created with (providerKeyId). So an order never
+ *    exists without a payment attempt.
  * 6. After commit: the verification email (lib/auth/flows/verify-email) and a session for the new customer.
  */
 import { OrderStatus, PaymentStatus } from "@/generated/prisma/enums";
@@ -26,7 +29,7 @@ import { nextOrderId } from "@/lib/counters";
 import { Prisma } from "@/lib/db";
 import { ApiError, errors } from "@/lib/http";
 import { log } from "@/lib/log";
-import { getPaymentProvider, type PaymentProvider } from "@/lib/payments";
+import { activePaymentProviderOrNull, PAYMENTS_UNAVAILABLE_MESSAGE, type PaymentProvider } from "@/lib/payments";
 import { billingSnapshot } from "@/lib/orders/billing";
 import { teamCan } from "@/lib/rbac";
 import type { CreateOrderRequest } from "@/lib/validation/checkout";
@@ -50,7 +53,7 @@ export type CreateOrderContext = {
   ip: string | null;
   userAgent?: string | null;
   now?: Date;
-  /** Defaults to getPaymentProvider() (PAYMENT_PROVIDER). */
+  /** Defaults to the active provider (lib/payments activePaymentProviderOrNull). */
   provider?: PaymentProvider;
 };
 
@@ -87,6 +90,10 @@ export async function createCheckoutOrder(
   if (q.lines.length === 0) throw errors.validation({ items: "Your cart is empty." });
   if (q.totalPaise <= 0) throw new ApiError(422, "zero_total", ZERO_TOTAL_MESSAGE);
 
+  // Before the register rate limit and the password hash: without payments nothing else may happen.
+  const provider = ctx.provider ?? (await activePaymentProviderOrNull());
+  if (!provider) throw new ApiError(503, "payments_unavailable", PAYMENTS_UNAVAILABLE_MESSAGE);
+
   let passwordHash: string | null = null;
   if (buyer.kind === "guest" && input.createAccount) {
     enforce(await hit(db, RATE_LIMITS.register(ctx.ip), now));
@@ -100,7 +107,6 @@ export async function createCheckoutOrder(
   }
 
   const couponCode = q.coupon?.ok ? q.coupon.code : null;
-  const provider = ctx.provider ?? getPaymentProvider();
   const orderId = await db.$transaction((tx) => nextOrderId(tx));
   const providerOrder = await createProviderOrder(provider, {
     id: orderId,
@@ -159,6 +165,7 @@ export async function createCheckoutOrder(
           orderId,
           provider: provider.key,
           providerOrderId: providerOrder.providerOrderId,
+          providerKeyId: provider.keyId,
           amountPaise: q.totalPaise,
           status: PaymentStatus.CREATED,
           createdAt: now,

@@ -1,10 +1,15 @@
 /**
  * S3 (or S3-compatible) driver for the private installer and attachment bucket. Downloads are presigned GETs that
  * the browser fetches straight from S3/CloudFront, so file bytes never pass through the app servers.
+ * The configuration is the effective storage configuration (lib/storage/index.ts createStorageDriver). With `guard`
+ * (production) every connection's DNS lookup goes through the SSRF guard (lib/security/net-guard.ts guardedLookup).
  */
+import http from "node:http";
+import https from "node:https";
+import { Readable } from "node:stream";
 import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { getEnv } from "@/lib/env";
+import { guardedLookup } from "@/lib/security/net-guard";
 import {
   assertMaxBytes,
   assertStorageKey,
@@ -28,8 +33,13 @@ export type S3StorageConfig = {
   forcePathStyle?: boolean;
   accessKeyId: string;
   secretAccessKey: string;
+  /** Refuse private, loopback and link-local addresses at connect time (production). */
+  guard?: boolean;
   now?: () => Date;
 };
+
+/** Connection timeout of every S3 request (a black-holed endpoint fails fast). */
+export const S3_CONNECTION_TIMEOUT_MS = 10_000;
 
 function isNotFound(e: unknown): boolean {
   const err = e as { name?: unknown; $metadata?: { httpStatusCode?: unknown } } | null;
@@ -57,7 +67,25 @@ export class S3StorageDriver implements StorageDriver {
         // Without this the SDK adds CRC32 checksum parameters to presigned PUTs, which browser uploads cannot satisfy.
         requestChecksumCalculation: "WHEN_REQUIRED",
         responseChecksumValidation: "WHEN_REQUIRED",
+        requestHandler: requestHandlerOptions(config.guard === true),
       });
+  }
+
+  /** Releases the client's sockets (a replaced configuration). */
+  destroy(): void {
+    this.#client.destroy();
+  }
+
+  /** The object as a byte stream (server-side SHA-256 of uploaded installers). */
+  async openRead(key: string): Promise<AsyncIterable<Uint8Array>> {
+    assertStorageKey(key);
+    const out = await this.#client.send(new GetObjectCommand({ Bucket: this.#bucket, Key: key }));
+    const body = out.Body;
+    if (!body) throw new StorageError("invalid_request", "Empty object body");
+    if (body instanceof Readable) return body;
+    const web = (body as { transformToWebStream?: () => ReadableStream<Uint8Array> }).transformToWebStream?.();
+    if (web) return Readable.fromWeb(web as Parameters<typeof Readable.fromWeb>[0]);
+    throw new StorageError("invalid_request", "Unsupported object body");
   }
 
   #expiresAt(ttlSec: number): Date {
@@ -120,18 +148,12 @@ export class S3StorageDriver implements StorageDriver {
   }
 }
 
-/** Driver configured from STORAGE_* variables (lib/env.ts guarantees bucket, region and credentials for s3). */
-export function s3StorageFromEnv(): S3StorageDriver {
-  const env = getEnv();
-  if (!env.STORAGE_BUCKET || !env.STORAGE_REGION || !env.STORAGE_ACCESS_KEY_ID || !env.STORAGE_SECRET_ACCESS_KEY) {
-    throw new StorageError("not_configured", "STORAGE_BUCKET, STORAGE_REGION and S3 credentials are required for STORAGE_DRIVER=s3");
-  }
-  return new S3StorageDriver({
-    bucket: env.STORAGE_BUCKET,
-    region: env.STORAGE_REGION,
-    endpoint: env.STORAGE_ENDPOINT,
-    forcePathStyle: env.STORAGE_FORCE_PATH_STYLE,
-    accessKeyId: env.STORAGE_ACCESS_KEY_ID,
-    secretAccessKey: env.STORAGE_SECRET_ACCESS_KEY,
-  });
+/** Keep-alive agents (with the guarded DNS lookup in production) and a connection timeout for the S3 client. */
+function requestHandlerOptions(guard: boolean) {
+  const lookup = guard ? guardedLookup() : undefined;
+  return {
+    httpsAgent: new https.Agent({ keepAlive: true, ...(lookup ? { lookup } : {}) }),
+    httpAgent: new http.Agent({ keepAlive: true, ...(lookup ? { lookup } : {}) }),
+    connectionTimeout: S3_CONNECTION_TIMEOUT_MS,
+  };
 }

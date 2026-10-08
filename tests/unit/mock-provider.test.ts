@@ -1,7 +1,8 @@
 import { createHmac, generateKeyPairSync, randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/lib/env";
-import { getPaymentProvider, PaymentProviderError, resetPaymentProviders } from "@/lib/payments";
+import { setIntegrationEnvForTests } from "@/lib/integrations/resolver";
+import { activePaymentProvider, activePaymentProviderOrNull, getPaymentProvider, PaymentProviderError, resetPaymentProviders } from "@/lib/payments";
 import {
   buildMockWebhook,
   mockCapture,
@@ -40,6 +41,7 @@ const captured: Omit<NormalizedEvent, "id" | "currency"> = {
 
 beforeEach(() => resetMockLedger());
 afterEach(() => {
+  setIntegrationEnvForTests(null);
   vi.unstubAllEnvs();
   resetEnvCache();
   resetPaymentProviders();
@@ -236,13 +238,19 @@ describe("configuration", () => {
     expect(() => new MockProvider({ keyId: "k", keySecret: "", webhookSecret })).toThrow(PaymentProviderError);
   });
 
-  it("has no Cashfree adapter yet (Razorpay: tests/unit/razorpay-api.test.ts)", () => {
-    for (const key of ["cashfree"] as const) {
-      expect(() => getPaymentProvider(key)).toThrow(expect.objectContaining({ code: "not_configured", provider: key }));
-    }
+  it("has no Cashfree adapter yet (Razorpay: tests/unit/razorpay-api.test.ts)", async () => {
+    setIntegrationEnvForTests({ NODE_ENV: "test", PAYMENT_PROVIDER: "cashfree", PAYMENT_KEY_ID: "cf_key", PAYMENT_KEY_SECRET: keySecret, PAYMENT_WEBHOOK_SECRET: webhookSecret });
+    expect(await activePaymentProviderOrNull()).toBeNull();
   });
 
-  it("builds the mock from the environment", () => {
+  it("refuses the mock in production, by name or as the env fallback", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() => getPaymentProvider("mock")).toThrow(expect.objectContaining({ code: "not_configured", provider: "mock" }));
+    setIntegrationEnvForTests({ NODE_ENV: "production", PAYMENT_PROVIDER: "mock", PAYMENT_KEY_SECRET: keySecret, PAYMENT_WEBHOOK_SECRET: webhookSecret });
+    expect(await activePaymentProviderOrNull()).toBeNull();
+  });
+
+  it("builds the mock from the environment", async () => {
     const pair = generateKeyPairSync("ed25519", {
       privateKeyEncoding: { type: "pkcs8", format: "pem" },
       publicKeyEncoding: { type: "spki", format: "pem" },
@@ -268,9 +276,15 @@ describe("configuration", () => {
     };
     for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
     resetEnvCache();
-    const fromEnv = getPaymentProvider();
+    const fromEnv = getPaymentProvider("mock");
     expect(fromEnv.key).toBe("mock");
+    expect(fromEnv.keyId).toBe("mock_env_key");
     expect(getPaymentProvider("mock")).toBe(fromEnv);
+    // The active provider (resolver, env fallback) is the same mock configuration.
+    const active = await activePaymentProvider();
+    expect(active.key).toBe("mock");
+    expect(active.keyId).toBe("mock_env_key");
+    expect(active.verifyReturnSignature({ providerOrderId: "order_mock_a", providerPaymentId: "pay_mock_a", signature: signMockReturn("order_mock_a", "pay_mock_a") })).toBe(true);
     const ids = { providerOrderId: "order_mock_env", providerPaymentId: "pay_mock_env" };
     expect(fromEnv.verifyReturnSignature({ ...ids, signature: signMockReturn(ids.providerOrderId, ids.providerPaymentId) })).toBe(true);
     expect(fromEnv.verifyReturnSignature({ ...ids, signature: hex(envKeySecret, "order_mock_env|pay_mock_env") })).toBe(true);

@@ -15,7 +15,7 @@ import { db as defaultDb, type Prisma, type Tx } from "@/lib/db";
 import { ApiError, errors } from "@/lib/http";
 import { log } from "@/lib/log";
 import { formatFileSize } from "@/lib/storefront/derive";
-import { getStorage, type StorageDriver } from "@/lib/storage";
+import { getStorage, StorageError, type StorageDriver } from "@/lib/storage";
 import {
   hashStoredObject,
   INSTALLER_CONTENT_TYPE,
@@ -283,10 +283,20 @@ export async function updateRelease(id: string, patch: ReleaseUpdateInput, ctx: 
   return result;
 }
 
-/** Best effort: an object left behind is only wasted space, so a storage hiccup never fails the request. */
+/**
+ * Best effort: an object left behind is only wasted space, so a storage hiccup never fails the request. When storage
+ * is not configured at all, the database change still goes ahead (logged storage_delete_skipped).
+ */
 async function deleteObjects(storage: StorageDriver | undefined, keys: readonly string[], context: Record<string, unknown>): Promise<void> {
   if (keys.length === 0) return;
-  const driver = storage ?? getStorage();
+  let driver: StorageDriver;
+  try {
+    driver = storage ?? (await getStorage());
+  } catch (error) {
+    const reason = error instanceof StorageError ? error.code : "unavailable";
+    log.warn("storage_delete_skipped", { ...context, count: keys.length, reason });
+    return;
+  }
   for (const key of keys) {
     try {
       await driver.delete(key);
@@ -351,7 +361,7 @@ export async function createInstallerUpload(
   const key = installerStorageKey(release.productId, release.version, uploadNonce(), name);
   let put;
   try {
-    put = await (storage ?? getStorage()).presignPut(key, {
+    put = await (storage ?? (await getStorage())).presignPut(key, {
       ttlSec: INSTALLER_PUT_TTL_SECONDS,
       contentType: INSTALLER_CONTENT_TYPE,
       maxBytes: input.sizeBytes,
@@ -395,9 +405,10 @@ export async function confirmInstallerUpload(
   const already = await client.releaseFile.findFirst({ where: { releaseId: id, storageKey: claims.k } });
   if (already) return { file: toFile(already), release: await requireRelease(id, client) };
 
-  const driver = storage ?? getStorage();
+  let driver: StorageDriver;
   let head;
   try {
+    driver = storage ?? (await getStorage());
     head = await driver.head(claims.k);
   } catch (error) {
     log.error("installer_head_failed", { releaseId: id, error });

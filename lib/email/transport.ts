@@ -1,9 +1,14 @@
 /**
- * The email transport chosen by EMAIL_TRANSPORT: "console" (development; logs a summary and keeps the message for
- * /dev/mailbox) or "smtp" (nodemailer). Tests replace it with setEmailTransport().
+ * The email transport of the effective email configuration (lib/integrations/resolver.ts: Admin > Settings >
+ * Integrations, else the env fallback): "smtp" (nodemailer, pooled) or "console" (development only; keeps the message
+ * for /dev/mailbox). The process-wide transport is rebuilt when the configuration changes (the old pool is closed a
+ * minute later, so sends in flight finish). Not configured -> EmailNotConfiguredError. Tests replace it with
+ * setEmailTransport().
  */
 import "server-only";
-import { getEnv } from "@/lib/env";
+import { isProduction } from "@/lib/env";
+import { resolveEmail } from "@/lib/integrations/resolver";
+import type { EmailConfig } from "@/lib/integrations/types";
 
 export type OutgoingEmail = {
   to: string;
@@ -19,36 +24,62 @@ export type EmailSendResult = { messageId: string };
 export interface EmailTransport {
   readonly name: string;
   send(message: OutgoingEmail): Promise<EmailSendResult>;
+  /** Releases pooled connections (SMTP). */
+  close?(): void;
 }
 
-let override: EmailTransport | null = null;
-let selected: Promise<EmailTransport> | null = null;
+/** No email configuration is usable. The outbox counts the attempt and retries; direct sends answer { ok: false }. */
+export class EmailNotConfiguredError extends Error {
+  readonly code = "email_not_configured";
+  constructor() {
+    super("Email delivery is not configured.");
+    this.name = "EmailNotConfiguredError";
+  }
+}
 
-/** Replaces the transport (tests). Pass null to go back to the one EMAIL_TRANSPORT selects. */
+/** A pooled transport is closed this long after it was replaced, so sends in flight on it can finish. */
+const RETIRE_AFTER_MS = 60_000;
+
+let override: EmailTransport | null = null;
+let current: { fingerprint: string; transport: Promise<EmailTransport> } | null = null;
+
+/** Replaces the transport (tests). Pass null to go back to the effective configuration's. */
 export function setEmailTransport(transport: EmailTransport | null): void {
   override = transport;
 }
 
-async function createFromEnv(): Promise<EmailTransport> {
-  const env = getEnv();
-  if (env.EMAIL_TRANSPORT === "smtp") {
-    const { createSmtpTransport, smtpOptionsFromEnv } = await import("./transports/smtp");
-    return createSmtpTransport(smtpOptionsFromEnv(env), env.EMAIL_FROM);
+/** A transport for a configuration: pooled for the process-wide one, single-use (closed by the caller) for probes. */
+export async function createEmailTransport(config: EmailConfig, opts: { pool?: boolean } = {}): Promise<EmailTransport> {
+  if (config.transport === "smtp") {
+    const { createSmtpTransport, smtpOptions } = await import("./transports/smtp");
+    return createSmtpTransport(smtpOptions(config, { production: isProduction(), pool: opts.pool ?? true }), config.from);
   }
   const { createConsoleTransport } = await import("./transports/console");
   return createConsoleTransport();
 }
 
-/** The process-wide transport (created once; an SMTP transport keeps a small connection pool). */
-export function getEmailTransport(): Promise<EmailTransport> {
-  if (override) return Promise.resolve(override);
-  if (!selected) {
-    selected = createFromEnv().catch((error: unknown) => {
-      selected = null;
-      throw error;
+function retire(transport: Promise<EmailTransport>): void {
+  const timer = setTimeout(() => {
+    transport.then((t) => t.close?.()).catch(() => undefined);
+  }, RETIRE_AFTER_MS);
+  timer.unref?.();
+}
+
+/** The process-wide transport of the effective configuration. Throws EmailNotConfiguredError when there is none. */
+export async function getEmailTransport(): Promise<EmailTransport> {
+  if (override) return override;
+  const resolved = await resolveEmail();
+  if (resolved.source === "none") throw new EmailNotConfiguredError();
+  if (current?.fingerprint !== resolved.fingerprint) {
+    if (current) retire(current.transport);
+    const transport = createEmailTransport(resolved.config, { pool: true });
+    const entry = { fingerprint: resolved.fingerprint, transport };
+    current = entry;
+    transport.catch(() => {
+      if (current === entry) current = null;
     });
   }
-  return selected;
+  return current.transport;
 }
 
 /** Log fields that point developers to /dev/mailbox when the console transport is in use. */

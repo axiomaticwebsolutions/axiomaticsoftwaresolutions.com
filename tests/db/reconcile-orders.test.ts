@@ -4,8 +4,16 @@ import type { OrderStatus, PaymentStatus, Plan } from "@/generated/prisma/client
 import { GET } from "@/app/api/cron/reconcile/route";
 import { db } from "@/lib/db";
 import { getEnv } from "@/lib/env";
+import { setIntegrationEnvForTests } from "@/lib/integrations/resolver";
 import { getPaymentProvider } from "@/lib/payments";
-import { closedAttemptDue, reconcileEvents, reconcileStuckOrders, RECONCILE_INTERVAL_MS, RECONCILE_MIN_AGE_MS } from "@/lib/payments/reconcile";
+import {
+  closedAttemptDue,
+  reconcileEvents,
+  reconcilePendingRefunds,
+  reconcileStuckOrders,
+  RECONCILE_INTERVAL_MS,
+  RECONCILE_MIN_AGE_MS,
+} from "@/lib/payments/reconcile";
 import type { NormalizedPayment, PaymentProvider } from "@/lib/payments/types";
 import { processPaymentEvent } from "@/lib/payments/webhook";
 import { NextRequest } from "next/server";
@@ -47,6 +55,7 @@ const failing = new Set<string>();
 const real = () => getPaymentProvider("mock");
 const provider: PaymentProvider = {
   key: "mock",
+  keyId: "mock_key",
   createOrder: (i) => real().createOrder(i),
   verifyReturnSignature: (i) => real().verifyReturnSignature(i),
   verifyWebhook: (b, h) => real().verifyWebhook(b, h),
@@ -256,6 +265,45 @@ describe("reconcileStuckOrders", () => {
     expect(await statusOf(broken.id)).toBe("CONFIRMING");
     expect(await statusOf(ok.id)).toBe("PAID");
     failing.delete(broken.providerOrderId);
+  });
+
+  it("only asks about attempts of the active keys (or from before key ids were recorded)", async () => {
+    const other = await stuckOrder("CONFIRMING", 20 * MIN, "AUTHORIZED");
+    await db.payment.updateMany({ where: { orderId: other.id }, data: { providerKeyId: "mock_other_account" } });
+    ledger.set(other.providerOrderId, [capturedPayment(other)]);
+    const mine = await stuckOrder("CONFIRMING", 20 * MIN, "AUTHORIZED");
+    await db.payment.updateMany({ where: { orderId: mine.id }, data: { providerKeyId: provider.keyId } });
+    ledger.set(mine.providerOrderId, [capturedPayment(mine)]);
+    await reconcileStuckOrders({ provider, limit: 500 });
+    expect(await statusOf(other.id)).toBe("CONFIRMING");
+    expect(await statusOf(mine.id)).toBe("PAID");
+  });
+
+  it("after a key regeneration keeps checking attempts of the earlier key id of the same mode, never the other mode", async () => {
+    const regenerated: PaymentProvider = { ...provider, keyId: "rzp_test_NewKeyOfAcct01" };
+    const earlier = await stuckOrder("CONFIRMING", 20 * MIN, "AUTHORIZED");
+    await db.payment.updateMany({ where: { orderId: earlier.id }, data: { providerKeyId: "rzp_test_OldKeyOfAcct01" } });
+    ledger.set(earlier.providerOrderId, [capturedPayment(earlier)]);
+    const live = await stuckOrder("CONFIRMING", 20 * MIN, "AUTHORIZED");
+    await db.payment.updateMany({ where: { orderId: live.id }, data: { providerKeyId: "rzp_live_LiveKeyAcct01" } });
+    ledger.set(live.providerOrderId, [capturedPayment(live)]);
+    await reconcileStuckOrders({ provider: regenerated, limit: 500 });
+    expect(await statusOf(earlier.id)).toBe("PAID");
+    expect(await statusOf(live.id)).toBe("CONFIRMING");
+  });
+
+  it("skips both runs when payments are not configured, and the cron route stays 200", async () => {
+    setIntegrationEnvForTests({ NODE_ENV: "production" });
+    try {
+      const skipped = { provider: null, skipped: "not_configured", checked: 0, results: {}, errors: 0 };
+      expect(await reconcileStuckOrders()).toEqual(skipped);
+      expect(await reconcilePendingRefunds()).toEqual(skipped);
+      const res = await GET(new NextRequest("http://localhost:3000/api/cron/reconcile", { headers: { authorization: `Bearer ${getEnv().CRON_SECRET}` } }), undefined);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ...skipped, refunds: skipped });
+    } finally {
+      setIntegrationEnvForTests(null);
+    }
   });
 
   it("respects the per-run limit", async () => {

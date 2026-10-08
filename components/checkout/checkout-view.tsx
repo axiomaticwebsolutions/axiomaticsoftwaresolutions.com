@@ -6,6 +6,7 @@ import { AUTH_COPY } from "@/components/auth/copy";
 import { Icon } from "@/components/icons/icon";
 import { buildCartRows, toRequestItems, type CartPlanCatalog } from "@/components/store/cart/cart-model";
 import { fetchQuote, useQuote } from "@/components/store/cart/use-quote";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useCart } from "@/lib/cart/use-cart";
@@ -45,6 +46,8 @@ export type CheckoutViewProps = {
   prefill: CheckoutPrefill;
   /** Show the sample coupon codes (only while the business details are still samples). */
   showSampleCodes: boolean;
+  /** False when no payment provider is configured: a notice is shown and Pay is disabled. */
+  paymentsAvailable?: boolean;
 };
 
 type FormError = CheckoutFormError;
@@ -103,7 +106,7 @@ function EmptyCheckout() {
  * Pay. Errors appear after the first submit and then update live. Pay re-validates on the server, creates the order
  * and opens the provider checkout (startHostedCheckout); the cart is kept until the order is PAID.
  */
-export function CheckoutView({ catalog, companyState, viewer: initialViewer, prefill, showSampleCodes }: CheckoutViewProps) {
+export function CheckoutView({ catalog, companyState, viewer: initialViewer, prefill, showSampleCodes, paymentsAvailable = true }: CheckoutViewProps) {
   const cart = useCart();
   const items = cart.items;
   const [viewer, setViewer] = React.useState(initialViewer);
@@ -294,7 +297,7 @@ export function CheckoutView({ catalog, companyState, viewer: initialViewer, pre
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy) return;
+    if (busy || !paymentsAvailable) return;
     const found = validateCheckout(values, { guest });
     if (Object.keys(found).length > 0) {
       setTried(true);
@@ -343,6 +346,11 @@ export function CheckoutView({ catalog, companyState, viewer: initialViewer, pre
   return (
     <form noValidate onSubmit={onSubmit} className={GRID_CLASS}>
       <div className={MAIN_CLASS}>
+        {paymentsAvailable ? null : (
+          <Alert tone="warning" role="status">
+            <span className="font-semibold text-ink-body">{CHECKOUT_COPY.paymentsOff}</span>
+          </Alert>
+        )}
         {formError ? (
           <div id={FORM_ERROR_ID} role="alert" tabIndex={-1} className={ALERT_CLASS}>
             <Icon name="error" size={20} className="mt-0.5" />
@@ -376,6 +384,7 @@ export function CheckoutView({ catalog, companyState, viewer: initialViewer, pre
         showSampleCodes={showSampleCodes}
         onRemoveLine={removeLine}
         busy={busy}
+        paymentsAvailable={paymentsAvailable}
         couponInputRef={couponInputRef}
         couponRemoveRef={couponRemoveRef}
       />

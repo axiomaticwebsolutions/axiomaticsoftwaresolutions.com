@@ -9,7 +9,7 @@ import { db } from "@/lib/db";
 import { log } from "@/lib/log";
 import { composeEmail, EmailTemplateError, normalizeRecipient, type ComposedEmail } from "./compose";
 import { isDirectEmailTemplateId, type DirectEmailTemplateId } from "./defaults";
-import { getEmailTransport, mailboxHint, maskEmail, sendErrorSummary } from "./transport";
+import { EmailNotConfiguredError, getEmailTransport, mailboxHint, maskEmail, sendErrorSummary } from "./transport";
 
 export type AuthEmailInput = {
   to: string;
@@ -78,6 +78,10 @@ export async function sendAuthEmail(input: AuthEmailInput): Promise<{ ok: boolea
     });
     return { ok: true };
   } catch (error) {
+    if (error instanceof EmailNotConfiguredError) {
+      log.error("email_send_failed", { template: templateId, reason: "not_configured" });
+      return { ok: false };
+    }
     log.error("email_send_failed", { template: templateId, error: sendErrorSummary(error) });
     return { ok: false };
   }

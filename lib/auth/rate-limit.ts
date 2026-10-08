@@ -343,4 +343,11 @@ export const RATE_LIMITS = {
   // ---- Admin console (Phase 6) ----
   /** Admin CSV exports (each up to 10,000 rows; lib/admin/export.ts): 60 / 10 min per staff member. */
   adminExport: (staffId: string) => rule(`admin-export:user:${hashedId(staffId)}`, 60, 10 * MINUTE),
+  /**
+   * Password re-entry for saving, clearing or removing integration settings (Admin > Settings > Integrations): 5 / 15 min
+   * per Owner (attempt before verifying, clear on success, like keyReveal).
+   */
+  integrationPassword: (userId: string) => rule(`integration-password:user:${hashedId(userId)}`, 5, 15 * MINUTE),
+  /** Integration test buttons (each reaches Razorpay, the SMTP server or the bucket): 10 / 10 min per Owner; never cleared. */
+  integrationTest: (userId: string) => rule(`integration-test:user:${hashedId(userId)}`, 10, 10 * MINUTE),
 } as const;

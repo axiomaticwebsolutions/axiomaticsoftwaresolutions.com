@@ -6,12 +6,16 @@
  * Sections map to SiteSetting keys: business, tax, licensing and content.sampleNotice ("sample-notice" in URLs). Each
  * save sends only the changed fields; the server merges them into the stored value, validates the result with
  * lib/config settingSchemas, writes one "Updated settings" audit row per changed field ("old → new") and revalidates
- * the storefront's settings cache. Secrets never live here: integrations show configured / not configured from env.
+ * the storefront's settings cache. Secrets never live here: the integrations panel (payments, email, storage, rate
+ * limits) has its own shapes, copy and routes in ./integrations-model.ts (docs/admin-integrations-design.md).
  */
 import { z } from "zod";
 import type { IconName } from "@/components/icons/icon";
 import type { SettingKey, SiteSettings } from "@/lib/config";
 import { INDIAN_STATES } from "@/lib/validation/states";
+import type { IntegrationsData } from "./integrations-model";
+
+export { INTEGRATIONS_COPY, type IntegrationsData, type IntegrationState } from "./integrations-model";
 
 export const SETTINGS_SECTION_IDS = ["business", "tax", "licensing", "sample-notice"] as const;
 export type SettingsSectionId = (typeof SETTINGS_SECTION_IDS)[number];
@@ -230,30 +234,6 @@ export function diffSection(id: SettingsSectionId, before: Record<string, unknow
     .map((key) => ({ field: key, label: fieldLabel(id, key), from: formatSettingValue(before[key]), to: formatSettingValue(after[key]) }));
 }
 
-// ---------- Integrations (read-only, from env presence) ----------
-
-export type IntegrationStatus = "configured" | "missing" | "development";
-
-export type IntegrationView = {
-  id: "payments" | "storage" | "email" | "redis";
-  title: string;
-  description: string;
-  icon: IconName;
-  /** Driver kind, never a value: "Razorpay", "S3-compatible bucket", "SMTP", "Redis". */
-  provider: string;
-  status: IntegrationStatus;
-  /** Payments only. */
-  mode?: "test" | "live";
-  /** Environment variable NAMES the integration reads (never their values). */
-  envNames: readonly string[];
-  note: string;
-};
-
-export const INTEGRATION_STATUS_LABELS: Readonly<Record<IntegrationStatus, string>> = {
-  configured: "Configured",
-  missing: "Not configured",
-  development: "Development only",
-};
 
 /** Data of the Settings page (GET /api/admin/settings). */
 export type AdminSettingsData = {
@@ -271,7 +251,8 @@ export type AdminSettingsData = {
     /** Licenses ending within this many days read as Expiring (EXPIRING_DAYS; fixed, not a setting). */
     expiringDays: number;
   };
-  integrations: IntegrationView[];
+  /** Admin > Settings > Integrations: forms for integrations.manage (Owner), status only for anyone else. */
+  integrations: IntegrationsData;
 };
 
 export const SETTINGS_COPY = {
@@ -290,10 +271,4 @@ export const SETTINGS_COPY = {
     keyReveal: "Key reveal needs password",
     keyRevealValue: "Always",
   },
-  integrationsTitle: "Integrations",
-  integrationsDescription:
-    "Secrets live in environment variables on the server. This page shows only whether each integration is configured.",
-  fields: { provider: "Provider", status: "Status", mode: "Mode" },
-  modes: { test: "Test", live: "Live" },
-  envPrefix: "Environment:",
 } as const;

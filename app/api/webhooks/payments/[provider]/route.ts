@@ -2,9 +2,11 @@
  * POST /api/webhooks/payments/:provider: payment provider webhooks (docs/api-contracts.md section 4).
  *
  * Signature-authenticated: no session, no CSRF token (lib/auth/csrf.ts exempts /api/webhooks/*), no same-origin check
- * (the caller is the provider's server). Only the configured provider (PAYMENT_PROVIDER) is accepted; anything else
- * is a 404. The exact request text (at most 256 KB) goes to the adapter, which verifies the HMAC with
- * PAYMENT_WEBHOOK_SECRET in constant time:
+ * (the caller is the provider's server). Only the ACTIVE provider (lib/payments activePaymentProviderOrNull: Admin >
+ * Settings > Integrations, else the env fallback) is accepted; any other provider key is a 404. When payments are not
+ * configured, `razorpay` answers 503 `payments_not_configured` with Retry-After: 300 and records nothing (Razorpay
+ * keeps retrying, so its events wait until the Owner saves keys); other keys 404. The exact request text (at most
+ * 256 KB) goes to the active adapter, which verifies the HMAC with its webhook secret in constant time:
  * - missing or bad signature -> 401 `invalid_signature`, a WebhookDelivery(invalid_signature) row, no state change;
  * - valid signature, body not understood -> 200 `{ result: "invalid_payload" }` (retrying would not help);
  * - valid signature, an event type the order state machine ignores -> 200 `{ result: "ignored" }`;
@@ -17,10 +19,9 @@
  */
 import { hit, RATE_LIMITS } from "@/lib/auth/rate-limit";
 import { db } from "@/lib/db";
-import { getEnv } from "@/lib/env";
 import { ApiError, clientIp, errors, json, route } from "@/lib/http";
 import { log } from "@/lib/log";
-import { getPaymentProvider, isPaymentProviderKey } from "@/lib/payments";
+import { activePaymentProviderOrNull, isPaymentProviderKey } from "@/lib/payments";
 import { RAZORPAY_MAX_WEBHOOK_BYTES } from "@/lib/payments/razorpay";
 import { processPaymentEvent, recordWebhookDelivery, type WebhookDeliveryInput } from "@/lib/payments/webhook";
 
@@ -29,6 +30,16 @@ export const dynamic = "force-dynamic";
 
 const MAX_WEBHOOK_BYTES = RAZORPAY_MAX_WEBHOOK_BYTES;
 const INVALID_SIGNATURE_MESSAGE = "The webhook signature is not valid.";
+const NOT_CONFIGURED_RETRY_SEC = 300;
+
+/** `webhook_not_configured` at most once a minute per process (Razorpay retries every few minutes per event). */
+let notConfiguredLoggedAt = 0;
+function logNotConfigured(provider: string): void {
+  const now = Date.now();
+  if (now - notConfiguredLoggedAt < 60_000) return;
+  notConfiguredLoggedAt = now;
+  log.warn("webhook_not_configured", { provider });
+}
 
 type Context = { params: Promise<{ provider: string }> };
 
@@ -76,8 +87,16 @@ async function underInvalidSignatureLimit(req: Request): Promise<boolean> {
 
 export const POST = route<Context>(async (req, ctx) => {
   const { provider: key } = await ctx.params;
-  if (!isPaymentProviderKey(key) || key !== getEnv().PAYMENT_PROVIDER) throw errors.notFound();
-  const provider = getPaymentProvider(key);
+  if (!isPaymentProviderKey(key)) throw errors.notFound();
+  const provider = await activePaymentProviderOrNull();
+  if (!provider) {
+    if (key !== "razorpay") throw errors.notFound();
+    logNotConfigured(key);
+    throw new ApiError(503, "payments_not_configured", "Payments are not configured.", {
+      headers: { "Retry-After": String(NOT_CONFIGURED_RETRY_SEC) },
+    });
+  }
+  if (provider.key !== key) throw errors.notFound();
 
   const rawBody = await readRawBody(req, MAX_WEBHOOK_BYTES);
   const verification =

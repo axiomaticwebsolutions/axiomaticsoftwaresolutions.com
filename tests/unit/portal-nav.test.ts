@@ -214,11 +214,11 @@ describe("notification menu rows", () => {
 });
 
 describe("middleware path header", () => {
-  it("forwards the requested portal path to the server, overwriting any client value", () => {
+  it("forwards the requested portal path to the server, overwriting any client value", async () => {
     const req = new NextRequest("http://localhost:3000/account/licenses?status=active", {
       headers: { cookie: "axs_session=opaque-token", "x-axs-path": "//evil.example" },
     });
-    const res = middleware(req);
+    const res = await middleware(req);
     expect(res.headers.get("x-middleware-next")).toBe("1");
     expect(res.headers.get("x-middleware-request-x-axs-path")).toBe("/account/licenses?status=active");
   });

@@ -8,7 +8,8 @@
  *   load (webpack chunks, Razorpay Checkout.js) are trusted through 'strict-dynamic'. Used on the dynamically
  *   rendered routes listed in strictCspRoute(): the portal, the admin console, checkout, order pages and the auth
  *   pages. A nonce only works on a page rendered per request, so these routes must stay dynamic.
- * - STATIC (next.config.ts, baked by `next build`): `'self' 'unsafe-inline'`. Prerendered and ISR storefront pages are
+ * - STATIC (middleware.ts on every other page; next.config.ts, without a bucket, on API JSON and assets):
+ *   `'self' 'unsafe-inline'`. Prerendered and ISR storefront pages are
  *   served from the cache without a per-request nonce, and Next.js inlines the page's RSC payload as
  *   `self.__next_f.push(...)` scripts whose content differs per page and per revalidation, so they cannot be pinned
  *   by hash either (a hash source would also switch 'unsafe-inline' off). docs/security.md records the justification.
@@ -17,7 +18,8 @@
  * inline event-handler attributes refused (`script-src-attr 'none'`). Razorpay Checkout's origins are added only on
  * /checkout and /orders/:id. The storage upload origin (S3 bucket) is allowed in connect-src on every page: Next.js
  * client navigation keeps the CSP of the document it started in, so a policy that allowed it on /account/* and
- * /admin/* only would still block uploads after an in-app link from the storefront or an order page.
+ * /admin/* only would still block uploads after an in-app link from the storefront or an order page. It comes from the
+ * runtime storage configuration (lib/integrations/csp-origin.ts), added by middleware.ts per request.
  *
  * Pure and edge-safe (no Node APIs, no imports): middleware.ts and next.config.ts both use it.
  */
@@ -53,7 +55,7 @@ export type CspOptions = {
   strict?: StrictScripts | null;
   /** Razorpay Checkout.js sources (/checkout and /orders/:id only). */
   razorpay?: boolean;
-  /** Origin browsers PUT presigned uploads to (lib/storage/upload-origin.ts); null for the local driver. */
+  /** Exact origin browsers PUT presigned uploads to (lib/integrations/csp-origin.ts); null for local or none. */
   uploadOrigin?: string | null;
 };
 

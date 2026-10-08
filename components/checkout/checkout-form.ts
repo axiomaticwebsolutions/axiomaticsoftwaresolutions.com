@@ -69,6 +69,8 @@ export type CheckoutErrors = Partial<Record<CheckoutFieldKey, string>>;
 export const CHECKOUT_COPY = {
   backToCart: "← Back to cart",
   title: "Checkout",
+  /** No payment provider is configured (Admin > Settings > Integrations); Pay is disabled. */
+  paymentsOff: "Payments aren’t switched on yet, so you can’t place an order right now.",
   secure: "Secure checkout",
   emptyTitle: "There’s nothing to check out",
   emptyBody: "Add a plan to your cart first.",

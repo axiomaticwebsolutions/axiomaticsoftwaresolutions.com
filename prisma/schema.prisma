@@ -70,6 +70,9 @@ model User {
   placedOrders    Order[]         @relation("OrderPlacedBy")
   openedTickets   SupportTicket[] @relation("TicketOpenedBy")
   uploads         Upload[]
+
+  integrationConfigsUpdated IntegrationConfig[] @relation("IntegrationConfigUpdatedBy")
+  integrationSecretsUpdated IntegrationSecret[] @relation("IntegrationSecretUpdatedBy")
 }
 
 model Session {
@@ -419,6 +422,7 @@ model Payment {
   failureReason     String?
   createdAt         DateTime      @default(now())
   capturedAt        DateTime?
+  providerKeyId     String? // key id the provider order was created with (Razorpay key id, "mock_key"); null = before 2026-10-08
   refunds           Refund[]
 
   @@index([orderId])
@@ -788,6 +792,40 @@ model Faq {
   sortOrder Int     @default(0)
 
   @@index([page, sortOrder])
+}
+
+// ---------- Integrations (Admin > Settings > Integrations; docs/admin-integrations-design.md) ----------
+enum IntegrationKind {
+  PAYMENTS
+  EMAIL
+  STORAGE
+}
+
+// One row per integration the Owner saved; no row = the env file is the fallback. Non-secret fields only; secrets live
+// in IntegrationSecret, encrypted.
+model IntegrationConfig {
+  kind        IntegrationKind     @id
+  settings    Json // non-secret fields, validated with Zod (lib/integrations/model.ts INTEGRATION_SETTINGS_SCHEMAS)
+  revision    Int                 @default(1) // +1 on every save and secret clear; optimistic concurrency for the form
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  updatedById String?
+  updatedBy   User?               @relation("IntegrationConfigUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  secrets     IntegrationSecret[]
+}
+
+// One encrypted secret of an integration (lib/integrations/crypto.ts). Never returned, logged or audited.
+model IntegrationSecret {
+  kind        IntegrationKind
+  field       String // keySecret | webhookSecret (PAYMENTS), password (EMAIL), secretAccessKey (STORAGE)
+  ciphertext  String // "v1.<iv>.<tag>.<ct>", base64url, AES-256-GCM
+  last4       String? // last 4 characters, only for secrets of 16+ characters; display only
+  updatedAt   DateTime          @updatedAt
+  updatedById String?
+  updatedBy   User?             @relation("IntegrationSecretUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+  config      IntegrationConfig @relation(fields: [kind], references: [kind], onDelete: Cascade)
+
+  @@id([kind, field])
 }
 
 model SiteSetting {

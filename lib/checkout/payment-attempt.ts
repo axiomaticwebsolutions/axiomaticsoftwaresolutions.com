@@ -6,12 +6,11 @@
  */
 import { ItemKind, LicenseStatus, OrderStatus, PaymentStatus, PublishStatus } from "@/generated/prisma/enums";
 import type { PrismaClient } from "@/generated/prisma/client";
-import { getEnv } from "@/lib/env";
 import { ApiError } from "@/lib/http";
 import { log } from "@/lib/log";
 import {
-  getPaymentProvider,
-  isPaymentProviderKey,
+  activePaymentProviderOrNull,
+  PAYMENTS_UNAVAILABLE_MESSAGE,
   PaymentProviderError,
   type CreateOrderResult,
   type PaymentProvider,
@@ -27,6 +26,8 @@ import { COUPON_HOLD_AWAITING_MS, couponAvailability, lockCoupon } from "./coupo
 export const MOCK_CHECKOUT_PAGE = "/dev/mock-checkout";
 
 export const PAYMENT_UNAVAILABLE_MESSAGE = "We couldn’t reach our payment partner. Please try again in a minute.";
+/** 503 `payments_unavailable`: no payment provider is configured (Admin > Settings > Integrations, or the env file). */
+export { PAYMENTS_UNAVAILABLE_MESSAGE };
 export const NOT_RETRYABLE_MESSAGE = "This order can’t be paid again.";
 export const ORDER_UNAVAILABLE_MESSAGE =
   "Something in this order can no longer be bought. Go back to your cart to start a new order.";
@@ -66,9 +67,11 @@ export function checkoutPayload(
     case "mock":
       return { kind: "mock", url: mockCheckoutUrl(order.id, token) };
     case "razorpay": {
+      // Always the key id of the adapter that created (or reopens) the provider order: Checkout.js must open it with
+      // the same Razorpay account.
       const fromAdapter = providerOrder.checkout?.keyId;
-      const keyId = typeof fromAdapter === "string" && fromAdapter !== "" ? fromAdapter : (getEnv().PAYMENT_KEY_ID ?? "");
-      if (keyId === "") throw new PaymentProviderError("not_configured", "PAYMENT_KEY_ID is required for Razorpay", "razorpay");
+      const keyId = typeof fromAdapter === "string" ? fromAdapter : "";
+      if (keyId === "") throw new PaymentProviderError("not_configured", "The Razorpay Key ID is missing", "razorpay");
       return {
         kind: "razorpay",
         keyId,
@@ -179,7 +182,9 @@ async function assertCouponStillUsable(client: Db, order: { id: string; couponCo
  * reopens that attempt instead of creating another provider order, unless the order has a coupon and that attempt is
  * older than the coupon hold (then it gets a fresh attempt, which re-checks the coupon). Anything else, and any order
  * with an AUTHORIZED or CAPTURED attempt (a payment is being confirmed), is 409 `not_retryable`; a new attempt whose
- * coupon is paused, outside its dates or used up is 409 `order_unavailable`.
+ * coupon is paused, outside its dates or used up is 409 `order_unavailable`. Only an attempt of the ACTIVE provider and
+ * keys (Payment.providerKeyId; null before 2026-10-08 counts as a match) is reopened; payments not configured -> 503
+ * `payments_unavailable` before anything else.
  */
 export async function retryPayment(
   db: PrismaClient,
@@ -187,6 +192,8 @@ export async function retryPayment(
   opts: { now?: Date; provider?: PaymentProvider } = {},
 ): Promise<CheckoutStart> {
   assertCanActOnOrder(access);
+  const provider = opts.provider ?? (await activePaymentProviderOrNull());
+  if (!provider) throw new ApiError(503, "payments_unavailable", PAYMENTS_UNAVAILABLE_MESSAGE);
   const now = opts.now ?? new Date();
   const order = access.order;
   const billing = readBillingSnapshot(order.billing);
@@ -197,14 +204,16 @@ export async function retryPayment(
   if (order.status === OrderStatus.AWAITING_PAYMENT) {
     const latest = await db.payment.findFirst({ where: { orderId: order.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
     const holdLapsed = order.couponCode !== null && latest !== null && now.getTime() - latest.createdAt.getTime() > COUPON_HOLD_AWAITING_MS;
-    if (latest && latest.status === PaymentStatus.CREATED && isPaymentProviderKey(latest.provider) && !holdLapsed) {
-      return checkoutStart(payable, latest.provider, { providerOrderId: latest.providerOrderId }, order.email, now);
+    // Only an attempt of the active provider AND keys can be reopened: a provider order made with other keys (test to
+    // live, another Razorpay account) cannot be paid with these. A null providerKeyId (before 2026-10-08) counts as a match.
+    const sameKeys = latest !== null && latest.provider === provider.key && (latest.providerKeyId ?? provider.keyId) === provider.keyId;
+    if (latest && latest.status === PaymentStatus.CREATED && sameKeys && !holdLapsed) {
+      return checkoutStart(payable, provider.key, { providerOrderId: latest.providerOrderId, checkout: { keyId: provider.keyId } }, order.email, now);
     }
   }
 
   await assertOrderStillPurchasable(db, order.id, order.accountId);
   await assertCouponStillUsable(db, order, now);
-  const provider = opts.provider ?? getPaymentProvider();
   const providerOrder = await createProviderOrder(provider, {
     id: order.id,
     totalPaise: order.totalPaise,
@@ -228,6 +237,7 @@ export async function retryPayment(
         orderId: order.id,
         provider: provider.key,
         providerOrderId: providerOrder.providerOrderId,
+        providerKeyId: provider.keyId,
         amountPaise: order.totalPaise,
         status: PaymentStatus.CREATED,
         createdAt: now,

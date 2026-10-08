@@ -76,7 +76,7 @@ export async function staffAttachmentLink(
   }
   if (!allowed) throw errors.notFound("Attachment");
   try {
-    const link = await (storage ?? getStorage()).presignGet(upload.storageKey, {
+    const link = await (storage ?? (await getStorage())).presignGet(upload.storageKey, {
       ttlSec: clampTtl(ATTACHMENT_LINK_TTL_SECONDS),
       downloadName: upload.fileName,
     });

@@ -14,7 +14,7 @@ import { OrderStatus, PaymentStatus } from "@/generated/prisma/enums";
 import type { Payment, PrismaClient } from "@/generated/prisma/client";
 import { ApiError } from "@/lib/http";
 import { log } from "@/lib/log";
-import { getPaymentProvider, isPaymentProviderKey, type PaymentProvider, type PaymentProviderKey } from "@/lib/payments";
+import { activePaymentProviderOrNull, isPaymentProviderKey, type PaymentProvider, type PaymentProviderKey } from "@/lib/payments";
 import { assertCanActOnOrder, type OrderAccess } from "@/lib/orders/access";
 
 export const RETURN_SIGNATURE_MESSAGE =
@@ -36,23 +36,21 @@ const AUTHORIZABLE: ReadonlySet<PaymentStatus> = new Set<PaymentStatus>([
 
 export type PaymentReturnInput = { providerPaymentId: string; providerSignature: string };
 
-function adapterFor(key: PaymentProviderKey, override?: (key: PaymentProviderKey) => PaymentProvider): PaymentProvider | null {
+type AdapterFor = (key: PaymentProviderKey) => PaymentProvider | null;
+
+function safeAdapter(adapterFor: AdapterFor, key: PaymentProviderKey): PaymentProvider | null {
   try {
-    return override ? override(key) : getPaymentProvider(key);
+    return adapterFor(key);
   } catch {
     return null; // an adapter that is not configured here cannot have signed anything
   }
 }
 
 /** The attempt the signature belongs to (newest first), or null. */
-function matchAttempt(
-  payments: readonly Payment[],
-  input: PaymentReturnInput,
-  providerFor?: (key: PaymentProviderKey) => PaymentProvider,
-): Payment | null {
+function matchAttempt(payments: readonly Payment[], input: PaymentReturnInput, adapterFor: AdapterFor): Payment | null {
   for (const payment of payments) {
     if (!isPaymentProviderKey(payment.provider)) continue;
-    const adapter = adapterFor(payment.provider, providerFor);
+    const adapter = safeAdapter(adapterFor, payment.provider);
     if (!adapter) continue;
     const ok = adapter.verifyReturnSignature({
       providerOrderId: payment.providerOrderId,
@@ -74,7 +72,16 @@ export async function recordPaymentReturn(
   assertCanActOnOrder(access);
   const orderId = access.order.id;
   const payments = await db.payment.findMany({ where: { orderId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
-  const attempt = matchAttempt(payments, input, opts.providerFor);
+  // Only the active provider (its current keys) can verify a return. Attempts made with other keys fail here; the
+  // webhook settles them when the account is the same.
+  let adapterFor: AdapterFor;
+  if (opts.providerFor) {
+    adapterFor = opts.providerFor;
+  } else {
+    const active = await activePaymentProviderOrNull();
+    adapterFor = (key) => (active && active.key === key ? active : null);
+  }
+  const attempt = matchAttempt(payments, input, adapterFor);
   if (!attempt) {
     log.warn("payment_return_rejected", { orderId, attempts: payments.length });
     throw new ApiError(400, "invalid_signature", RETURN_SIGNATURE_MESSAGE);

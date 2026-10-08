@@ -158,14 +158,17 @@ export function mockAdoptCapturedPayment(input: {
   order.paymentIds.push(input.providerPaymentId);
 }
 
-/** The return signature the hosted checkout would send back (Razorpay scheme). */
+/**
+ * The return signature the hosted checkout would send back (Razorpay scheme). The default secret is the env mock's
+ * (PAYMENT_KEY_SECRET): the mock is env-only and development-only, so it is always the active mock's secret too.
+ */
 export function signMockReturn(providerOrderId: string, providerPaymentId: string, keySecret?: string): string {
   return hmacHex(keySecret ?? requireSecret(getEnv().PAYMENT_KEY_SECRET, "PAYMENT_KEY_SECRET"), `${providerOrderId}|${providerPaymentId}`);
 }
 
-/** Hex HMAC of an exact webhook body, as sent in the `x-mock-signature` header. */
+/** Hex HMAC of an exact webhook body, as sent in the `x-mock-signature` header (default: the env mock's secret). */
 export function signMockWebhook(rawBody: string, webhookSecret?: string): string {
-  return hmacHex(webhookSecret ?? getEnv().PAYMENT_WEBHOOK_SECRET, rawBody);
+  return hmacHex(webhookSecret ?? requireSecret(getEnv().PAYMENT_WEBHOOK_SECRET, "PAYMENT_WEBHOOK_SECRET"), rawBody);
 }
 
 export type MockWebhookInput = Omit<NormalizedEvent, "id" | "currency"> & { id?: string; currency?: "INR" };
@@ -223,7 +226,11 @@ function parseWebhookBody(rawBody: string): WebhookVerification {
   return { ok: true, event: parsed.data };
 }
 
-/** Mock PaymentProvider. Secrets default to the env (PAYMENT_KEY_ID / PAYMENT_KEY_SECRET / PAYMENT_WEBHOOK_SECRET). */
+/**
+ * Mock PaymentProvider (development and tests only; Admin can never select it). Secrets default to the env mock
+ * configuration (PAYMENT_KEY_ID / PAYMENT_KEY_SECRET / PAYMENT_WEBHOOK_SECRET); createPaymentProvider() passes the
+ * resolved ones explicitly.
+ */
 export class MockProvider implements PaymentProvider {
   readonly key = "mock" as const;
   readonly keyId: string;

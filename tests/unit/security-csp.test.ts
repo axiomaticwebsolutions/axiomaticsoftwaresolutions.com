@@ -10,6 +10,14 @@ import { NextRequest } from "next/server";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sealIntegrationSecret } from "@/lib/integrations/crypto";
+import {
+  invalidateIntegrations,
+  setIntegrationEnvForTests,
+  setIntegrationKeyForTests,
+  setIntegrationRowsLoader,
+} from "@/lib/integrations/resolver";
+import type { IntegrationRow } from "@/lib/integrations/types";
 import { contentSecurityPolicy, generateNonce, RAZORPAY_CSP_SOURCES, strictCspRoute } from "@/lib/security/csp";
 import { BANNER_DISMISSED_KEY, BANNER_SCRIPT, INLINE_SCRIPTS, inlineScriptHashSources, sha256Source } from "@/lib/security/inline-scripts";
 import { sha256 } from "@/lib/security/sha256";
@@ -34,6 +42,9 @@ function directives(policy: string): Map<string, string[]> {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  setIntegrationRowsLoader(async () => []);
+  setIntegrationEnvForTests(null);
+  setIntegrationKeyForTests(null);
 });
 
 describe("sha256 (edge-safe, synchronous)", () => {
@@ -148,15 +159,19 @@ describe("strictCspRoute", () => {
     }
   });
 
-  it("is covered by the middleware matcher, which leaves the storefront and the device API alone", () => {
+  it("runs in the Node.js runtime on every page, the strict routes and /api/dev, but not other API routes or /_next", () => {
+    expect(config.runtime).toBe("nodejs");
     const matchers = getMiddlewareMatchers(config.matcher, {}).map((m) => new RegExp(m.regexp));
     const matched = (path: string) => matchers.some((re) => re.test(path));
     for (const path of ["/account", "/account/licenses/LIC-1", "/admin", "/admin/staff", "/checkout", "/orders/AX-1", "/sign-in", "/register", "/forgot", "/reset", "/verify", "/invite", "/staff-invite", "/api/dev/storage/x"]) {
       expect(matched(path), path).toBe(true);
     }
-    for (const path of ["/", "/cart", "/pricing", "/software/medical-billing", "/orders", "/api/v1/licenses/validate", "/api/auth/sign-in", "/_next/static/chunks/x.js"]) {
-      expect(matched(path), path).toBe(false);
+    for (const path of ["/", "/cart", "/pricing", "/software/medical-billing", "/orders", "/docs/install"]) {
+      expect(matched(path), path).toBe(true);
       expect(strictCspRoute(path), path).toBeNull();
+    }
+    for (const path of ["/api/v1/licenses/validate", "/api/auth/sign-in", "/_next/static/chunks/x.js", "/_next/image"]) {
+      expect(matched(path), path).toBe(false);
     }
   });
 
@@ -172,9 +187,9 @@ describe("middleware strict CSP", () => {
   /** The request headers middleware hands to the page (NextResponse.next({ request: { headers } })). */
   const forwarded = (res: Response, name: string) => res.headers.get(`x-middleware-request-${name}`);
 
-  it("sends a fresh nonce policy on the response and on the forwarded request, with x-nonce", () => {
-    const a = middleware(request("/account/licenses"));
-    const b = middleware(request("/account/licenses"));
+  it("sends a fresh nonce policy on the response and on the forwarded request, with x-nonce", async () => {
+    const a = await middleware(request("/account/licenses"));
+    const b = await middleware(request("/account/licenses"));
     const policy = a.headers.get("content-security-policy") ?? "";
     const nonce = getScriptNonceFromHeader(policy);
     expect(nonce).toBeTruthy();
@@ -187,33 +202,116 @@ describe("middleware strict CSP", () => {
     expect(policy).not.toContain("razorpay");
   });
 
-  it("allows Razorpay on /checkout and order pages only, and needs no session there", () => {
+  it("allows Razorpay on /checkout and order pages only, and needs no session there", async () => {
     for (const path of ["/checkout", "/orders/AX-10386?t=o1.x"]) {
-      const res = middleware(request(path, ""));
+      const res = await middleware(request(path, ""));
       expect(res.status, path).toBe(200);
       expect(directives(res.headers.get("content-security-policy") ?? "").get("frame-src"), path).toContain("https://api.razorpay.com");
       expect(forwarded(res, "x-axs-path"), path).toBeNull();
     }
-    expect(middleware(request("/sign-in", "")).headers.get("content-security-policy")).not.toContain("razorpay");
+    expect((await middleware(request("/sign-in", ""))).headers.get("content-security-policy")).not.toContain("razorpay");
   });
 
-  it("leaves other paths without a policy of its own (next.config.ts sends the static one)", () => {
-    const res = middleware(request("/"));
-    expect(res.headers.get("content-security-policy")).toBeNull();
+  it("gives every other page the static policy (no nonce), and drops client-sent CSP and nonce request headers", async () => {
+    const req = new NextRequest("http://localhost:3000/", {
+      headers: { "content-security-policy": "script-src 'nonce-forged'", "x-nonce": "forged" },
+    });
+    const res = await middleware(req);
+    const policy = res.headers.get("content-security-policy") ?? "";
+    expect(directives(policy).get("script-src")).toEqual(["'self'", "'unsafe-inline'", "'unsafe-eval'"]); // NODE_ENV=test counts as development
+    expect(getScriptNonceFromHeader(policy)).toBeFalsy();
     expect(forwarded(res, "x-nonce")).toBeNull();
+    expect(forwarded(res, "content-security-policy")).toBeNull();
+    expect(res.headers.get("x-middleware-next")).toBe("1");
   });
 
-  it("redirects a signed-out visitor of /account before minting anything, and adds the upload origin from the environment", async () => {
-    const out = middleware(request("/account/tickets/new", ""));
+  it("redirects a signed-out visitor of /account before minting anything, and leaves /accounting and /administrator alone", async () => {
+    const out = await middleware(request("/account/tickets/new", ""));
     expect(out.status).toBe(307);
     expect(out.headers.get("content-security-policy")).toBeNull();
-    vi.stubEnv("STORAGE_DRIVER", "s3");
-    vi.stubEnv("STORAGE_BUCKET", "axs-files");
-    vi.stubEnv("STORAGE_REGION", "ap-south-1");
-    vi.resetModules();
-    const fresh = (await import("@/middleware")).middleware;
-    const policy = fresh(request("/admin/releases")).headers.get("content-security-policy") ?? "";
-    expect(directives(policy).get("connect-src")).toContain("https://axs-files.s3.ap-south-1.amazonaws.com");
-    expect(directives(policy).get("script-src")).toContain("'unsafe-eval'"); // NODE_ENV=test counts as development
+    expect((await middleware(request("/account.rsc", ""))).status).toBe(307);
+    for (const path of ["/accounting", "/administrator", "/admins"]) {
+      const res = await middleware(request(path, ""));
+      expect(res.status, path).toBe(200);
+      expect(res.headers.get("location"), path).toBeNull();
+      expect(forwarded(res, "x-axs-path"), path).toBeNull();
+    }
+  });
+});
+
+describe("middleware runtime bucket origin (Admin > Settings > Integrations, else the env fallback)", () => {
+  const ikm = Buffer.alloc(32, 7);
+  const request = (path: string, cookie = "axs_session=opaque-token") => new NextRequest(`http://localhost:3000${path}`, { headers: { cookie } });
+  const connectSrc = async (path: string) => directives((await middleware(request(path))).headers.get("content-security-policy") ?? "").get("connect-src") ?? [];
+  const seen: string[][] = [];
+  async function both(): Promise<string[][]> {
+    const out = [await connectSrc("/"), await connectSrc("/pricing"), await connectSrc("/admin/releases"), await connectSrc("/account/tickets/new")];
+    seen.push(...out);
+    return out;
+  }
+  function storageRow(settings: Record<string, unknown>): IntegrationRow {
+    const now = new Date("2026-10-08T08:00:00Z");
+    return {
+      kind: "storage",
+      settings,
+      revision: 1,
+      createdAt: now,
+      updatedAt: now,
+      updatedBy: null,
+      secrets: [{ field: "secretAccessKey", ciphertext: sealIntegrationSecret("storage", "secretAccessKey", "storage-secret-0123456789", ikm), last4: null, updatedAt: now, updatedBy: null }],
+    };
+  }
+  const r2 = { preset: "r2", endpoint: "https://acc123.r2.cloudflarestorage.com", region: "auto", bucket: "axs-files", accessKeyId: "AKIAEXAMPLE", forcePathStyle: true };
+  const aws = { preset: "aws", endpoint: null, region: "ap-south-1", bucket: "axs-files", accessKeyId: "AKIAEXAMPLE", forcePathStyle: false };
+
+  it("adds the saved bucket's exact origin to the static policy and the strict policy", async () => {
+    setIntegrationKeyForTests(ikm);
+    setIntegrationRowsLoader(async () => [storageRow(r2)]);
+    for (const sources of await both()) expect(sources).toContain("https://acc123.r2.cloudflarestorage.com");
+  });
+
+  it("follows a save at once (invalidateIntegrations), without reloading any module", async () => {
+    setIntegrationKeyForTests(ikm);
+    let rows = [storageRow(aws)];
+    setIntegrationRowsLoader(async () => rows);
+    for (const sources of await both()) expect(sources).toContain("https://axs-files.s3.ap-south-1.amazonaws.com");
+    rows = [storageRow(r2)];
+    for (const sources of await both()) expect(sources).toContain("https://axs-files.s3.ap-south-1.amazonaws.com"); // cached
+    invalidateIntegrations();
+    for (const sources of await both()) {
+      expect(sources).toContain("https://acc123.r2.cloudflarestorage.com");
+      expect(sources).not.toContain("https://axs-files.s3.ap-south-1.amazonaws.com");
+    }
+  });
+
+  it("uses the env fallback when nothing is saved, and no origin for the local driver or when storage is not configured", async () => {
+    setIntegrationEnvForTests({
+      NODE_ENV: "test",
+      STORAGE_DRIVER: "s3",
+      STORAGE_BUCKET: "axs-env-files",
+      STORAGE_REGION: "ap-south-1",
+      STORAGE_ACCESS_KEY_ID: "AKIAENVEXAMPLE",
+      STORAGE_SECRET_ACCESS_KEY: "env-storage-secret-0123",
+    });
+    for (const sources of await both()) expect(sources).toContain("https://axs-env-files.s3.ap-south-1.amazonaws.com");
+    setIntegrationEnvForTests({ NODE_ENV: "test", STORAGE_DRIVER: "local" });
+    for (const sources of await both()) expect(sources).toEqual(["'self'", "ws:"]);
+    setIntegrationEnvForTests({ NODE_ENV: "production" });
+    for (const sources of await both()) expect(sources).toEqual(["'self'", "ws:"]);
+  });
+
+  it("sends no origin and never throws when the settings cannot be loaded", async () => {
+    setIntegrationRowsLoader(async () => {
+      throw new Error("database is down");
+    });
+    const res = await middleware(request("/"));
+    expect(res.headers.get("x-middleware-next")).toBe("1");
+    expect(directives(res.headers.get("content-security-policy") ?? "").get("connect-src")).toEqual(["'self'", "ws:"]);
+    expect((await middleware(request("/admin"))).headers.get("content-security-policy")).toContain("connect-src 'self' ws:;");
+  });
+
+  it("never puts a wildcard host in connect-src", () => {
+    expect(seen.length).toBeGreaterThan(0);
+    for (const sources of seen) for (const source of sources) expect(source).not.toContain("*");
   });
 });

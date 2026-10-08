@@ -632,14 +632,16 @@ async function checkWebhooks() {
   const res = await request(`/api/webhooks/payments/${PROVIDER}`, { method: "POST", headers, body });
   const name = `POST /api/webhooks/payments/${PROVIDER} bad signature is 401`;
   if (res.status === 401 && errorCode(res) === "invalid_signature") pass(g, name, describe(res));
-  else if (res.status === 404) fail(g, name, `404: the server's PAYMENT_PROVIDER is not "${PROVIDER}" (or pass --provider ...)`);
+  else if (res.status === 503 && errorCode(res) === "payments_not_configured") {
+    warn(g, name, "payments are not configured yet (Admin > Settings > Integrations)");
+  } else if (res.status === 404) fail(g, name, `404: the server's payment provider is not "${PROVIDER}" (or pass --provider ...)`);
   else if (res.status === 413) fail(g, name, "413: the proxy refuses the body (client_max_body_size)");
   else fail(g, name, `${describe(res)} ${errorCode(res) ?? ""}`.trim());
 
   if (PROVIDER !== "mock") {
     const mock = await request("/api/webhooks/payments/mock", { method: "POST", headers, body });
     if (mock.status === 404) pass(g, "Mock provider webhook is 404", describe(mock));
-    else fail(g, "Mock provider webhook is 404", `${describe(mock)}: PAYMENT_PROVIDER may be mock`);
+    else fail(g, "Mock provider webhook is 404", `${describe(mock)}: the mock payment provider may be active`);
   }
 }
 

@@ -56,12 +56,13 @@ describe("staff model", () => {
     expect(staffStatusKey(null)).toBe("active");
     expect(staffDisplayName(row({ name: "  " }))).toBe("vikram@axiomatic.example");
     expect(["OWNER", "ADMIN", "SUPPORT", "FINANCE"].map((r) => permissionCountLabel(r as never))).toEqual([
-      "22 permissions",
+      "23 permissions",
       "18 permissions",
       "8 permissions",
       "8 permissions",
     ]);
     expect(Object.keys(PERMISSION_LABELS).sort()).toEqual([...PERMISSIONS].sort());
+    expect([PERMISSION_LABELS["settings.manage"], PERMISSION_LABELS["integrations.manage"]]).toEqual(["Business settings", "Payment, email & storage settings"]);
     expect(PERMISSION_ROWS.map((r) => r.key)).toEqual(PERMISSIONS);
   });
 

@@ -56,45 +56,45 @@ describe("middleware", () => {
   const request = (path: string, cookie?: string) =>
     new NextRequest(`http://localhost:3000${path}`, { headers: cookie ? { cookie } : {} });
 
-  it("redirects signed-out visitors of /account and /admin to sign-in with next", () => {
-    const res = middleware(request("/account/licenses?status=active"));
+  it("redirects signed-out visitors of /account and /admin to sign-in with next", async () => {
+    const res = await middleware(request("/account/licenses?status=active"));
     expect(res.status).toBe(307);
     const location = new URL(res.headers.get("location") ?? "");
     expect(location.pathname).toBe("/sign-in");
     expect(location.searchParams.get("next")).toBe("/account/licenses?status=active");
-    expect(new URL(middleware(request("/admin")).headers.get("location") ?? "").searchParams.get("next")).toBe("/admin");
+    expect(new URL((await middleware(request("/admin"))).headers.get("location") ?? "").searchParams.get("next")).toBe("/admin");
   });
 
-  it("lets requests with the session cookie through (the server still authorizes)", () => {
-    const res = middleware(request("/account", `${SESSION_COOKIE}=opaque-token`));
+  it("lets requests with the session cookie through (the server still authorizes)", async () => {
+    const res = await middleware(request("/account", `${SESSION_COOKIE}=opaque-token`));
     expect(res.headers.get("location")).toBeNull();
     expect(res.headers.get("x-middleware-next")).toBe("1");
   });
 
-  it("redirects to APP_URL's origin, never the internal URL next start hands middleware behind the proxy", () => {
+  it("redirects to APP_URL's origin, never the internal URL next start hands middleware behind the proxy", async () => {
     // Production: `next start -H 127.0.0.1` behind aaPanel Nginx gives middleware http(s)://localhost:<port>/... and
     // Next.js forwards an absolute Location whose origin differs from 127.0.0.1 as it is (docs/decisions.md Phase 7).
     vi.stubEnv("APP_URL", "https://axiomaticsoftwaresolutions.com");
     try {
-      expect(middleware(request("/account")).headers.get("location")).toBe("https://axiomaticsoftwaresolutions.com/sign-in?next=%2Faccount");
+      expect((await middleware(request("/account"))).headers.get("location")).toBe("https://axiomaticsoftwaresolutions.com/sign-in?next=%2Faccount");
       const internal = new NextRequest("https://localhost:3197/admin/orders?status=review", {
         headers: { host: "evil.example", "x-forwarded-host": "evil.example", "x-forwarded-proto": "https" },
       });
-      expect(middleware(internal).headers.get("location")).toBe(
+      expect((await middleware(internal)).headers.get("location")).toBe(
         "https://axiomaticsoftwaresolutions.com/sign-in?next=%2Fadmin%2Forders%3Fstatus%3Dreview",
       );
       vi.stubEnv("APP_URL", "https://axiomaticsoftwaresolutions.com/");
-      expect(new URL(middleware(request("/account/licenses")).headers.get("location") ?? "").origin).toBe("https://axiomaticsoftwaresolutions.com");
+      expect(new URL((await middleware(request("/account/licenses"))).headers.get("location") ?? "").origin).toBe("https://axiomaticsoftwaresolutions.com");
       // Without a usable APP_URL (unit tests, a broken env that lib/env.ts reports) the request's own origin is used.
       vi.stubEnv("APP_URL", "not a url");
-      expect(middleware(request("/account")).headers.get("location")).toBe("http://localhost:3000/sign-in?next=%2Faccount");
+      expect((await middleware(request("/account"))).headers.get("location")).toBe("http://localhost:3000/sign-in?next=%2Faccount");
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
-  it("treats an empty session cookie as signed out", () => {
-    expect(middleware(request("/account", `${SESSION_COOKIE}=`)).status).toBe(307);
+  it("treats an empty session cookie as signed out", async () => {
+    expect((await middleware(request("/account", `${SESSION_COOKIE}=`))).status).toBe(307);
   });
 
   it("matches the signed-in areas and the development API (plus the strict-CSP pages, tests/unit/security-csp.test.ts)", () => {
@@ -102,17 +102,17 @@ describe("middleware", () => {
   });
 
   it("answers 404 for every development API request in production, and passes it through in development", async () => {
-    expect(middleware(request("/api/dev/mock-checkout")).headers.get("x-middleware-next")).toBe("1");
+    expect((await middleware(request("/api/dev/mock-checkout"))).headers.get("x-middleware-next")).toBe("1");
     vi.stubEnv("NODE_ENV", "production");
     try {
       for (const path of ["/api/dev/mock-checkout", "/api/dev/mock-checkout/bank", "/api/dev"]) {
-        const res = middleware(request(path, `${SESSION_COOKIE}=opaque-token`));
+        const res = await middleware(request(path, `${SESSION_COOKIE}=opaque-token`));
         expect(res.status).toBe(404);
         expect(res.headers.get("cache-control")).toBe("no-store");
         expect(await res.json()).toEqual({ error: { code: "not_found", message: "Not found." } });
       }
       // The signed-in areas are unaffected.
-      expect(middleware(request("/account")).status).toBe(307);
+      expect((await middleware(request("/account"))).status).toBe(307);
     } finally {
       vi.unstubAllEnvs();
     }

@@ -1,6 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { changedKeys, draftErrors, firstFieldErrors, patchFromDraft, toDraft } from "@/components/admin/settings/settings-form-model";
-import { integrationStatuses } from "@/lib/admin/settings/integrations";
+import { integrationsData, redisState, type IntegrationViewEnv } from "@/lib/admin/settings/integrations";
+import { integrationProblem, type IntegrationState } from "@/lib/admin/settings/integrations-model";
+import { sealIntegrationSecret } from "@/lib/integrations/crypto";
+import type { IntegrationKind } from "@/lib/integrations/model";
+import { getIntegrationSnapshot, setIntegrationEnvForTests, setIntegrationKeyForTests, setIntegrationRowsLoader } from "@/lib/integrations/resolver";
+import type { IntegrationRow } from "@/lib/integrations/types";
 import {
   diffSection,
   formatSettingValue,
@@ -79,40 +84,192 @@ describe("settings form model", () => {
   });
 });
 
-describe("integration statuses", () => {
-  const base = {
-    NODE_ENV: "production" as const,
-    PAYMENT_PROVIDER: "razorpay" as const,
-    PAYMENT_KEY_ID: "rzp_live_SECRETKEYID",
+describe("integration views (Admin > Settings > Integrations)", () => {
+  const live = {
+    NODE_ENV: "production",
+    PAYMENT_PROVIDER: "razorpay",
+    PAYMENT_KEY_ID: "rzp_live_SECRETKEYID01",
     PAYMENT_KEY_SECRET: "shh-very-secret",
     PAYMENT_WEBHOOK_SECRET: "whsec-1234567890",
-    STORAGE_DRIVER: "s3" as const,
+    STORAGE_DRIVER: "s3",
     STORAGE_BUCKET: "axiomatic-installers",
     STORAGE_REGION: "ap-south-1",
-    STORAGE_ENDPOINT: undefined,
     STORAGE_ACCESS_KEY_ID: "AKIA-EXAMPLE",
     STORAGE_SECRET_ACCESS_KEY: "storage-secret",
-    EMAIL_TRANSPORT: "smtp" as const,
+    EMAIL_TRANSPORT: "smtp",
     EMAIL_FROM: "Axiomatic <no-reply@axiomatic.example>",
     SMTP_HOST: "smtp.example.net",
-    REDIS_URL: undefined,
+    SMTP_USER: "mailer",
+    SMTP_PASSWORD: "smtp-password-1",
   };
+  const ENV_SECRETS = [live.PAYMENT_KEY_SECRET, live.PAYMENT_WEBHOOK_SECRET, live.STORAGE_SECRET_ACCESS_KEY, live.SMTP_PASSWORD];
+  const ikm = Buffer.alloc(32, 7);
+  const AT = new Date("2026-10-08T08:00:00Z");
+  const appEnv = (env: Record<string, string | undefined>, redis?: string): IntegrationViewEnv => ({
+    NODE_ENV: env.NODE_ENV === "production" ? "production" : "development",
+    REDIS_URL: redis,
+    APP_URL: "https://shop.axiomatic.example",
+  });
 
-  it("reports configured / missing / development and the payment mode, never a value", () => {
-    const live = integrationStatuses(base);
-    expect(live.map((i) => [i.id, i.provider, i.status, i.mode ?? null])).toEqual([
-      ["payments", "Razorpay", "configured", "live"],
-      ["storage", "S3-compatible bucket", "configured", null],
-      ["email", "SMTP", "configured", null],
-      ["redis", "Database buckets", "missing", null],
+  function row(kind: IntegrationKind, settings: Record<string, unknown>, secrets: Record<string, string>): IntegrationRow {
+    return {
+      kind,
+      settings,
+      revision: 3,
+      createdAt: AT,
+      updatedAt: AT,
+      updatedBy: { id: "u1", name: "Asha Rao" },
+      secrets: Object.entries(secrets).map(([field, value]) => ({
+        field,
+        ciphertext: sealIntegrationSecret(kind, field, value, ikm),
+        last4: value.length >= 16 ? value.slice(-4) : null,
+        updatedAt: AT,
+        updatedBy: { id: "u1", name: "Asha Rao" },
+      })),
+    };
+  }
+
+  beforeEach(() => setIntegrationKeyForTests(ikm));
+  afterEach(() => {
+    setIntegrationEnvForTests(null);
+    setIntegrationKeyForTests(null);
+    setIntegrationRowsLoader(async () => []);
+  });
+
+  async function views(env: Record<string, string | undefined>, opts: { canManage: boolean; rows?: IntegrationRow[]; redis?: string }) {
+    setIntegrationEnvForTests(env);
+    setIntegrationRowsLoader(async () => opts.rows ?? []);
+    const snapshot = await getIntegrationSnapshot({ fresh: true });
+    return integrationsData(snapshot, { canManage: opts.canManage, env: appEnv(env, opts.redis), lastSignedWebhookAt: null });
+  }
+  const byId = (items: IntegrationState[], id: string) => items.find((i) => i.id === id) as IntegrationState;
+
+  it("status only: source, provider, mode and env NAMES, never a value, a form or a hint", async () => {
+    const data = await views(live, { canManage: false });
+    expect(data.canManage).toBe(false);
+    expect(data.items.map((i) => [i.id, i.source, i.provider, i.mode, i.problem, i.development])).toEqual([
+      ["payments", "env", "Razorpay", "live", null, false],
+      ["storage", "env", "S3-compatible bucket", null, null, false],
+      ["email", "env", "SMTP", null, null, false],
     ]);
-    const text = JSON.stringify(live);
-    for (const value of [base.PAYMENT_KEY_ID, base.PAYMENT_KEY_SECRET, base.STORAGE_BUCKET, base.STORAGE_SECRET_ACCESS_KEY, base.SMTP_HOST, base.EMAIL_FROM, "ap-south-1"]) {
+    expect(data.items.every((i) => i.form === null && i.saved === null)).toBe(true);
+    expect(byId(data.items, "payments").envNames).toEqual(["PAYMENT_PROVIDER", "PAYMENT_KEY_ID", "PAYMENT_KEY_SECRET", "PAYMENT_WEBHOOK_SECRET"]);
+    const text = JSON.stringify(data);
+    for (const value of [...ENV_SECRETS, live.PAYMENT_KEY_ID, live.STORAGE_BUCKET, live.SMTP_HOST, live.EMAIL_FROM, live.SMTP_USER, "ap-south-1", "no-reply@"]) {
       expect(text.includes(value), value).toBe(false);
     }
-    const dev = integrationStatuses({ ...base, NODE_ENV: "development", PAYMENT_PROVIDER: "mock", STORAGE_DRIVER: "local", EMAIL_TRANSPORT: "console", PAYMENT_KEY_ID: "rzp_test_x" });
-    expect(dev.map((i) => [i.status, i.mode ?? null])).toEqual([["development", "test"], ["development", null], ["development", null], ["development", null]]);
-    const missing = integrationStatuses({ ...base, PAYMENT_KEY_SECRET: undefined, STORAGE_ACCESS_KEY_ID: undefined, SMTP_HOST: undefined, REDIS_URL: "redis://cache:6379" });
-    expect(missing.map((i) => i.status)).toEqual(["missing", "missing", "missing", "configured"]);
+    expect(data.redis).toEqual(redisState({ NODE_ENV: "production", REDIS_URL: undefined }));
+    expect([data.redis.status, data.redis.provider, data.redis.note]).toEqual(["missing", "Database buckets", "Set on the server: a wrong value here would block every sign-in."]);
+  });
+
+  it("Owner form from the server file: non-secret values prefilled, secrets never described beyond the source", async () => {
+    const data = await views(live, { canManage: true });
+    const payments = byId(data.items, "payments");
+    expect(payments.form).toEqual({
+      kind: "payments",
+      prefilledFrom: "env",
+      values: { keyId: live.PAYMENT_KEY_ID },
+      secrets: { keySecret: { set: false, last4: null, updatedAt: null, updatedBy: null }, webhookSecret: { set: false, last4: null, updatedAt: null, updatedBy: null } },
+      webhookUrl: "https://shop.axiomatic.example/api/webhooks/payments/razorpay",
+      lastSignedWebhookAt: null,
+    });
+    expect(byId(data.items, "email").form?.values).toEqual({ host: "smtp.example.net", port: 587, security: "starttls", username: "mailer", fromName: "Axiomatic", fromAddress: "no-reply@axiomatic.example" });
+    expect(byId(data.items, "storage").form?.values).toEqual({ preset: "aws", endpoint: "", region: "ap-south-1", bucket: "axiomatic-installers", accessKeyId: "AKIA-EXAMPLE", forcePathStyle: false });
+    const text = JSON.stringify(data);
+    for (const secret of ENV_SECRETS) expect(text.includes(secret), secret).toBe(false);
+  });
+
+  it("shows the release-day stand-ins as not configured and leaves them out of the form", async () => {
+    // The values on the live test site (docs/server-runbook.md 5.1).
+    const standIns = {
+      ...live,
+      PAYMENT_KEY_ID: "rzp_test_pending",
+      PAYMENT_KEY_SECRET: "pending-razorpay-secret",
+      SMTP_HOST: "smtp-pending.invalid",
+      SMTP_USER: "pending",
+      SMTP_PASSWORD: "pending",
+      STORAGE_ENDPOINT: "https://r2-pending.invalid",
+      STORAGE_BUCKET: "axiomatic-files-pending",
+      STORAGE_ACCESS_KEY_ID: "pending-r2",
+      STORAGE_SECRET_ACCESS_KEY: "pending-r2-secret",
+      STORAGE_REGION: "auto",
+      STORAGE_FORCE_PATH_STYLE: "true",
+    };
+    const data = await views(standIns, { canManage: true });
+    expect(data.items.map((i) => [i.source, i.provider, i.mode, i.problem])).toEqual([
+      ["none", "Not set", null, "The server file has values that can’t work (PAYMENT_KEY_ID). Enter the details here."],
+      ["none", "Not set", null, "The server file has values that can’t work (STORAGE_ENDPOINT). Enter the details here."],
+      ["none", "Not set", null, "The server file has values that can’t work (SMTP_HOST). Enter the details here."],
+    ]);
+    expect(byId(data.items, "payments").form?.values).toEqual({ keyId: "" });
+    // Only provider-shaped choices and the sender survive; no stand-in username, bucket or access key ID.
+    expect(byId(data.items, "email").form?.values).toMatchObject({ host: "", username: "", fromName: "Axiomatic", fromAddress: "no-reply@axiomatic.example" });
+    expect(byId(data.items, "storage").form?.values).toEqual({ preset: "r2", endpoint: "", region: "auto", bucket: "", accessKeyId: "", forcePathStyle: true });
+    expect(JSON.stringify(data)).not.toContain(".invalid");
+    expect(JSON.stringify(data)).not.toContain("pending");
+    const statusOnly = await views(standIns, { canManage: false });
+    expect(byId(statusOnly.items, "payments").problem).toBe("The server file has values that can’t work (PAYMENT_KEY_ID).");
+    const none = await views({ NODE_ENV: "production" }, { canManage: true });
+    expect(none.items.map((i) => i.problem)).toEqual(["Not set up yet.", "Not set up yet.", "Not set up yet."]);
+    expect(none.items.map((i) => i.form?.prefilledFrom)).toEqual(["defaults", "defaults", "defaults"]);
+    expect(byId(none.items, "storage").form?.values).toEqual({ preset: "aws", endpoint: "", region: "ap-south-1", bucket: "", accessKeyId: "", forcePathStyle: false });
+  });
+
+  it("marks the development drivers", async () => {
+    const dev = await views({ NODE_ENV: "development", PAYMENT_KEY_SECRET: "dev-secret-123", PAYMENT_WEBHOOK_SECRET: "dev-webhook-secret-123" }, { canManage: true, redis: "redis://cache:6379" });
+    expect(dev.items.map((i) => [i.provider, i.development, i.mode])).toEqual([
+      ["Mock provider", true, "test"],
+      ["Local disk", true, null],
+      ["Console (dev mailbox)", true, null],
+    ]);
+    expect(dev.redis.status).toBe("configured");
+  });
+
+  it("Admin rows win as a whole: hints with the last 4 of long secrets, who and when, never a value", async () => {
+    const KEY_SECRET = "admin-key-secret-0001";
+    const WEBHOOK_SECRET = "admin-webhook-secret-0002";
+    const SMTP_PASSWORD = "short-pass";
+    const rows = [
+      row("payments", { provider: "razorpay", keyId: "rzp_test_AdminKey0001" }, { keySecret: KEY_SECRET, webhookSecret: WEBHOOK_SECRET }),
+      row("email", { host: "smtp.mailer.example", port: 465, security: "tls", username: "mailer", fromName: "Axiomatic", fromAddress: "no-reply@axiomatic.example" }, { password: SMTP_PASSWORD }),
+    ];
+    const data = await views(live, { canManage: true, rows });
+    const payments = byId(data.items, "payments");
+    expect([payments.source, payments.mode, payments.saved]).toEqual(["admin", "test", { revision: 3, updatedAt: AT.toISOString(), updatedBy: "Asha Rao" }]);
+    expect(payments.form).toMatchObject({
+      prefilledFrom: "admin",
+      values: { keyId: "rzp_test_AdminKey0001" },
+      secrets: {
+        keySecret: { set: true, last4: "0001", updatedAt: AT.toISOString(), updatedBy: "Asha Rao" },
+        webhookSecret: { set: true, last4: "0002", updatedAt: AT.toISOString(), updatedBy: "Asha Rao" },
+      },
+    });
+    const email = byId(data.items, "email");
+    expect(email.form?.secrets).toEqual({ password: { set: true, last4: null, updatedAt: AT.toISOString(), updatedBy: "Asha Rao" } });
+    expect(email.form?.values).toMatchObject({ host: "smtp.mailer.example", port: 465, security: "tls" });
+    // Storage has no row: the env file still decides there.
+    expect(byId(data.items, "storage").source).toBe("env");
+    const text = JSON.stringify(data);
+    for (const secret of [KEY_SECRET, WEBHOOK_SECRET, SMTP_PASSWORD, ...ENV_SECRETS]) expect(text.includes(secret), secret).toBe(false);
+    for (const r of rows) for (const s of r.secrets) expect(text.includes(s.ciphertext)).toBe(false);
+  });
+
+  it("explains a cleared or unreadable Admin secret without falling back to the server file", async () => {
+    const cleared = [row("payments", { provider: "razorpay", keyId: "rzp_test_AdminKey0001" }, { keySecret: "admin-key-secret-0001" })];
+    const owner = await views(live, { canManage: true, rows: cleared });
+    expect(byId(owner.items, "payments")).toMatchObject({ source: "none", mode: null, problem: "Webhook secret was cleared. Enter a new one to turn this back on." });
+    const other = await views(live, { canManage: false, rows: cleared });
+    expect(byId(other.items, "payments").problem).toBe("Webhook secret was cleared.");
+    const foreign = row("payments", { provider: "razorpay", keyId: "rzp_test_AdminKey0001" }, { keySecret: "admin-key-secret-0001", webhookSecret: "admin-webhook-secret-0002" });
+    setIntegrationKeyForTests(Buffer.alloc(32, 9));
+    setIntegrationEnvForTests(live);
+    setIntegrationRowsLoader(async () => [foreign]);
+    const unreadable = integrationsData(await getIntegrationSnapshot({ fresh: true }), { canManage: true, env: appEnv(live) });
+    expect(byId(unreadable.items, "payments").problem).toBe("Saved secrets can’t be read (the server key changed?). Enter them again.");
+    expect(integrationProblem("payments", "admin_incomplete", ["keySecret", "webhookSecret"], { canManage: true })).toBe(
+      "Key secret and Webhook secret were cleared. Enter new ones to turn this back on.",
+    );
+    expect(integrationProblem("storage", "admin_invalid", ["endpoint"], { canManage: true })).toBe("The saved settings can’t be used here: Endpoint.");
+    expect(integrationProblem("email", "env_incomplete", ["SMTP_HOST", "EMAIL_FROM"], { canManage: false })).toBe("The server file is missing SMTP_HOST, EMAIL_FROM.");
   });
 });

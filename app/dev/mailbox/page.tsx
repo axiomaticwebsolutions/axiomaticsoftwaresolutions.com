@@ -10,7 +10,7 @@ import { Card } from "@/components/ui/card";
 import { formatDateTimeIST } from "@/lib/dates";
 import { db } from "@/lib/db";
 import { DEV_MAILBOX_LIMIT, listDevMail, type DevMail } from "@/lib/email/dev-mailbox";
-import { getEnv } from "@/lib/env";
+import { resolveEmail } from "@/lib/integrations/resolver";
 import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -33,9 +33,11 @@ async function outboxCounts(): Promise<OutboxCounts | null> {
   }
 }
 
-function transportName(): string | null {
+/** The effective email transport (Admin-saved SMTP or the env fallback; lib/integrations/resolver.ts). */
+async function transportName(): Promise<string | null> {
   try {
-    return getEnv().EMAIL_TRANSPORT;
+    const email = await resolveEmail();
+    return email.source === "none" ? null : email.config.transport;
   } catch {
     return null;
   }
@@ -128,7 +130,7 @@ export default async function DevMailboxPage({
   const requested = typeof params.id === "string" ? params.id : undefined;
   const messages = listDevMail();
   const selected = messages.find((m) => m.id === requested) ?? messages[0];
-  const [counts, transport] = [await outboxCounts(), transportName()];
+  const [counts, transport] = await Promise.all([outboxCounts(), transportName()]);
 
   return (
     <main id="main" className="mx-auto grid max-w-admin gap-8 overflow-x-clip px-4 py-10 sm:px-6">
@@ -165,7 +167,7 @@ export default async function DevMailboxPage({
       {transport === "smtp" ? (
         <Alert tone="info" role="note">
           <AlertTitle>Emails are going out through SMTP</AlertTitle>
-          <AlertDescription>EMAIL_TRANSPORT is smtp, so new messages are delivered and not kept here.</AlertDescription>
+          <AlertDescription>An SMTP configuration is active, so new messages are delivered and not kept here.</AlertDescription>
         </Alert>
       ) : null}
 

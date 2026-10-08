@@ -99,7 +99,7 @@ export async function loadOrderPageData(
       canReveal: teamCan(viewer.role, "keys.reveal"),
       canAct: access.canAct,
     },
-    devBankControls: mockCheckoutEnabled(),
+    devBankControls: await mockCheckoutEnabled(),
     downloadLinkMinutes: linkMinutes(downloadTtlSeconds(settings)),
     releases,
   };

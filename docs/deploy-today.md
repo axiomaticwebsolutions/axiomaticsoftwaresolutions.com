@@ -111,7 +111,9 @@ to add: SPF and DKIM). Use port **587** (STARTTLS, which the app requires in pro
   the 3 CNAME records. SMTP settings > Create SMTP credentials (these are not your AWS access keys). A new account is
   in the **sandbox** and only sends to verified addresses: verify your own address(es) for today and request
   production access for real customers.
-- The sender (`EMAIL_FROM`) must use the verified domain, e.g. `Axiomatic Software <no-reply@<domain>>`.
+- The sender (From address) must use the verified domain, e.g. `Axiomatic Software <no-reply@<domain>>`.
+- Keep the host, port, username, password and From address in your password manager. You enter them in **Admin >
+  Settings > Integrations > Email delivery** after the first sign-in (step 9), not in the server file.
 - Check that the server can reach the SMTP port (many hosts block port 25; 587 is usually open):
 
   ```bash
@@ -153,28 +155,29 @@ with links that expire within 10 minutes; the bucket itself must never be public
    ```
 
    (`ListBucket` only makes a missing file answer "not found" instead of "access denied".) Then Security credentials >
-   Create access key > "Application running outside AWS". Keep the key ID and secret for step 4.
-4. Values: `STORAGE_ENDPOINT=https://s3.ap-south-1.amazonaws.com`, `STORAGE_REGION=ap-south-1`,
-   `STORAGE_FORCE_PATH_STYLE=false`.
+   Create access key > "Application running outside AWS". Keep the key ID and secret for step 9.
+4. In Admin (step 9) choose the provider **AWS S3**: endpoint empty (or `https://s3.ap-south-1.amazonaws.com`), region
+   `ap-south-1`, path-style URLs off.
 
 **B) Cloudflare R2**
 1. R2 > Create bucket (location hint Asia-Pacific). Leave public access **off**: no `r2.dev` URL, no custom domain.
 2. Bucket > Settings > CORS policy > Add: the same JSON as in A) step 2.
 3. R2 > Manage R2 API Tokens > Create API token: permission **Object Read & Write**, "Apply to specific buckets
    only" = this bucket. Keep the Access Key ID, Secret Access Key and the S3 endpoint it shows.
-4. Values: `STORAGE_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, `STORAGE_REGION=auto`,
-   `STORAGE_FORCE_PATH_STYLE=true`.
+4. In Admin (step 9) choose **Cloudflare R2**: endpoint `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, region
+   `auto`, path-style URLs on.
 
 **C) DigitalOcean Spaces, Bangalore (`blr1`)**
 1. Spaces Object Storage > Create bucket in BLR1; file listing **restricted**; CDN off.
 2. Bucket > Settings > CORS Configurations > Add: origin `https://<domain>`, methods PUT, GET, HEAD, allowed header
    `content-type`, max age 3000.
 3. API > Spaces Keys > create a key with **limited access** (read/write/delete) to this bucket only.
-4. Values: `STORAGE_ENDPOINT=https://blr1.digitaloceanspaces.com`, `STORAGE_REGION=blr1`,
-   `STORAGE_FORCE_PATH_STYLE=false`.
+4. In Admin (step 9) choose **DigitalOcean Spaces**: endpoint `https://blr1.digitaloceanspaces.com`, region `blr1`,
+   path-style URLs off.
 
-The bucket address is built into the site's Content-Security-Policy by the build. **If you change the bucket, the
-endpoint or the path style later, deploy again** (step 12.1), or browser uploads are blocked.
+You enter the bucket in **Admin > Settings > Integrations > Installer storage** (step 9). The site's
+Content-Security-Policy follows the saved bucket at runtime: no deploy or restart is needed when you change it later.
+The Settings page reloads itself after a storage change; other browser tabs opened before it need a reload.
 
 ### 0.6 Razorpay TEST keys
 1. Razorpay Dashboard > switch to **Test Mode** (top bar).
@@ -182,7 +185,9 @@ endpoint or the path style later, deploy again** (step 12.1), or browser uploads
    (shown once) into your password manager.
 3. Account & Settings > Payment capture: **automatic** (the default for new accounts). With manual capture, payments
    stay "authorized" and orders never complete.
-4. The webhook secret is generated for you in step 4; you paste it into Razorpay in step 8.
+4. Choose a webhook secret (at least 16 characters, e.g. `openssl rand -hex 24`) and keep it in your password manager.
+   You enter the Key Id, the Key Secret and this webhook secret in **Admin > Settings > Integrations > Payment
+   provider** (step 9) and the same webhook secret in Razorpay (step 8).
 
 ### 0.7 On your Windows PC
 - The project folder (`E:\Developer\Axiomatc Web Solutions Pvt. Ltd\Axiomatic Software Solutions\axiomaticsoftwaresolutions.com`)
@@ -380,8 +385,9 @@ sudo -iu axiomatic node /www/wwwroot/axiomaticsoftwaresolutions.com/scripts/gen-
 ```
 
 It fills in fresh random values for the session, CSRF, order-link and cron secrets, the license key pepper and
-encryption key, the Ed25519 license signing key pair, the Razorpay webhook secret, the first Owner's password and the
-PostgreSQL and Redis passwords. It prints names, never values, and refuses to overwrite an existing file.
+encryption key, the Ed25519 license signing key pair, the first Owner's password and the PostgreSQL and Redis
+passwords. It prints names, never values, and refuses to overwrite an existing file. Razorpay, email and storage are
+not in it: you save them in Admin > Settings > Integrations (step 9); the file only carries a commented-out fallback.
 **Never run it with `--force` once the site has issued a license:** new license secrets make every issued key
 unverifiable.
 
@@ -392,19 +398,14 @@ Open the file: aaPanel > Files > `/www/wwwroot/axiomatic/shared/` > `.env.produc
 | Variable | Value | Where it comes from |
 |---|---|---|
 | `APP_URL` | `https://<domain>` | Your domain: https, no `www.`, no trailing slash |
-| `PAYMENT_KEY_ID` | `rzp_test_...` | Razorpay, Test Mode > API Keys (step 0.6) |
-| `PAYMENT_KEY_SECRET` | the Key Secret | Same place (shown once when generated) |
-| `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_FORCE_PATH_STYLE` | as listed for your provider | Step 0.5, item 4 (the file has AWS Mumbai filled in) |
-| `STORAGE_BUCKET` | the bucket name | Step 0.5, item 1 |
-| `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | the bucket key | Step 0.5, item 3 (the least-privilege key) |
-| `EMAIL_FROM` | `"Axiomatic Software <no-reply@<domain>>"` (keep the quotes) | A sender on the domain you verified (step 0.4) |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` | host, `587`, user name, password | The table in step 0.4 |
 | `BOOTSTRAP_OWNER_EMAIL` | your email address | The first Owner; it receives password resets (and sign-in codes once you turn two-step on), so use a mailbox you read |
 | `BOOTSTRAP_OWNER_NAME` (optional) | `"Your Name"` | Remove the `#` in front to use it |
 
-Leave every generated value, `TRUSTED_PROXY_HOPS=1`, `PAYMENT_PROVIDER=razorpay`, `STORAGE_DRIVER=s3`,
-`EMAIL_TRANSPORT=smtp` and `CATALOG_SOURCE=db` as they are. Wrap a value that contains spaces or `#` in double
-quotes, and write a `$` inside a value as `\$` (or pick passwords without `$`). Then, in the aaPanel Terminal:
+Leave every generated value, `TRUSTED_PROXY_HOPS=1` and `CATALOG_SOURCE=db` as they are, and leave the `PAYMENT_*`,
+`STORAGE_*`, `EMAIL_*` and `SMTP_*` block commented out: what you save in Admin wins over it anyway, and production
+starts without it (each integration shows "Not configured" until you save it). Wrap a value that contains spaces or
+`#` in double quotes, and write a `$` inside a value as `\$` (or pick passwords without `$`). Then, in the aaPanel
+Terminal:
 
 ```bash
 F=/www/wwwroot/axiomatic/shared/.env.production
@@ -592,15 +593,11 @@ instead. Never leave it out: root must not run files the app user can change (th
 Razorpay tells the site about payments through a webhook; licenses are issued only after it arrives (reconcile every
 10 minutes is the safety net).
 
-1. Show the webhook secret that step 4 generated, to copy it (it is on your screen only):
-
-   ```bash
-   grep '^PAYMENT_WEBHOOK_SECRET=' /www/wwwroot/axiomatic/shared/.env.production | cut -d= -f2-
-   ```
-
+1. Take the webhook secret you chose in step 0.6 (item 4) from your password manager. The same value goes into Admin >
+   Settings > Integrations > Payment provider > Webhook secret (step 9), which also shows the exact webhook URL.
 2. Razorpay Dashboard, **Test Mode** on > Account & Settings > **Webhooks** > Add new webhook:
    - Webhook URL: `https://<domain>/api/webhooks/payments/razorpay`
-   - Secret: paste the value from 1 (exactly; no spaces). Then run `clear` in the Terminal.
+   - Secret: paste the value from 1 (exactly; no spaces).
    - Alert email: a mailbox you read.
    - Active events: **`payment.captured`**, **`payment.failed`**, **`refund.processed`**, **`refund.failed`**,
      **`order.paid`**. Nothing else. `refund.failed` matters: when Razorpay cannot complete a refund, the order goes
@@ -610,8 +607,9 @@ Razorpay tells the site about payments through a webhook; licenses are issued on
 3. Webhooks in Test Mode and Live Mode are separate. Before live sales you add a new one in Live Mode with a new secret
    (`go-live-checklist.md`).
 
-If you ever change `PAYMENT_WEBHOOK_SECRET`, change it in Razorpay too and run
-`sudo -iu axiomatic bash /www/wwwroot/axiomatic/current/deploy/restart.sh`.
+Until the Razorpay keys and this secret are saved in Admin, the webhook answers 503 and Razorpay retries later, so no
+event is lost. If you ever change the webhook secret, save the new one in Admin (Replace, then Save) and in Razorpay at
+the same time; no restart is needed.
 
 ---
 
@@ -636,16 +634,25 @@ If you ever change `PAYMENT_WEBHOOK_SECRET`, change it in Razorpay too and run
      mailboxes you read). Keep **sample** switched on today: invoices then say they are not valid tax invoices.
    - **Tax:** GST rate 18 %, SAC 997331, invoice prefix `AXS` and credit-note prefix `AXC` (1 to 3 characters; to be
      confirmed with your CA before live sales; the next numbers are read-only).
-   - **Integrations** shows payments (Razorpay, **test** mode), storage, email and Redis as configured. It never shows
-     secret values.
+   - **Integrations** (each save asks for your password again; secrets are encrypted and never shown again, only
+     "Set (ends 1a2b)"):
+     - **Payment provider:** Key ID (`rzp_test_...`), Key secret (step 0.6) and the webhook secret (step 8) > Save >
+       the card shows "Saved in Admin" and **Test mode** > **Test Razorpay keys** must say the keys were accepted.
+     - **Installer storage:** pick the provider (it fills in endpoint, region and path style; check them against step
+       0.5, item 4), then bucket, access key ID and secret access key > Save > **Test bucket**: upload, read and delete
+       must each say OK.
+     - **Email delivery:** SMTP host, port 587 with STARTTLS (or 465 with TLS), username, password, From name and From
+       address on your verified domain (step 0.4) > Save > **Send test email** goes to your own address; check it
+       arrived (and the spam folder).
+     - **Rate limits** is read-only (Redis, set in the server file).
+     A card that says "Not configured" names what is missing. Nothing needs a restart or a deploy.
 4. **Admin > Releases:** the bootstrap created one **draft** release per product, without files. For each product
    you want to test: open the draft > upload the installer (any test build is fine today) > wait for the upload and
    the server's SHA-256 check > **Publish**. Customers can only download published releases.
    If the upload stops at once and the browser console (F12) shows a Content-Security-Policy `connect-src` error, the
-   bucket's origin in the build does not match `STORAGE_*` (every page allows the bucket the build was made with):
-   check `STORAGE_ENDPOINT` / `STORAGE_BUCKET` / `STORAGE_REGION` in `shared/.env.production`, then run `deploy.sh`
-   again with the same source (step 12.1). A CORS error instead means the bucket's CORS rule (step 0.5) is missing
-   `https://<domain>` or `PUT`.
+   page was opened before the bucket was saved: reload it. Still blocked? Check the bucket, endpoint and path style in
+   Admin > Settings > Integrations > Installer storage ("Test bucket"). A CORS error instead means the bucket's CORS
+   rule (step 0.5) is missing `https://<domain>` or `PUT`.
 5. **Admin > Content & FAQs:** the sample notice strip stays **on** for the test release.
 6. Optional: Admin > Staff & roles > invite a second Owner or Administrator, so one lost mailbox cannot lock you out.
 
@@ -667,7 +674,8 @@ $LASTEXITCODE        # 0 = no failures
 
 It prints a table of PASS / FAIL / WARN / SKIP rows and ends with "Result: OK" or "Result: FAILED". Each FAIL row says
 what to fix; `go-live-checklist.md` says how to check each item by hand. WARN rows are advice (for example an
-AAAA record or a `www` name that does not redirect). Run it again after every deploy.
+AAAA record or a `www` name that does not redirect, or "payments are not configured yet" while the Razorpay keys are not
+saved in Admin > Settings > Integrations). Run it again after every deploy.
 
 The same script works on the server before the website exists (it skips TLS, DNS and www there):
 `cd /www/wwwroot/axiomatic/current && node scripts/smoke-prod.mjs --base http://127.0.0.1:3000 --allow-http --app-url https://<domain>`.
@@ -749,10 +757,21 @@ Use a private browser window and an email address that is **not** the Owner's (f
    `sudo -iu axiomatic bash -lc 'cd /www/wwwroot/axiomatic/current && NODE_ENV=production node --import tsx scripts/bootstrap-production.ts --update-catalog --dry-run'`,
    read the plan, then run it again without `--dry-run` (it overwrites admin edits to catalog copy and prices).
 
-**Changed only a setting** in `shared/.env.production` (keys, SMTP, Razorpay)? Restart instead of deploying:
-`sudo -iu axiomatic bash /www/wwwroot/axiomatic/current/deploy/restart.sh`. A change to `APP_URL` or any
-`STORAGE_*` value needs a deploy (item 3 above; the same code is fine): the build bakes them into the pages and the
-Content-Security-Policy.
+**Changed Razorpay, email or storage?** Save it in Admin > Settings > Integrations: it applies at once, no restart or
+deploy (other PM2 processes follow within 30 seconds; after a storage change the Settings page reloads itself, other
+open browser tabs need a reload). Changing the SMTP server or the storage endpoint asks for the saved password or
+secret key again.
+**Changed only a setting** in `shared/.env.production`? Restart instead of deploying:
+`sudo -iu axiomatic bash /www/wwwroot/axiomatic/current/deploy/restart.sh` (that includes the `STORAGE_*` fallback:
+the bucket origin in the Content-Security-Policy is set at runtime). A change to `APP_URL` or `SECURITY_HSTS_STRICT`
+needs a deploy (item 3 above; the same code is fine): the build bakes them into the pages and the security headers.
+
+**Removing the release-day stand-ins** (`rzp_test_pending`, `smtp-pending.invalid`, `https://r2-pending.invalid` and
+the other "pending" values): until real values are saved, those integrations show "Not configured" and the site says
+payments are not available yet. Save the real values in Admin > Settings > Integrations (step 9; they win at once),
+then delete every `PAYMENT_*`, `STORAGE_*` (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*` and `SMTP_*` line from
+`shared/.env.production` and run `restart.sh`. The cards then say "Saved in Admin"; if the Admin settings are removed
+later, nothing falls back to stand-ins.
 
 ### 12.2 Roll back
 `deploy.sh` already rolls back by itself when a new release fails its health check (12.1). Use this when a release
@@ -854,9 +873,10 @@ half of [`go-live-checklist.md`](go-live-checklist.md) lists each one with its c
 | `502 Bad Gateway` on the site | `sudo -iu axiomatic pm2 status`, then `sudo -iu axiomatic pm2 logs axiomatic --lines 200` | The app is stopped or crashing. An invalid setting ends it on its first request with "Invalid environment configuration" and the variable names; PM2 restarts it (the restart counter grows) and stops after 15 quick crashes ("errored"). Fix the named variable, then `restart.sh` |
 | Signed-out links to `/account` or `/admin` open `https://localhost...` | `grep '^APP_URL=' /www/wwwroot/axiomatic/shared/.env.production` | `APP_URL` is not exactly `https://<domain>`: the sign-in redirect is built on it. Fix it, then `restart.sh` |
 | `/api/health` answers 503 | `sudo -iu axiomatic pm2 logs axiomatic` (look for `health_check_failed`) | PostgreSQL or Redis stopped, or a wrong password in `DATABASE_URL` / `REDIS_URL` |
-| No sign-in code by email | Spam folder; `sudo -iu axiomatic pm2 logs axiomatic` lines with `email_` events; the provider's sending log | SMTP host, port, user or password wrong; sender domain not verified; SES sandbox |
-| Order stays "Confirming payment" | Razorpay > Webhooks > deliveries; aaPanel Cron > `axiomatic-reconcile` log | Webhook URL or secret wrong, events missing, manual capture on in Razorpay |
-| Upload in Admin > Releases fails at once | Browser console (F12) | CORS rule on the bucket (origin `https://<domain>`, `PUT`), or the CSP note in step 9 |
+| No sign-in code by email | Spam folder; Admin > Settings > Integrations > Email delivery ("Send test email" names the failing step); `sudo -iu axiomatic pm2 logs axiomatic` lines with `email_` events; the provider's sending log | Email "Not configured"; SMTP host, port, security, user or password wrong; sender domain not verified; SES sandbox |
+| Order stays "Confirming payment" | Razorpay > Webhooks > deliveries (503 = payments not saved in Admin yet; 401 = secret mismatch); aaPanel Cron > `axiomatic-reconcile` log | Webhook URL or secret wrong (Admin and Razorpay must hold the same one), events missing, manual capture on in Razorpay |
+| Checkout says "Payments aren't switched on yet" | Admin > Settings > Integrations > Payment provider | Nothing usable saved: save the Razorpay keys and webhook secret, then "Test Razorpay keys" |
+| Upload in Admin > Releases fails at once | Browser console (F12); Admin > Settings > Integrations > Installer storage ("Test bucket") | CORS rule on the bucket (origin `https://<domain>`, `PUT`), storage "Not configured", or a tab opened before the bucket was saved (reload; step 9) |
 | Cron task log says `do not run this as root` | The task's script content | It must start with `runuser -u axiomatic --` (step 7) |
 | Cron task log shows HTTP 401 | The task's Log | The running app was started before `CRON_SECRET` changed: `sudo -iu axiomatic bash /www/wwwroot/axiomatic/current/deploy/restart.sh` |
 | Let's Encrypt fails | aaPanel's SSL error text | DNS not pointing at the server yet, port 80 closed, a wrong AAAA record |

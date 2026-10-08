@@ -13,6 +13,10 @@
  * deploy.sh's health check makes right after a (re)start. During `next build` nothing happens.
  * The store connects lazily in the background; while Redis is unreachable it follows the fail-closed / degraded
  * policy documented in lib/auth/rate-limit-redis.ts.
+ *
+ * Then the integration settings (lib/integrations/resolver.ts: Admin-saved payments, email and storage, else the env
+ * fallback) are loaded once, waiting at most 3 s and ignoring errors, so the first request (and the middleware's CSP
+ * bucket origin) rarely has to wait for the database.
  */
 export async function register(): Promise<void> {
   // Written as one `if` on NEXT_RUNTIME so the edge bundle drops the dynamic imports (and ioredis) entirely.
@@ -31,9 +35,12 @@ export async function register(): Promise<void> {
       log.warn("instrumentation_env_invalid", { hint: "fix .env.local; rate limits use Postgres buckets" });
       return;
     }
-    if (!redisUrl) return;
-    const { installRedisRateLimitStore } = await import("@/lib/auth/rate-limit-redis");
-    installRedisRateLimitStore(redisUrl);
-    log.info("rate_limit_store_registered", { store: "redis" });
+    if (redisUrl) {
+      const { installRedisRateLimitStore } = await import("@/lib/auth/rate-limit-redis");
+      installRedisRateLimitStore(redisUrl);
+      log.info("rate_limit_store_registered", { store: "redis" });
+    }
+    const { warmIntegrations } = await import("@/lib/integrations/resolver");
+    await warmIntegrations(3_000);
   }
 }

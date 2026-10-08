@@ -2,12 +2,14 @@
  * Development helpers for the mock checkout (/dev/mock-checkout, /api/dev/mock-checkout and its /bank route): the
  * availability gate, the payment methods on offer, the payment attempt a checkout acts on, and delivery of signed mock
  * webhooks to the real webhook route (APP_URL/api/webhooks/payments/mock) a moment later, as a provider would.
- * Everything here refuses to run in production, and the mock provider itself is refused there by lib/env.ts.
+ * Everything here refuses to run in production, and the mock provider itself is refused there by lib/env.ts. The mock is
+ * env-only: Admin > Settings > Integrations can never select it.
  */
 import "server-only";
 import { OrderStatus, PaymentStatus, type Order, type Payment } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { getEnv, isProduction } from "@/lib/env";
+import { resolvePayments } from "@/lib/integrations/resolver";
 import { ApiError } from "@/lib/http";
 import { log } from "@/lib/log";
 import { buildMockWebhook, type MockWebhookInput } from "./mock";
@@ -25,19 +27,23 @@ const DELIVERY_TIMEOUT_MS = 15_000;
 
 export const MOCK_LINK_INVALID_MESSAGE = "This payment link isn\u2019t valid. The order may already be paid or was not found.";
 
-/** True only in development/test with PAYMENT_PROVIDER=mock. Pages call notFound() and routes answer 404 otherwise. */
-export function mockCheckoutEnabled(): boolean {
+/**
+ * True only in development/test while the effective payments configuration is the mock (lib/integrations/resolver.ts).
+ * Pages call notFound() and routes answer 404 otherwise. Production answers false before touching the resolver.
+ */
+export async function mockCheckoutEnabled(): Promise<boolean> {
   if (isProduction()) return false;
   try {
-    return getEnv().PAYMENT_PROVIDER === "mock";
+    const payments = await resolvePayments();
+    return payments.source !== "none" && payments.config.provider === "mock";
   } catch {
     return false;
   }
 }
 
 /** 404 unless mockCheckoutEnabled(). */
-export function assertMockCheckoutEnabled(): void {
-  if (!mockCheckoutEnabled()) throw new ApiError(404, "not_found", "Not found.");
+export async function assertMockCheckoutEnabled(): Promise<void> {
+  if (!(await mockCheckoutEnabled())) throw new ApiError(404, "not_found", "Not found.");
 }
 
 /** The order's latest payment attempt when it belongs to the mock provider, else null. */

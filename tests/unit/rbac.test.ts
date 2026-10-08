@@ -16,6 +16,7 @@ import {
   type Permission,
   type TeamPermission,
   adminGroupTitle,
+  adminModule,
   areaDeniedMessage,
   can,
   canViewModule,
@@ -59,6 +60,8 @@ const EXPECTED: Record<Permission, StaffRole[]> = {
   "orders.resend_invoice": ALL,
   "renewals.remind": ["OWNER", "ADMIN", "SUPPORT"],
   "leads.view": ["OWNER", "ADMIN", "SUPPORT"],
+  // Admin > Settings > Integrations (owner decision 2026-10-08): only the Owner saves or tests credentials.
+  "integrations.manage": ["OWNER"],
 };
 
 describe("staff roles", () => {
@@ -71,7 +74,7 @@ describe("staff roles", () => {
 describe("PERMS", () => {
   it("defines exactly the expected permissions", () => {
     expect([...PERMISSIONS].sort()).toEqual(Object.keys(EXPECTED).sort());
-    expect(PERMISSIONS).toHaveLength(22);
+    expect(PERMISSIONS).toHaveLength(23);
     expect(Object.keys(PERMS)).toEqual(PERMISSIONS);
     for (const perm of PERMISSIONS) expect(new Set(PERMS[perm]).size).toBe(PERMS[perm].length);
   });
@@ -97,8 +100,8 @@ describe("PERMS", () => {
     expect(permissionsFor(null)).toEqual([]);
   });
 
-  it("per-role permission counts (prototype: Owner 17, Administrator 13, Support 4, Finance 6, plus the five additions)", () => {
-    expect(permissionsFor("OWNER")).toHaveLength(22);
+  it("per-role permission counts (prototype: Owner 17, Administrator 13, Support 4, Finance 6, plus the six additions)", () => {
+    expect(permissionsFor("OWNER")).toHaveLength(23);
     expect(permissionsFor("ADMIN")).toHaveLength(18);
     expect(permissionsFor("SUPPORT")).toHaveLength(8);
     expect(permissionsFor("FINANCE")).toHaveLength(8);
@@ -117,6 +120,12 @@ describe("PERMS", () => {
     expect(canViewModule("SUPPORT", "leads")).toBe(true);
     expect(canViewModule("FINANCE", "leads")).toBe(false);
     expect(requiresLabel("leads.view")).toBe("Requires Owner / Administrator / Support");
+  });
+
+  it("only the Owner manages integrations (save, clear, remove, test)", () => {
+    expect(rolesFor("integrations.manage")).toEqual(["OWNER"]);
+    for (const role of ["ADMIN", "SUPPORT", "FINANCE"] as const) expect(can(role, "integrations.manage"), role).toBe(false);
+    expect(adminModule("settings").description).toBe("Company details, tax and invoicing, licensing policy and integrations. Secrets are encrypted and never shown in full.");
   });
 
   it("Finance can refund but not revoke licenses", () => {

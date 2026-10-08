@@ -6,11 +6,14 @@
  *
  * Generated (cryptographically random): SESSION_SECRET, CSRF_SECRET, ORDER_TOKEN_SECRET, CRON_SECRET,
  * LICENSE_KEY_PEPPER, LICENSE_KEY_ENC_KEY, the Ed25519 LICENSE_SIGNING_PRIVATE_KEY / LICENSE_SIGNING_PUBLIC_KEY pair
- * (one line each, line breaks written as a literal backslash + n), PAYMENT_WEBHOOK_SECRET (also pasted into the
- * Razorpay webhook), BOOTSTRAP_OWNER_PASSWORD, and the passwords inside DATABASE_URL and REDIS_URL (letters and
- * digits only, so they never need URL encoding; deploy/db-setup.sh and Redis' requirepass use them).
+ * (one line each, line breaks written as a literal backslash + n), BOOTSTRAP_OWNER_PASSWORD, and the passwords inside
+ * DATABASE_URL and REDIS_URL (letters and digits only, so they never need URL encoding; deploy/db-setup.sh and Redis'
+ * requirepass use them).
  * Every other line keeps the example's value. Values that still contain CHANGE-ME must be filled in by hand; the
  * script lists their names, and deploy.sh refuses to deploy while one is left.
+ * Payments, storage and email are not generated: they are saved in Admin > Settings > Integrations after the first
+ * sign-in (the Razorpay webhook secret is the one you choose in the Razorpay Dashboard). Their env lines are a
+ * commented-out fallback in the template.
  *
  * The file is written with mode 600 (new temp file + rename). Prints variable names only, never a value.
  * Refuses to replace an existing file unless --force. WARNING: replacing the file of a server that already issued
@@ -105,7 +108,6 @@ const generated = {
   LICENSE_KEY_ENC_KEY: b64(32),
   LICENSE_SIGNING_PRIVATE_KEY: pemLine(privateKey),
   LICENSE_SIGNING_PUBLIC_KEY: pemLine(publicKey),
-  PAYMENT_WEBHOOK_SECRET: hex(24),
   BOOTSTRAP_OWNER_PASSWORD: ownerPassword(),
 };
 /** Placeholders replaced inside a value (the rest of the URL stays as in the example). */
@@ -177,3 +179,4 @@ if (todo.length > 0) {
 }
 console.info("gen-prod-env: next: keep a copy in your password manager, create the database role (deploy/db-setup.sh)");
 console.info("gen-prod-env: and set Redis requirepass to the password inside REDIS_URL (deploy/README.md).");
+console.info("gen-prod-env: payments, email and storage are set later in Admin > Settings > Integrations.");

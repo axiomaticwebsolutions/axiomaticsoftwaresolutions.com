@@ -132,7 +132,7 @@ export async function createUpload(
   const storageKey = uploadStorageKey(input.accountId, input.file.fileName);
   let put;
   try {
-    put = await (storage ?? getStorage()).presignPut(storageKey, {
+    put = await (storage ?? (await getStorage())).presignPut(storageKey, {
       ttlSec: UPLOAD_PUT_TTL_SECONDS,
       contentType: input.file.contentType,
       maxBytes: input.file.sizeBytes,
@@ -158,6 +158,17 @@ export async function createUpload(
     upload: toDto(upload),
     put: { url: put.url, method: put.method, headers: put.headers, expiresAt: put.expiresAt.toISOString() },
   };
+}
+
+/** The given driver, else the effective one; storage not configured (or unreachable) -> 503 `upload_unavailable`. */
+async function uploadDriver(storage: StorageDriver | undefined): Promise<StorageDriver> {
+  if (storage) return storage;
+  try {
+    return await getStorage();
+  } catch (error) {
+    log.error("upload_storage_unavailable", { error });
+    throw new ApiError(503, "upload_unavailable", UPLOAD_MESSAGES.unavailable);
+  }
 }
 
 async function headSize(storage: StorageDriver, key: string): Promise<number | null> {
@@ -196,7 +207,7 @@ export async function confirmUpload(ref: UploadRef, client: PrismaClient = defau
   if (!upload) throw errors.notFound("Attachment");
   if (upload.status === "ATTACHED") throw errors.conflict("upload_attached", UPLOAD_MESSAGES.attached);
   if (upload.createdAt.getTime() < pendingSince(now).getTime()) throw errors.conflict("upload_missing", UPLOAD_MESSAGES.missing);
-  const driver = storage ?? getStorage();
+  const driver = await uploadDriver(storage);
   const stored = await headSize(driver, upload.storageKey);
   if (stored === null) throw errors.conflict("upload_missing", UPLOAD_MESSAGES.missing);
   if (!sizeMatches(upload, stored)) {
@@ -236,7 +247,7 @@ export async function verifyAttachableUploads(
   const byId = new Map(rows.map((r) => [r.id, r]));
   const ordered = input.ids.map((id) => byId.get(id));
   if (ordered.some((u) => !u)) throw unavailableAttachments();
-  const driver = storage ?? getStorage();
+  const driver = await uploadDriver(storage);
   const uploads = ordered as Upload[];
   for (const upload of uploads) {
     const stored = await headSize(driver, upload.storageKey);
@@ -334,7 +345,7 @@ export async function attachmentDownloadLink(ref: UploadRef, client: PrismaClien
   if (!allowed) throw errors.notFound("Attachment");
 
   try {
-    const link = await (storage ?? getStorage()).presignGet(upload.storageKey, {
+    const link = await (storage ?? (await getStorage())).presignGet(upload.storageKey, {
       ttlSec: clampTtl(ATTACHMENT_LINK_TTL_SECONDS),
       downloadName: upload.fileName,
     });

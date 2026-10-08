@@ -12,6 +12,7 @@ import { pageResult, searchWhere, toPrismaOrderBy, type ListPage, type ListQuery
 import { endOfDayIST, startOfDayIST } from "@/lib/dates";
 import type { Db } from "@/lib/db";
 import { errors } from "@/lib/http";
+import { INTEGRATION_AUDIT_ACTIONS } from "@/lib/integrations/model";
 import { TWO_STEP_OFF_ACTION, TWO_STEP_ON_ACTION } from "@/lib/portal/profile";
 import { STAFF_ROLE_LABELS } from "@/lib/rbac";
 import type { AUDIT_LIST_SPEC } from "./model";
@@ -42,6 +43,8 @@ const KNOWN_ACTIONS: readonly string[] = [
   "Revoked staff invitation",
   "Accepted staff invitation",
   "Updated settings",
+  // Admin > Settings > Integrations (save, clear a secret, remove, test).
+  ...Object.values(INTEGRATION_AUDIT_ACTIONS),
   "Exported report",
   "Refunded duplicate payment",
   // A staff member's own two-step change (Admin > My profile).

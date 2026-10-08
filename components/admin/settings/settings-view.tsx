@@ -1,11 +1,11 @@
 import { SETTINGS_COPY, SETTINGS_SECTIONS, settingsSection, type AdminSettingsData } from "@/lib/admin/settings/model";
-import { IntegrationCards } from "./integrations-panel";
+import { IntegrationsPanel } from "./integrations-panel";
 import { SettingsForm, type SettingsFact } from "./settings-form";
 
 /**
  * Settings grid (prototype: cards auto-fit at 420px minimum, 14px gaps, aligned to the top): Business details, Tax &
- * invoicing, License policy and Sample notice as forms, then the read-only integration cards. Server component; each
- * form is a client island.
+ * invoicing, License policy and Sample notice as forms, then the Integrations section (forms for the Owner, status
+ * only otherwise, plus the read-only rate-limits card). Server component; each form is a client island.
  */
 export function SettingsView({ data }: { data: AdminSettingsData }) {
   const values = { business: data.business, tax: data.tax, licensing: data.licensing, "sample-notice": data.sampleNotice } as const;
@@ -26,7 +26,7 @@ export function SettingsView({ data }: { data: AdminSettingsData }) {
       {SETTINGS_SECTIONS.map((def) => (
         <SettingsForm key={def.id} section={settingsSection(def.id)} value={values[def.id]} facts={facts[def.id]} />
       ))}
-      <IntegrationCards integrations={data.integrations} />
+      <IntegrationsPanel data={data.integrations} />
     </div>
   );
 }

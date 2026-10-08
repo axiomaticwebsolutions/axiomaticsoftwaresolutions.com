@@ -1,8 +1,10 @@
 /**
  * GET /api/admin/settings -> AdminSettingsData { business, tax, licensing, sampleNotice, facts: { nextInvoiceNumber,
- * nextCreditNoteNumber, offlineGraceDays }, integrations: [{ id, title, provider, status, mode?, envNames, note }] }.
- * Owner only (settings.manage). Integrations report configured / not configured from env presence; no secret, host,
- * bucket or address is ever returned.
+ * nextCreditNoteNumber, offlineGraceDays, expiringDays }, integrations: { canManage, items: IntegrationState[], redis } }
+ * (lib/admin/settings/integrations-model.ts). Needs settings.manage (the Owner). Each integration reports its source
+ * (Saved in Admin / From the server file / Not configured), provider kind, mode and problem; with integrations.manage
+ * also its form: non-secret values and, per secret saved in Admin, "set", the last 4 characters of long secrets, when
+ * and by whom. No secret value is ever returned.
  */
 import { adminRoute } from "@/lib/admin/http";
 import { getAdminSettings } from "@/lib/admin/settings/service";
@@ -12,6 +14,6 @@ import { json } from "@/lib/http";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export const GET = adminRoute("settings.manage", async () => {
-  return json(await getAdminSettings(db));
+export const GET = adminRoute("settings.manage", async ({ can }) => {
+  return json(await getAdminSettings(db, { canManage: can("integrations.manage") }));
 });

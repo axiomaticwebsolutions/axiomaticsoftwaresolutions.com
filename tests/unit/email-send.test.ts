@@ -7,7 +7,8 @@ import { sendAuthEmail, AUTH_EMAIL_TIMEOUT_MS } from "@/lib/email/send";
 import { outboxBackoffMs, OUTBOX_MAX_DELAY_MS, kickEmailDispatch, waitForEmailDispatch } from "@/lib/email/outbox";
 import { maskEmail, sendErrorSummary, setEmailTransport, type EmailTransport, type OutgoingEmail } from "@/lib/email/transport";
 import { createConsoleTransport } from "@/lib/email/transports/console";
-import { createSmtpTransport, smtpOptionsFromEnv } from "@/lib/email/transports/smtp";
+import { createSmtpTransport, smtpOptions } from "@/lib/email/transports/smtp";
+import { setIntegrationEnvForTests } from "@/lib/integrations/resolver";
 import { greetingName, leadEmailVars } from "@/lib/leads";
 
 const APP_URL = "http://localhost:3000";
@@ -38,6 +39,7 @@ beforeEach(() => {
 afterEach(() => {
   setLogSink(null);
   setEmailTransport(null);
+  setIntegrationEnvForTests(null);
   vi.unstubAllEnvs();
   vi.useRealTimers();
 });
@@ -147,6 +149,14 @@ describe("sendAuthEmail", () => {
     await vi.advanceTimersByTimeAsync(AUTH_EMAIL_TIMEOUT_MS + 1);
     await expect(pending).resolves.toEqual({ ok: false });
   });
+
+  it("answers { ok: false } and logs the reason when email is not configured", async () => {
+    setIntegrationEnvForTests({ NODE_ENV: "production" });
+    await expect(sendAuthEmail({ ...VERIFY })).resolves.toEqual({ ok: false });
+    const line = logs.find((l) => l.includes("email_send_failed")) ?? "";
+    expect(line).toContain('"reason":"not_configured"');
+    expect(line).not.toMatch(/priya@|482913/);
+  });
 });
 
 describe("helpers", () => {
@@ -179,10 +189,18 @@ describe("helpers", () => {
 });
 
 describe("SMTP transport", () => {
-  const env = { SMTP_HOST: "smtp.example.com", SMTP_PORT: 587, SMTP_USER: "mailer", SMTP_PASSWORD: "pw", NODE_ENV: "production" } as const;
+  const config = {
+    transport: "smtp",
+    host: "smtp.example.com",
+    port: 587,
+    security: "starttls",
+    auth: { user: "mailer", pass: "pw" },
+    from: { name: "Axiomatic", address: "no-reply@axiomatic.example" },
+  } as const;
 
-  it("uses STARTTLS (required in production) or implicit TLS on 465, with timeouts", () => {
-    expect(smtpOptionsFromEnv(env)).toMatchObject({
+  it("uses STARTTLS (required in production) or TLS, with timeouts, the SSRF guard in production and a pool on request", () => {
+    const prod = smtpOptions(config, { production: true, pool: true }) as Record<string, unknown>;
+    expect(prod).toMatchObject({
       host: "smtp.example.com",
       port: 587,
       secure: false,
@@ -192,15 +210,16 @@ describe("SMTP transport", () => {
       connectionTimeout: 10_000,
       socketTimeout: 30_000,
     });
-    expect(smtpOptionsFromEnv({ ...env, SMTP_PORT: 465 })).toMatchObject({ secure: true, requireTLS: false });
-    expect(smtpOptionsFromEnv({ ...env, NODE_ENV: "development", SMTP_USER: undefined, SMTP_PORT: 1025 })).toMatchObject({
-      requireTLS: false,
-      auth: undefined,
-    });
+    expect(typeof prod.getSocket).toBe("function");
+    expect(smtpOptions({ ...config, port: 465, security: "tls" }, { production: true, pool: true })).toMatchObject({ secure: true, requireTLS: false });
+    const dev = smtpOptions({ ...config, auth: null, port: 1025 }, { production: false, pool: false }) as Record<string, unknown>;
+    expect(dev).toMatchObject({ requireTLS: false, auth: undefined, secure: false });
+    expect(dev.getSocket).toBeUndefined();
+    expect(dev.pool).toBeUndefined();
   });
 
   it("hands the message to nodemailer", async () => {
-    const transport: EmailTransport = createSmtpTransport({ jsonTransport: true }, "Axiomatic <no-reply@axiomatic.example>");
+    const transport: EmailTransport = createSmtpTransport({ jsonTransport: true }, { name: "Axiomatic", address: "no-reply@axiomatic.example" });
     const res = await transport.send({ to: "a@example.com", subject: "S", html: "<p>H</p>", text: "T", templateId: "lead_received" });
     expect(res.messageId).toMatch(/@/);
     expect(transport.name).toBe("smtp");

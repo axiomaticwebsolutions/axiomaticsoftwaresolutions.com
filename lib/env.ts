@@ -9,14 +9,12 @@
  */
 import { createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { z } from "zod";
+import { parseMailbox } from "./email/address";
+import { isPlaceholder } from "./placeholders";
 
-const PLACEHOLDER_PATTERNS: readonly RegExp[] = [/change-?me/i, /x{8,}/i, /\.\.\./];
+export { isPlaceholder };
+
 const SECRETS_HINT = "run `pnpm secrets` to generate development values";
-
-/** True for the placeholder values used in `.env.example`. */
-export function isPlaceholder(value: string): boolean {
-  return PLACEHOLDER_PATTERNS.some((re) => re.test(value));
-}
 
 function secret(minLength: number) {
   return z
@@ -97,15 +95,20 @@ const envSchema = z.object({
     .max(30, "must be between 1 and 30")
     .default(7),
 
-  // ---- Payments
-  PAYMENT_PROVIDER: z.enum(["razorpay", "cashfree", "mock"], "must be razorpay, cashfree or mock").default("mock"),
+  // ---- Integrations: payments, storage and email are normally saved in Admin > Settings > Integrations
+  // (docs/admin-integrations-design.md). These variables are only the fallback when nothing is saved there, so none of
+  // them is required; lib/integrations/env-source.ts decides whether they form a usable configuration. When present,
+  // they are still validated here (placeholders refused; development drivers refused in production).
+  // Unset selectors mean: the development driver outside production (mock / local / console), "not configured" in it.
+
+  // ---- Payments (fallback)
+  PAYMENT_PROVIDER: z.enum(["razorpay", "cashfree", "mock"], "must be razorpay, cashfree or mock").optional(),
   PAYMENT_KEY_ID: optionalSecret(4),
   PAYMENT_KEY_SECRET: optionalSecret(8),
-  // Always required: webhook signatures are verified for every provider, the mock one included.
-  PAYMENT_WEBHOOK_SECRET: secret(16),
+  PAYMENT_WEBHOOK_SECRET: optionalSecret(16),
 
-  // ---- Protected file storage
-  STORAGE_DRIVER: z.enum(["local", "s3"], "must be local or s3").default("local"),
+  // ---- Protected file storage (fallback; STORAGE_LOCAL_DIR and DOWNLOAD_LINK_TTL_SECONDS stay env-only)
+  STORAGE_DRIVER: z.enum(["local", "s3"], "must be local or s3").optional(),
   STORAGE_LOCAL_DIR: z.string().default(".storage"),
   STORAGE_ENDPOINT: z.url({ protocol: /^https?$/, error: "must be an absolute http(s) URL" }).optional(),
   STORAGE_REGION: z.string().optional(),
@@ -121,9 +124,12 @@ const envSchema = z.object({
     // Presigned download links never live longer than 10 minutes, whatever the env says.
     .transform((v) => Math.min(v, 600)),
 
-  // ---- Email
-  EMAIL_TRANSPORT: z.enum(["console", "smtp"], "must be console or smtp").default("console"),
-  EMAIL_FROM: z.string().min(3, "must be a sender such as \"Name <no-reply@example.com>\""),
+  // ---- Email (fallback)
+  EMAIL_TRANSPORT: z.enum(["console", "smtp"], "must be console or smtp").optional(),
+  EMAIL_FROM: z
+    .string()
+    .refine((v) => parseMailbox(v) !== null, "must be a sender such as \"Name <no-reply@example.com>\"")
+    .optional(),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number("must be a port number").int("must be a port number").min(1).max(65535).default(587),
   SMTP_USER: z.string().optional(),
@@ -197,17 +203,14 @@ function normalize(source: Record<string, string | undefined>): RawEnv {
 function crossFieldProblems(raw: RawEnv): string[] {
   const problems: string[] = [];
   const nodeEnv = raw.NODE_ENV ?? "development";
-  const provider = raw.PAYMENT_PROVIDER ?? "mock";
-  const storage = raw.STORAGE_DRIVER ?? "local";
-  const transport = raw.EMAIL_TRANSPORT ?? "console";
-  const requireWhen = (keys: EnvKey[], condition: string) => {
-    for (const key of keys) if (raw[key] === undefined) problems.push(`${key}: is required when ${condition}`);
-  };
 
   if (nodeEnv === "production") {
-    if (provider === "mock") problems.push("PAYMENT_PROVIDER: mock is not allowed when NODE_ENV=production");
-    if (storage === "local") problems.push("STORAGE_DRIVER: local is not allowed when NODE_ENV=production (use s3)");
-    if (transport === "console") problems.push("EMAIL_TRANSPORT: console is not allowed when NODE_ENV=production (use smtp)");
+    // Unset is fine (Admin > Settings > Integrations, or "not configured"); an explicit development driver is not.
+    if (raw.PAYMENT_PROVIDER === "mock") problems.push("PAYMENT_PROVIDER: mock is not allowed when NODE_ENV=production");
+    if (raw.STORAGE_DRIVER === "local") problems.push("STORAGE_DRIVER: local is not allowed when NODE_ENV=production (use s3, or set storage in Admin)");
+    if (raw.EMAIL_TRANSPORT === "console") {
+      problems.push("EMAIL_TRANSPORT: console is not allowed when NODE_ENV=production (use smtp, or set email in Admin)");
+    }
     if (raw.CATALOG_SOURCE === "fixtures") problems.push("CATALOG_SOURCE: fixtures is not allowed when NODE_ENV=production (use db)");
     if (raw.APP_URL !== undefined && !raw.APP_URL.startsWith("https://")) {
       problems.push("APP_URL: must use https when NODE_ENV=production");
@@ -227,16 +230,9 @@ function crossFieldProblems(raw: RawEnv): string[] {
       );
     }
   }
-  if (provider === "razorpay" || provider === "cashfree") {
-    requireWhen(["PAYMENT_KEY_ID", "PAYMENT_KEY_SECRET"], `PAYMENT_PROVIDER=${provider}`);
-  }
-  if (storage === "s3") {
-    requireWhen(
-      ["STORAGE_BUCKET", "STORAGE_REGION", "STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY"],
-      "STORAGE_DRIVER=s3",
-    );
-  }
-  if (transport === "smtp") requireWhen(["SMTP_HOST"], "EMAIL_TRANSPORT=smtp");
+  // No "required when" rules for the integrations: a half-filled fallback no longer stops the server. Whether the
+  // variables form a usable configuration is decided by lib/integrations/env-source.ts (shown in Admin and by the
+  // deploy preflight).
 
   const priv = raw.LICENSE_SIGNING_PRIVATE_KEY ? parseKey(raw.LICENSE_SIGNING_PRIVATE_KEY, "private") : null;
   const pub = raw.LICENSE_SIGNING_PUBLIC_KEY ? parseKey(raw.LICENSE_SIGNING_PUBLIC_KEY, "public") : null;

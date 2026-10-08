@@ -3,7 +3,6 @@ import path from "node:path";
 import type { NextConfig } from "next";
 import { contentSecurityPolicy, RAZORPAY_PAGE_PATTERNS } from "./lib/security/csp";
 import { baseSecurityHeaders, parseHstsStrict, RAZORPAY_PAGE_HEADERS } from "./lib/security/headers";
-import { storageUploadOrigin } from "./lib/storage/upload-origin";
 
 const isDev = process.env.NODE_ENV !== "production";
 
@@ -132,16 +131,17 @@ if (exfatFixNeeded) patchNodeFsReadlink();
 
 // ---------------------------------------------------------------------------------------------------------------
 
-// Security headers (docs/security.md; lib/security/*). Computed by `next build`: the STORAGE_* variables (upload origin
-// in connect-src) and SECURITY_HSTS_STRICT must be set for the production build.
-// - Every response: the STATIC Content-Security-Policy ('unsafe-inline' scripts, for the prerendered storefront),
-//   nosniff, Referrer-Policy, X-Frame-Options, Permissions-Policy, COOP and (production) HSTS.
-// - middleware.ts replaces the CSP with the STRICT nonce policy on the dynamic routes (portal, admin, checkout, order
-//   pages, auth pages), including Razorpay Checkout.js on /checkout and /orders/:id.
+// Security headers (docs/security.md; lib/security/*). Computed by `next build`: SECURITY_HSTS_STRICT must be set for the
+// production build. No storage bucket here: it is runtime configuration (Admin > Settings > Integrations).
+// - Every response: the STATIC Content-Security-Policy ('unsafe-inline' scripts) WITHOUT a bucket origin, nosniff,
+//   Referrer-Policy, X-Frame-Options, Permissions-Policy, COOP and (production) HSTS. API JSON and /_next assets keep it.
+// - middleware.ts (Node.js runtime, every page) replaces the CSP: the static policy plus the runtime bucket origin, or
+//   the STRICT nonce policy on the dynamic routes (portal, admin, checkout, order pages, auth pages), including Razorpay
+//   Checkout.js on /checkout and /orders/:id.
 // - The Razorpay pages also get a Permissions-Policy that lets its iframes use the Payment Request API and
 //   COOP same-origin-allow-popups (bank / 3-D Secure windows). Listed after the catch-all: when two entries set the
 //   same header key, Next keeps the later one.
-const staticCsp = contentSecurityPolicy({ dev: isDev, uploadOrigin: storageUploadOrigin(process.env) });
+const staticCsp = contentSecurityPolicy({ dev: isDev });
 const hstsStrict = parseHstsStrict(process.env.SECURITY_HSTS_STRICT);
 
 const nextConfig: NextConfig = {

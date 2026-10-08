@@ -782,9 +782,10 @@ Tickets and uploads (`lib/portal/tickets.ts`, `lib/portal/uploads.ts`)
   confirm (a `head()` size check; nothing is stored because Upload has no confirmed state) and attach (checked again,
   conditional update). Downloads: `GET /api/account/uploads/:id/download` -> `{ url, expiresAt, fileName }` or 303 with
   `?redirect=1`. Development presigned PUTs go to the dev-only `PUT /api/dev/storage/<key>` (HMAC-checked).
-- Production: ticket pages allow the bucket origin in CSP `connect-src` (`lib/storage/upload-origin.ts`, computed by
-  `next build`, so the STORAGE_* variables must be set at build time); the bucket needs CORS for PUT with
-  Content-Type from APP_URL.
+- Production: ticket pages allow the bucket origin in CSP `connect-src` (~~`lib/storage/upload-origin.ts`, computed by
+  `next build`, so the STORAGE_* variables must be set at build time~~ superseded 2026-10-08: the Node.js middleware
+  adds the runtime bucket origin to every page, see "Admin-configurable integrations"); the bucket needs CORS for PUT
+  with Content-Type from APP_URL.
 
 Team, invitations, activity and security (`lib/portal/team.ts`, `lib/portal/invites.ts`, `app/(auth)/invite`)
 - Invite member is a dialog (role descriptions from TEAM_ROLE_META); pending invitees can be Billing admin, Technical
@@ -914,8 +915,9 @@ Open items (owner decisions and later phases)
   Superseded 2026-10-08: two-step sign-in is optional for every account ("Two-step sign-in optional for every
   account" at the end of this file).
   You cannot change your own role or deactivate yourself; at least one active Owner remains.
-- Settings (Owner only): business, tax (rate, SAC, invoice prefix 1-3 chars), licensing, sample notice. Secrets are
-  never shown or stored here; the page shows only whether each integration is configured (from env).
+- Settings (Owner only): business, tax (rate, SAC, invoice prefix 1-3 chars), licensing, sample notice. ~~Secrets are
+  never shown or stored here; the page shows only whether each integration is configured (from env).~~ Superseded
+  2026-10-08: payments, email and storage are edited there, secrets encrypted ("Admin-configurable integrations").
 - Reports: sales by month and product, GST summary by month (taxable, CGST, SGST, IGST; for GSTR-1 preparation),
   license health and support workload, with 7d / 30d / 90d / 12m ranges in IST.
 
@@ -1026,8 +1028,9 @@ Open items (owner decisions and later phases)
 - Audit log: append-only (GET routes only); the action filter is a slug of the action label over the newest 5,000
   rows plus the known vocabulary; IPs show as prefixes.
 - Settings sections: business, tax (rate, SAC, invoice and credit note prefixes, next numbers read-only), licensing,
-  sample notice. One "Updated settings" audit row per changed field ("old -> new"). Integrations (payments, storage,
-  email, Redis) show only kind, configured/not and test/live mode, never values.
+  sample notice. One "Updated settings" audit row per changed field ("old -> new"). ~~Integrations (payments, storage,
+  email, Redis) show only kind, configured/not and test/live mode, never values.~~ Superseded 2026-10-08: see
+  "Admin-configurable integrations" (Redis stays read-only).
 
 **Integration fixes and notes**
 - License-key redaction in logs and audit text needs the same separator at every group boundary (all four dashes or
@@ -1108,7 +1111,9 @@ Security (docs/security.md):
   'unsafe-inline'`): Next inlines per-page RSC payload scripts there that can be neither nonced nor hashed on cached
   pages. Both policies have `script-src-attr 'none'` and `base-uri 'none'`. The storage bucket origin is in
   connect-src on every page (client navigation keeps the first page's CSP); this supersedes the Phase 6 note about
-  UPLOAD_CSP_PATHS. Razorpay sources only on /checkout and /orders/:id. Inline scripts must be constants listed in
+  UPLOAD_CSP_PATHS. Superseded in part 2026-10-08: `next build` no longer computes that origin; the middleware
+  (Node.js runtime, every page) sets the runtime origin on both policies ("Admin-configurable integrations").
+  Razorpay sources only on /checkout and /orders/:id. Inline scripts must be constants listed in
   `lib/security/inline-scripts.ts` (the banner text travels in `data-banner-text`). Zod runs jitless in the browser.
 - New headers: COOP same-origin (same-origin-allow-popups on the Razorpay pages), a broader Permissions-Policy
   (Razorpay iframes may use payment), X-Permitted-Cross-Domain-Policies none. HSTS `max-age=31536000`, plus
@@ -1287,3 +1292,132 @@ build decisions, "Shell and foundation").
   white (4.8:1), focus uses the primary ring. Links are 30px so the menu fits a 900px-high window; shorter windows get
   the thin `.scrollbar-subtle` scrollbar. The mobile drawer uses the same light sidebar. Checked: scripts/check-a11y.mjs
   (store, admin, focus, reflow) 422 checks, 0 failed; scripts/check-storefront.mjs 77 checks, 0 failures.
+
+## Admin-configurable integrations (owner decision, 2026-10-08)
+
+Owner decision: "make it configurable from admin dashboard". Full design and implementation notes:
+`docs/admin-integrations-design.md`. This supersedes the Phase 5 build-time `STORAGE_*` note, the Phase 6 "integrations
+from env" lines and the Phase 7 build-time CSP origin (marked above).
+
+What moved into Admin > Settings > Integrations:
+- **Payment provider** (Razorpay): Key ID, Key secret, Webhook secret. Test or live mode follows the key id prefix
+  (`rzp_test_` / `rzp_live_`). The webhook URL is shown read-only.
+- **Email delivery** (SMTP): host, port, security (STARTTLS or TLS), username (empty = no sign-in), password, From name
+  and From address.
+- **Installer storage** (S3-compatible): provider preset (AWS S3, Cloudflare R2, DigitalOcean Spaces, Other) that
+  prefills endpoint, region and path style; endpoint, region, bucket, access key ID, secret access key, path-style URLs.
+- **Rate limits** stay in the env file (`REDIS_URL`), shown read-only: a wrong value would block every sign-in.
+- The mock provider, the console mailbox and the local disk stay env-only development drivers; Admin cannot choose
+  them and production refuses them.
+
+Precedence (`lib/integrations/resolver.ts`, the only code that combines the two):
+- A saved Admin row decides its integration as a whole, also when it is incomplete (a required secret was cleared),
+  invalid here or unreadable: then the integration is "Not configured" and the env file is NOT used. Admin and env
+  fields are never mixed.
+- Without a row, a complete env configuration is the fallback; otherwise "Not configured".
+- "Remove saved settings" deletes the row and brings the env fallback back.
+- The release-day stand-ins (`rzp_test_pending`, `smtp-pending.invalid`, `https://r2-pending.invalid`) count as values
+  that cannot work, so those cards say "Not configured" and name the variables.
+
+Not configured: the app starts and serves everything else.
+- Checkout shows "Payments aren't switched on yet" and the order API answers 503 `payments_unavailable` before any
+  account, password hash or provider call; refunds 503; reconcile is skipped (200).
+- The Razorpay webhook answers 503 `payments_not_configured` with `Retry-After: 300`, so Razorpay retries later.
+- The outbox fails rows through its normal retry rules with the logged reason; direct auth and invite emails answer
+  `{ ok: false }` (logged `not_configured`); the template test answers 409 `email_not_configured`.
+- Uploads and downloads answer their existing 503 codes; maintenance skips the uploads task.
+- `lib/env.ts` and `deploy/preflight.mjs` no longer require `PAYMENT_*`, `EMAIL_*`, `SMTP_*` or `STORAGE_*`. When
+  present they are still validated (placeholders refused; explicit `mock`, `console` and `local` refused in
+  production). The selectors have no default; in production an unset selector means "not in the server file".
+
+Secrets at rest (`lib/integrations/crypto.ts`):
+- AES-256-GCM with a fresh random 96-bit IV per write and a 16-byte tag, stored as `v1.<iv>.<tag>.<ciphertext>`.
+- Key: HKDF-SHA256 over `LICENSE_KEY_ENC_KEY` (empty salt, info `axs:integration-secrets:v1`), so the license-key
+  cipher key is never reused. Associated data `axs:integration-secret:v1:<kind>:<field>` binds each ciphertext to its
+  integration and field; a copied, tampered or foreign ciphertext fails closed (the integration becomes "Not
+  configured", never the env fallback).
+- Non-secret fields are plain JSON (`IntegrationConfig.settings`); secrets are rows of `IntegrationSecret`. The last 4
+  characters are kept only for secrets of 16+ characters (display only).
+- The API returns per secret only `set`, the last 4 characters, when it changed and who changed it. Secrets never
+  appear in HTML, logs, AuditLog rows, errors or test output. An empty secret field on save keeps the stored secret;
+  Clear is a separate action.
+- Migration `20261008083216_integration_configs` is additive (enum, two tables, nullable `Payment.providerKeyId`).
+
+Who can change what (`lib/rbac.ts`):
+- New permission `integrations.manage`, Owner only: save, clear a secret, remove saved settings, the test buttons.
+  Every route checks it on the server (`adminRoute`), plus CSRF and same-origin for every change.
+- Save, clear and remove need the Owner's password again (`verifyPassword` on the re-read hash), limited to 5 tries per
+  15 minutes per Owner, counted before checking and cleared on success. A wrong password is logged, never audited.
+- Settings itself stays `settings.manage` (Owner only). Staff who may open Settings without `integrations.manage` get
+  status-only cards (provider, source, mode, problem); none exist today. Customers and signed-out users get nothing.
+- Every save that changes something, every clear of a saved secret, every remove and every test writes an AuditLog
+  row ("Updated integration settings", "Cleared integration secret", "Removed integration settings", "Tested
+  integration") naming the integration and the changed fields by label, never a value. A save with no changes and a
+  clear of a secret that was not set write none.
+- A save that changes where a secret goes (the SMTP host, port or security; the storage endpoint) must enter every
+  saved secret of that integration again. Otherwise someone with the Owner's session and password could point email
+  at their own SMTP server, keep the stored password and press "Send test email" to read it out. Payments have no such
+  field (the Razorpay API address is fixed).
+
+Runtime resolution: one server-only resolver, one 30 s cache on `globalThis` (shared by the route handlers,
+instrumentation and the middleware of one process), invalidated at once by the request that saved. Other PM2 processes
+follow within 30 s. Payments (adapter, webhook signature check, reconcile, refunds), email (outbox, direct auth and
+invite emails), storage (presign, confirm, delete, downloads, installer hashing), the Admin status, the checkout notice
+and the CSP all read it. Clients are rebuilt when the effective configuration changes.
+
+Content-Security-Policy, the chosen mechanism:
+- `middleware.ts` now runs in the Node.js runtime (`config.runtime = "nodejs"`, supported by Next 15.5 without a flag)
+  and covers every page (prerendered, ISR and dynamic) plus `/api/dev/*`. It asks the cached resolver for the bucket
+  origin (`lib/integrations/csp-origin.ts`) and sets it in `connect-src` on both the strict nonce policy and the static
+  storefront policy. Its header replaces the one from `next.config.ts`, which no longer carries a bucket at all, so a
+  storage change needs neither a rebuild nor a restart.
+- Why: client-side navigation keeps the first document's policy, so every page that can lead to an upload or download
+  needs the origin (owner decision S4 keeps storefront links into /account and /admin as client navigations), and the
+  static storefront pages must stay prerendered. A Node.js middleware sees the same in-process cache as the route
+  handlers, waits on the database at most once per cold process (1 s cap, warmed at start-up) and keeps serving the
+  last known origin when the database is down. The origin is always one exact origin (endpoint origin for path-style,
+  `<bucket>.<host>` for virtual-hosted), never a wildcard; with no bucket it is simply left out.
+- Rejected: keeping the build-time origin (every change needs a rebuild); dropping the bucket from the static policy
+  and forcing full page loads into /account and /admin (one missed link breaks uploads; goes against S4); wildcard
+  provider domains (any bucket on that provider could receive data); an Edge middleware calling an internal API (an
+  extra hop per page and no shared cache); rendering storefront pages per request (loses prerendering and ISR).
+- Limit: a tab opened before a change keeps its old policy until it reloads. The Settings page reloads itself after a
+  storage change; the card asks to reload other tabs before uploading.
+
+SSRF guard (production): SMTP hosts and storage endpoints that are, or resolve to, loopback, private, link-local,
+unique-local or unspecified addresses are refused when saving (DNS lookup, all addresses), when resolving and when
+connecting (a guarded DNS lookup for the S3 client, nodemailer's `getSocket` hook for SMTP, which also closes DNS
+rebinding). Storage endpoints must be https. `.invalid` names are refused everywhere. Development allows local test
+servers (MinIO, Mailpit).
+
+Test buttons (Owner only, 10 per 10 minutes, audited): "Test Razorpay keys" (an authenticated read-only `GET
+/orders?count=1`, accepted or rejected, plus when the last signed webhook arrived), "Send test email" (to the signed-in
+Owner's own address) and "Test bucket" (put, head and delete a tiny object under `axs-probe/`, each step reported).
+Messages are fixed sentences that never echo a key, host or provider error.
+
+`Payment.providerKeyId` (not in the brief): each payment attempt records the key id it was created with. After a key
+change, unpaid orders start a fresh attempt instead of reopening one made with other keys. Reconcile and refunds
+cover every payment the active keys can reach (`lib/payments/key-scope.ts`): the same key id, a null one, or another
+Razorpay key id of the same mode, because regenerating keys in the Razorpay Dashboard gives a new Key ID for the same
+account. A payment of the other mode answers 409 `provider_key_changed` ("Refund it in the Razorpay Dashboard"); one of
+another account in the same mode cannot be told apart by its id, so Razorpay's "not found" becomes the same 409 for a
+refund and an error count for reconcile.
+
+What an operator keeps in `shared/.env.production`: `APP_URL`, `SESSION_SECRET`, `CSRF_SECRET`, `ORDER_TOKEN_SECRET`,
+`CRON_SECRET`, `DATABASE_URL`, `CATALOG_SOURCE=db`, `LICENSE_KEY_PEPPER`, `LICENSE_KEY_ENC_KEY` (now also protects the
+saved integration secrets; never change it), `LICENSE_SIGNING_PRIVATE_KEY`, `LICENSE_SIGNING_PUBLIC_KEY`, `REDIS_URL`,
+`TRUSTED_PROXY_HOPS`; optionally `DATABASE_POOL_*`, `LICENSE_OFFLINE_GRACE_DAYS`, `SECURITY_HSTS_STRICT`,
+`DOWNLOAD_LINK_TTL_SECONDS`. `PAYMENT_*`, `STORAGE_*` (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*` and `SMTP_*`
+are only a fallback; once real values are saved in Admin, delete those lines and restart.
+
+Open (owner): Settings is visible only with `settings.manage` (the Owner). If Administrators should see the
+integration status, give the Settings module a new `settings.view` permission; the status-only cards already exist.
+
+Review fixes (same day): a save that moves a secret to another server needs it entered again (above); the secret
+inputs are marked as no site password, so browsers do not offer to save them; a storage save, clear or remove reloads
+the Settings page, so its Content-Security-Policy names the new bucket before the next upload; the Owner's form keeps
+only provider choices and the sender from an unusable env fallback (no stand-in bucket, username or access key ID);
+in production, integration values without their `PAYMENT_PROVIDER` / `EMAIL_TRANSPORT` / `STORAGE_DRIVER` line are
+reported as incomplete (naming the selector) instead of "not in the server file"; and the first-run bootstrap only
+uses the test-mode storefront notice when the env file explicitly selects the mock provider or an `rzp_test_` key,
+since payments are normally saved in Admin afterwards, possibly with live keys.

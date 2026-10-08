@@ -7,7 +7,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { POST as refundRoute } from "@/app/api/admin/orders/[id]/refund/route";
 import { POST as reviewRoute } from "@/app/api/admin/orders/[id]/review/route";
 import { db } from "@/lib/db";
-import { getPaymentProvider } from "@/lib/payments";
+import { activePaymentProvider, getPaymentProvider } from "@/lib/payments";
 import { mockCapture } from "@/lib/payments/mock";
 import { processPaymentEvent } from "@/lib/payments/webhook";
 import type { MockProvider } from "@/lib/payments/mock";
@@ -286,7 +286,8 @@ describe("partial amounts and provider failures", () => {
 
   it("rolls everything back when the provider refuses (502), leaving no refund, credit note or audit row", async () => {
     const order = await paidOrder({ items: [{ plan: catalog.plans.annual }] });
-    const mock = getPaymentProvider("mock") as MockProvider;
+    // Refunds go through the ACTIVE provider (the effective configuration: the env mock in these tests).
+    const mock = (await activePaymentProvider()) as MockProvider;
     const spy = vi.spyOn(mock, "refund").mockRejectedValueOnce(
       new (await import("@/lib/payments/types")).PaymentProviderError("provider_error", "Gateway timeout", "mock"),
     );

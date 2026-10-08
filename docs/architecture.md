@@ -32,6 +32,14 @@ Scheduler (cron) --http 127.0.0.1-----------> start)  |    browsers upload and d
   private bucket through presigned URLs (at most 10 minutes); the app only signs and checks.
 - **Payments are confirmed server to server.** The browser never marks an order paid: only the signed webhook (or
   reconciliation asking the provider) does, and only that path issues paid licenses.
+- **Razorpay, SMTP and the bucket are runtime settings.** The Owner saves them in Admin > Settings > Integrations
+  (secrets AES-256-GCM encrypted in the database); the env file is only the fallback. `lib/integrations/resolver.ts`
+  is the one place that decides the effective configuration (an Admin row wins as a whole; incomplete Admin settings
+  mean "Not configured", never a mix with the env file). Each process caches it for 30 s on `globalThis`, shared by the
+  route handlers, instrumentation and the middleware; a save clears the cache at once in the saving process, and
+  payments, email and storage rebuild their clients when the configuration changes. When an integration is not
+  configured the app still starts: checkout, email and uploads answer clear errors (decisions.md
+  "Admin-configurable integrations").
 
 ## Code layout
 
@@ -45,14 +53,15 @@ Scheduler (cron) --http 127.0.0.1-----------> start)  |    browsers upload and d
 | `lib/` | Server and shared logic (next table); `lib/rbac.ts` is the only source of permissions |
 | `content/` | Code-managed copy: home, pricing, about, support, docs guides, legal documents, screenshot panels |
 | `prisma/` | `schema.prisma`, migrations, the development seed and `seed-data/bootstrap.ts` (production catalog and first Owner) |
-| `middleware.ts`, `instrumentation.ts`, `instrumentation-client.ts` | Edge middleware (strict CSP, optimistic redirects, `/api/dev` 404); server start-up (env check, Redis store); browser start-up (Zod without eval) |
+| `middleware.ts`, `instrumentation.ts`, `instrumentation-client.ts` | Node.js-runtime middleware on every page (strict and static CSP with the runtime bucket origin, optimistic redirects, `/api/dev` 404); server start-up (env check, Redis store, integrations cache warm-up); browser start-up (Zod without eval) |
 | `scripts/`, `deploy/`, `tests/` | Dev and check tools; server scripts; unit, DB and end-to-end tests |
 
 ### Modules in `lib/`
 
 | Module | Responsibility |
 |---|---|
-| `env.ts`, `config.ts` | Validated environment (refuses placeholders, and in production the mock provider, local storage, console email, fixture catalog, http `APP_URL`, missing Redis); typed `SiteSetting` reader with defaults |
+| `env.ts`, `config.ts` | Validated environment (refuses placeholders, and in production an explicit mock provider, local storage or console email, the fixture catalog, http `APP_URL`, missing Redis; payment, email and storage variables are optional); typed `SiteSetting` reader with defaults |
+| `integrations/` | Admin-configurable payments, email and storage: the only resolver of the effective configuration (Admin row wins as a whole, env file as fallback, else "Not configured"; 30 s cache on `globalThis`, invalidated by a save), AES-256-GCM secret encryption (HKDF key from `LICENSE_KEY_ENC_KEY`), the store, the env classification, the CSP origin and the test probes |
 | `db.ts`, `db-errors.ts`, `counters.ts` | Prisma client and pool bounds; mapping of pool and timeout errors to 503; gap-free ids and document numbers (`AX-` orders, `LIC-` licenses, `T-` tickets, invoice and credit-note series) from one atomic upsert |
 | `http.ts`, `log.ts`, `audit.ts` | Route wrapper, error envelope, capped body reader, client IP from `TRUSTED_PROXY_HOPS`; redacting logger; append-only audit rows |
 | `auth/` | argon2id passwords, sessions, cookies, CSRF, rate limits (Postgres buckets or Redis Lua scripts), trusted devices, guards (`requireUser`, `requireAccountRole`, `requireStaff`), and the flows (register, sign-in, two-step, verify, reset, claim guest orders) |
@@ -68,7 +77,7 @@ Scheduler (cron) --http 127.0.0.1-----------> start)  |    browsers upload and d
 | `portal/` | Portal context and services: overview, team and invitations, tickets and uploads, billing, notifications, activity, search, export, trials |
 | `admin/` | `adminRoute()`, the route registry, destructive-action helper, list queries, CSV exports, and one folder per module (catalog, orders and refunds, customers, licenses, renewals, coupons, content, templates, leads, tickets, staff, audit, settings, overview, reports), plus `profile/` (My profile: the staff member's own details and sessions; two-step, password and sessions go through `/api/me/*` like the portal Security page) |
 | `jobs/` | Maintenance job: retention cutoffs, bounded batches, tasks |
-| `security/` | Content-Security-Policy builder, security headers, the hashed inline scripts |
+| `security/` | Content-Security-Policy builder, security headers, the hashed inline scripts, the SSRF host rules and the connect-time guards for SMTP and S3 |
 | `design/tokens.ts` | Design tokens (the single source for Tailwind and the shadcn aliases) |
 
 ## Rendering and caching
@@ -78,14 +87,16 @@ Scheduler (cron) --http 127.0.0.1-----------> start)  |    browsers upload and d
   or settings write calls `revalidateTag()`, so changes show at once. `/software`, `/compare` and `/contact` render per
   request. A production build therefore needs the database (`CATALOG_SOURCE=db`).
 - **Portal, admin, checkout, order and auth pages** render per request (they read the session) and get the strict
-  nonce-based CSP from `middleware.ts`.
+  nonce-based CSP from `middleware.ts`. The middleware runs in the Node.js runtime on every page, including the
+  prerendered ones, only to set the policy (with the bucket origin of the current storage settings); it adds no
+  rendering work and keeps pages cacheable.
 - **Prices** render in both forms (excluding and including GST); `<html data-price>` picks one with CSS, set before
   paint by a tiny hashed inline script, so static pages need no per-visitor rendering.
 - **The cart** is browser state (`localStorage`); the server re-prices it at every quote and at order creation.
 
 ## Data model
 
-PostgreSQL through Prisma (`prisma/schema.prisma`, 37 models). The main groups:
+PostgreSQL through Prisma (`prisma/schema.prisma`, 39 models). The main groups:
 
 | Group | Tables |
 |---|---|
@@ -95,6 +106,7 @@ PostgreSQL through Prisma (`prisma/schema.prisma`, 37 models). The main groups:
 | Licensing | `License` (key hash, ciphertext, last 4; terms; nullable `accountId` for guest orders), `DeviceActivation`, `LicenseEvent`, `DownloadEvent` |
 | Support and messaging | `SupportTicket`, `TicketMessage`, `Upload`, `Notification`, `OutboxEmail`, `Lead` |
 | Records | `AuditLog` (append-only), `AccountActivity` (customer-facing log) |
+| Integrations | `IntegrationConfig` (one row per integration saved in Admin: non-secret settings JSON, revision, who changed it), `IntegrationSecret` (one AES-256-GCM ciphertext per secret, bound to its integration and field; last 4 characters of long secrets for display); `Payment.providerKeyId` records which Razorpay key id an attempt used |
 
 ## Purchase to activation
 
@@ -204,7 +216,8 @@ Full threat model and rationale: [`security.md`](security.md).
 | Device API | Strict 4-8 KB bodies, per-key, per-license and per-IP limits, row lock on activation, churn cap, Ed25519 tokens | `lib/licensing/activation.ts` |
 | Browser hardening | Strict nonce CSP on dynamic areas, static CSP elsewhere (`script-src-attr 'none'`, `frame-ancestors 'none'`, `base-uri 'none'`); HSTS, COOP, Permissions-Policy, nosniff, DENY framing | `middleware.ts`, `lib/security/*`, `next.config.ts` |
 | Input | Strict Zod bodies (unknown keys refused), streamed size caps, parameterised SQL, `safeNext()` for redirects | `lib/http.ts`, `lib/validation/*`, `lib/auth/redirect.ts` |
-| Secrets and logs | Secrets only in the env file; `lib/env.ts` refuses placeholders and dev drivers in production; the logger redacts keys, tokens, codes, cookies and query strings | `lib/env.ts`, `lib/log.ts` |
+| Secrets and logs | Secrets in the env file or, for the Admin integrations, AES-256-GCM encrypted with a key derived (HKDF) from `LICENSE_KEY_ENC_KEY`; never returned, logged or audited; `lib/env.ts` refuses placeholders and dev drivers in production; the logger redacts keys, tokens, codes, cookies and query strings | `lib/env.ts`, `lib/integrations/crypto.ts`, `lib/log.ts` |
+| Integration settings | Owner only (`integrations.manage`), password re-entry (5 / 15 min), audited by field label; SSRF guard on SMTP hosts and storage endpoints (save, resolve and connect time) | `lib/admin/settings/integration-actions.ts`, `lib/security/host-rules.ts`, `net-guard.ts` |
 | Abuse | Rate limits on every public write (Redis, failing closed for secret checks); bounded DB pool answering 503 | `lib/auth/rate-limit*.ts`, `lib/db.ts` |
 
 ## Background jobs
@@ -244,9 +257,12 @@ Test-mode release on one aaPanel VPS without Docker ([`../deploy/README.md`](../
   reloads PM2 and checks `/api/health`. A release that fails the health check is
   rolled back automatically (exit status 3); `rollback.sh` picks an earlier release by hand. Migrations are
   forward-only. The newest 3 releases are kept.
-- **Configuration.** Everything secret is in `shared/.env.production` (generated by `scripts/gen-prod-env.mjs`);
-  `lib/env.ts` validates it at start-up and refuses development drivers. The static CSP, the storage origin and HSTS
-  are fixed by `next build`, so changing `STORAGE_*` or `SECURITY_HSTS_STRICT` needs a deploy, not a restart.
+- **Configuration.** The app's own secrets are in `shared/.env.production` (generated by `scripts/gen-prod-env.mjs`);
+  `lib/env.ts` validates it at start-up and refuses development drivers. Razorpay, SMTP and the bucket are saved in
+  Admin > Settings > Integrations and apply without a restart or deploy (the env file's `PAYMENT_*`, `EMAIL_*`,
+  `SMTP_*` and `STORAGE_*` lines are only a fallback; a change there needs a restart). The static CSP and HSTS are
+  fixed by `next build`, so `SECURITY_HSTS_STRICT` needs a deploy; the bucket origin in the CSP is set at runtime by
+  the middleware.
 - **First run.** `deploy.sh --first-run` also runs `scripts/bootstrap-production.ts`: the sample catalog, settings,
   counters and the first Owner, never demo data.
 

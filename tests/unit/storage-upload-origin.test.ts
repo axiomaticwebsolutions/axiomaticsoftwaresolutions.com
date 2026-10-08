@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { storageUploadOrigin } from "@/lib/storage/upload-origin";
+import { storageUploadOrigin, uploadOriginFor } from "@/lib/storage/upload-origin";
 
 describe("storageUploadOrigin (CSP connect-src for presigned uploads)", () => {
   it("needs nothing for the local driver or an incomplete S3 configuration", () => {
@@ -44,7 +44,7 @@ describe("next.config.ts upload CSP", () => {
   type HeaderEntry = { source: string; headers: { key: string; value: string }[] };
   const csp = (entry: HeaderEntry | undefined) => entry?.headers.find((h) => h.key === "Content-Security-Policy")?.value ?? "";
 
-  it("allows the bucket origin in connect-src of the static policy on every path (Phase 7: in-app navigation keeps the first page's CSP)", async () => {
+  it("keeps the bucket out of the static policy, even with STORAGE_* set: middleware.ts adds the runtime origin on every page", async () => {
     vi.stubEnv("STORAGE_DRIVER", "s3");
     vi.stubEnv("STORAGE_BUCKET", "axs-files");
     vi.stubEnv("STORAGE_REGION", "ap-south-1");
@@ -52,8 +52,9 @@ describe("next.config.ts upload CSP", () => {
     const { default: config } = await import("@/next.config");
     const list = (await config.headers?.()) as HeaderEntry[];
     expect(list[0]?.source).toBe("/:path*");
-    expect(csp(list[0])).toMatch(/connect-src 'self'[^;]* https:\/\/axs-files\.s3\.ap-south-1\.amazonaws\.com/);
-    // The strict policy of /account/* and /admin/* (middleware.ts) carries it too: tests/unit/security-csp.test.ts.
+    expect(csp(list[0])).toMatch(/connect-src 'self'( ws:)?;/);
+    expect(csp(list[0])).not.toContain("axs-files");
+    // The runtime origin on every page (static and strict policy): tests/unit/security-csp.test.ts.
     expect(list.slice(1).every((e) => csp(e) === "")).toBe(true);
   });
 
@@ -63,5 +64,26 @@ describe("next.config.ts upload CSP", () => {
     const { default: config } = await import("@/next.config");
     const list = (await config.headers?.()) as HeaderEntry[];
     expect(list.map((e) => e.source)).toEqual(["/:path*", "/checkout", "/orders/:id"]);
+  });
+});
+
+describe("uploadOriginFor (runtime storage configuration)", () => {
+  it("builds one exact origin: virtual-hosted, path-style, dotted bucket, R2 endpoint, AWS without an endpoint", () => {
+    expect(uploadOriginFor({ bucket: "axs-files", region: "ap-south-1", endpoint: null, forcePathStyle: false })).toBe("https://axs-files.s3.ap-south-1.amazonaws.com");
+    expect(uploadOriginFor({ bucket: "axs-files", region: "ap-south-1", endpoint: null, forcePathStyle: true })).toBe("https://s3.ap-south-1.amazonaws.com");
+    expect(uploadOriginFor({ bucket: "files.axiomatic.in", region: "ap-south-1", endpoint: null, forcePathStyle: false })).toBe("https://s3.ap-south-1.amazonaws.com");
+    expect(uploadOriginFor({ bucket: "axs-files", region: "auto", endpoint: "https://acc123.r2.cloudflarestorage.com", forcePathStyle: true })).toBe(
+      "https://acc123.r2.cloudflarestorage.com",
+    );
+    expect(uploadOriginFor({ bucket: "axs-files", region: "blr1", endpoint: "https://blr1.digitaloceanspaces.com", forcePathStyle: false })).toBe(
+      "https://axs-files.blr1.digitaloceanspaces.com",
+    );
+  });
+
+  it("returns null for a malformed bucket, region or endpoint, never a wildcard", () => {
+    expect(uploadOriginFor({ bucket: "Bad_Bucket", region: "ap-south-1", endpoint: null, forcePathStyle: false })).toBeNull();
+    expect(uploadOriginFor({ bucket: "axs-files", region: "ap south 1", endpoint: null, forcePathStyle: false })).toBeNull();
+    expect(uploadOriginFor({ bucket: "axs-files", region: "auto", endpoint: "ftp://files.example.com", forcePathStyle: true })).toBeNull();
+    expect(uploadOriginFor({ bucket: "axs-files", region: "auto", endpoint: "not a url", forcePathStyle: true })).toBeNull();
   });
 });

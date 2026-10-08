@@ -9,6 +9,9 @@
  *   LOCKED, then UPDATE ... RETURNING), so concurrent dispatchers never get the same row. A claim sets SENDING, counts the attempt and leases
  *   the row for OUTBOX_LEASE_MS (a dispatcher that dies mid-send leaves the row to be retried after the lease).
  *   Success -> SENT; failure -> PENDING with exponential backoff, or FAILED after OUTBOX_MAX_ATTEMPTS attempts.
+ *   The transport is resolved before claiming; when email is not configured (EmailNotConfiguredError) the due rows are
+ *   still claimed and each fails through the same path (the attempt counts, backoff applies, FAILED at the end), with
+ *   lastError "EmailNotConfiguredError email_not_configured: Email delivery is not configured.".
  *   Logs carry ids, template ids, attempt counts and error codes only, never addresses, subjects or bodies.
  * - kickEmailDispatch() runs a dispatch on the next tick after the caller commits (concurrent kicks coalesce into one
  *   run plus at most one follow-up). /api/cron/emails is the safety net. Under Vitest kicks are off unless enabled.
@@ -171,15 +174,25 @@ export async function dispatchPendingEmails(opts: DispatchOptions = {}): Promise
   const exhausted = await failExhaustedLeases(clock());
   if (exhausted > 0) log.warn("email_outbox_lease_exhausted", { count: exhausted });
 
+  // Resolved before claiming, so a configuration error never leaves rows SENDING until their lease expires.
+  let transport: EmailTransport | null = null;
+  let unavailable: unknown = null;
+  try {
+    transport = opts.transport ?? (await getEmailTransport());
+  } catch (error) {
+    unavailable = error;
+  }
+
   const claimed = await claimDueEmails(limit, clock());
   if (claimed.length === 0) return { sent: 0, failed: 0 };
+  if (!transport) log.warn("email_dispatch_not_configured", { count: claimed.length, error: sendErrorSummary(unavailable) });
 
-  const transport = opts.transport ?? (await getEmailTransport());
   let sent = 0;
   let failed = 0;
   for (const row of claimed) {
     let result: EmailSendResult;
     try {
+      if (!transport) throw unavailable;
       result = await transport.send({
         to: row.to,
         subject: row.subject,
@@ -205,7 +218,7 @@ export async function dispatchPendingEmails(opts: DispatchOptions = {}): Promise
       log.warn(final ? "email_failed" : "email_retry_scheduled", {
         outboxId: row.id,
         template: row.templateId,
-        transport: transport.name,
+        transport: transport?.name ?? "none",
         attempt: row.attempts,
         error: sendErrorSummary(error),
       });

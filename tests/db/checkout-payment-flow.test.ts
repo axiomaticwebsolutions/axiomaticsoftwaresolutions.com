@@ -4,7 +4,7 @@ import { retryPayment } from "@/lib/checkout/payment-attempt";
 import { recordPaymentReturn, RETURN_SIGNATURE_MESSAGE } from "@/lib/checkout/return";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/http";
-import { getPaymentProvider } from "@/lib/payments";
+import { activePaymentProvider, getPaymentProvider } from "@/lib/payments";
 import { signMockReturn, type MockProvider } from "@/lib/payments/mock";
 import { processPaymentEvent } from "@/lib/payments/webhook";
 import { resolveOrderAccessFor, type OrderAccess } from "@/lib/orders/access";
@@ -189,6 +189,25 @@ describe("retry", () => {
     await retryPayment(db, await access(order));
     expect(await db.payment.count({ where: { orderId: order.orderId } })).toBe(1);
     expect((await latestPayment(order.orderId)).id).toBe(before.id);
+  });
+
+  it("records the key id of every attempt and reopens only an attempt made with the active keys", async () => {
+    const active = await activePaymentProvider();
+    const order = await guestOrder();
+    const first = await latestPayment(order.orderId);
+    expect(first.providerKeyId).toBe(active.keyId);
+    // An attempt made with other keys (test to live, another account) cannot be paid with these: a fresh one.
+    await db.payment.update({ where: { id: first.id }, data: { providerKeyId: "rzp_test_OtherAccount01" } });
+    await retryPayment(db, await access(order));
+    const second = await latestPayment(order.orderId);
+    expect(second.id).not.toBe(first.id);
+    expect(second.providerKeyId).toBe(active.keyId);
+    expect(await db.payment.count({ where: { orderId: order.orderId } })).toBe(2);
+    // Attempts made before key ids were recorded (null) count as the active keys': reopened.
+    await db.payment.update({ where: { id: second.id }, data: { providerKeyId: null } });
+    const start = await retryPayment(db, await access(order));
+    expect(await db.payment.count({ where: { orderId: order.orderId } })).toBe(2);
+    expect(start.checkout).toEqual({ kind: "mock", url: `/dev/mock-checkout?order=${order.orderId}&t=${start.orderToken}` });
   });
 
   it("refuses orders that are paid or confirming (409 not_retryable)", async () => {

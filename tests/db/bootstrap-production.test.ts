@@ -25,6 +25,7 @@ import {
   runBootstrap,
   type BootstrapOwnerInput,
 } from "@/prisma/seed-data/bootstrap";
+import { SAMPLE_NOTICE_TEXT } from "@/prisma/seed-data/content";
 
 /**
  * The production bootstrap must see an EMPTY database, and the other DB test files share one schema, so this file
@@ -163,8 +164,8 @@ describe("production bootstrap on an empty database", () => {
     expect(output).toMatch(/DRY RUN: nothing was written/);
     expect(status).toBe(0);
     expect(output).toContain(`would create ${OWNER_EMAIL} ("Asha Rao")`);
-    // No PAYMENT_PROVIDER in the file = the app's default mock provider = test mode wording.
-    expect(output).toContain(`Sample notice: on, "${TEST_MODE_NOTICE_TEXT}"`);
+    // No PAYMENT_PROVIDER in the file: payments are set in Admin later (maybe live), so the neutral wording.
+    expect(output).toContain(`Sample notice: on, "${SAMPLE_NOTICE_TEXT}"`);
     expect(output).toContain("BOOTSTRAP_OWNER_PASSWORD is read from .env.production. After the real run, delete that line");
     expect(output).not.toContain(PASSWORD);
     expect(Object.values(await counts()).every((n) => n === 0)).toBe(true);

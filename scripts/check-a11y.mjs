@@ -25,7 +25,8 @@
  *            drawer. axe in each open state.
  *   admin    As the demo Administrator: module search, opening a row's drawer from the keyboard (focus moves in and
  *            returns to the row), a destructive dialog inside it (reason required, Escape returns focus to its
- *            button), the 360px sidebar drawer.
+ *            button), the 360px sidebar drawer. As the seeded staff Owner: Settings > Integrations at 1280 and 360px and
+ *            its password dialog (focus, a described error, Escape returns focus); nothing is saved.
  *   reflow   WCAG 1.4.10 / 1.4.4 / 1.4.12 on key pages: 320 CSS px (= 1280px at 400%), 640px (= 200% zoom), and
  *            text spacing (line height 1.5, letter 0.12em, word 0.16em, paragraph 2em) at 360 and 1280px without a
  *            horizontal page scroll or clipped text.
@@ -922,6 +923,48 @@ async function scenarioAdmin(ctxs) {
   await hydrated(m.page);
   await modalCheck(m.page, "admin menu drawer (360)", m.page.getByRole("button", { name: "Open menu", exact: true }).first());
   await close(m, "admin 360");
+
+  // Admin > Settings > Integrations as the seeded staff Owner (the Administrator only sees the locked page): the forms
+  // at 1280 and 360px (axe, no page scroll), and the password dialog (focus on the field, an empty password marks it
+  // invalid with a described error, Escape returns focus to Save). Nothing is saved.
+  if (PEOPLE.staffOwner.email && PEOPLE.staffOwner.password) {
+    const http = await signIn(PEOPLE.staffOwner).catch((e) => (check(false, `${PEOPLE.staffOwner.label} signs in`, e.message), null));
+    for (const width of http ? [1280, 360] : []) {
+      const o = await open({ width, height: 800, http });
+      await go(o.page, "/admin/settings");
+      await hydrated(o.page);
+      const overflow = await o.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      check(overflow <= 0, `/admin/settings integrations @${width}px: no horizontal page scroll`, `${overflow}px`);
+      await axe(o.page, `admin settings integrations @${width}`);
+      if (width === 1280) {
+        const save = o.page.locator("#integration-payments").getByRole("button", { name: "Save", exact: true });
+        await o.page.locator("#integration-payments").getByLabel("Key secret", { exact: true }).fill("a11y-check-secret");
+        await o.page.locator("#integration-payments").getByLabel("Webhook secret", { exact: true }).fill("a11y-check-webhook-secret");
+        const keyId = o.page.locator("#integration-payments").getByLabel("Key ID", { exact: true });
+        if (!(await keyId.inputValue())) await keyId.fill("rzp_test_A11yCheck0001");
+        await save.focus();
+        await o.page.keyboard.press("Enter");
+        const field = o.page.getByRole("alertdialog").getByLabel("Your password");
+        const opened = await field.waitFor({ timeout: 10_000 }).then(() => true, () => false);
+        if (check(opened, "integrations: Save opens the password dialog")) {
+          await sleep(300);
+          check(await field.evaluate((el) => document.activeElement === el), "integrations: focus moves to the password field", await focused(o.page));
+          await o.page.keyboard.press("Enter");
+          await sleep(300);
+          const facts = await field.evaluate((el) => ({
+            invalid: el.getAttribute("aria-invalid") === "true",
+            described: (el.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent ?? "").join(" ").trim(),
+          }));
+          check(facts.invalid && facts.described.length > 0, "integrations: an empty password is marked invalid with a described error", JSON.stringify(facts));
+          await axe(o.page, "integrations password dialog");
+          await o.page.keyboard.press("Escape");
+          await sleep(300);
+          check((await focused(o.page)).includes("Save"), "integrations: Escape returns focus to Save", await focused(o.page));
+        }
+      }
+      await close(o, `integrations ${width}`);
+    }
+  }
 }
 
 // ---------- reflow, zoom and text spacing ----------

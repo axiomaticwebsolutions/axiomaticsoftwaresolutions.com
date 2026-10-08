@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/lib/env";
 import { setLogSink } from "@/lib/log";
 import { resetPaymentProviders } from "@/lib/payments";
+import { invalidateIntegrations } from "@/lib/integrations/resolver";
 import { MockProvider } from "@/lib/payments/mock";
 import {
   deliverMockWebhook,
@@ -42,6 +43,7 @@ function stubEnv(over: Record<string, string> = {}): void {
   for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
   resetEnvCache();
   resetPaymentProviders();
+  invalidateIntegrations();
 }
 
 const event = {
@@ -123,12 +125,12 @@ describe("deliverMockWebhook", () => {
 });
 
 describe("dev gate and return path", () => {
-  it("is enabled only outside production with the mock provider", () => {
-    expect(mockCheckoutEnabled()).toBe(true);
-    stubEnv({ PAYMENT_PROVIDER: "razorpay" });
-    expect(mockCheckoutEnabled()).toBe(false);
+  it("is enabled only outside production while the effective payments configuration is the mock", async () => {
+    expect(await mockCheckoutEnabled()).toBe(true);
+    stubEnv({ PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: "rzp_test_AbCdEf123456" });
+    expect(await mockCheckoutEnabled()).toBe(false);
     stubEnv({ NODE_ENV: "production" });
-    expect(mockCheckoutEnabled()).toBe(false);
+    expect(await mockCheckoutEnabled()).toBe(false);
   });
 
   it("returns to the order page and keeps the order link token", () => {

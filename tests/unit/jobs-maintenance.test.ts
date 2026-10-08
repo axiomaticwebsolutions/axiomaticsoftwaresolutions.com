@@ -7,6 +7,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { Prisma } from "@/lib/db";
 import { emptyMaintenanceCounts, MAINTENANCE_COUNT_KEYS, MAINTENANCE_TASKS, runMaintenance } from "@/lib/jobs/maintenance";
+import { setIntegrationEnvForTests } from "@/lib/integrations/resolver";
 import { setLogSink } from "@/lib/log";
 import type { StorageDriver } from "@/lib/storage";
 
@@ -219,7 +220,24 @@ describe("runMaintenance (fake database): uploads and storage", () => {
     const fake = fakeDb({ uploads: ["a", "b", "c", "d", "e"] });
     const result = await runMaintenance({ client: fake.client, storage: memoryStorage(() => true), uploadBatchSize: 2, tasks: ["uploads"] });
     expect(result).toMatchObject({ uploadsDeleted: 0, uploadsFailed: 2, failed: ["uploads"], more: ["uploads"] });
-    expect(fake.statements).toEqual(["Upload"]);
+    // One batch: the existence check outside the transaction, then the locked selection.
+    expect(fake.statements).toEqual(["Upload", "Upload"]);
+  });
+
+  it("skips the upload task (not failed) when storage is not configured, resolving storage only once uploads are due", async () => {
+    setIntegrationEnvForTests({ NODE_ENV: "production" });
+    try {
+      const fake = fakeDb({ uploads: ["a", "b"] });
+      const result = await runMaintenance({ client: fake.client, tasks: ["uploads"] });
+      expect(result).toEqual(emptyMaintenanceCounts());
+      expect(fake.uploadsLeft()).toEqual(["a", "b"]);
+      expect(fake.statements).toEqual(["Upload"]); // the existence check only: no transaction, nothing locked
+      expect(lines.map((l) => JSON.parse(l) as { event: string; reason?: string })).toEqual([
+        expect.objectContaining({ event: "maintenance_uploads_skipped", reason: "not_configured" }),
+      ]);
+    } finally {
+      setIntegrationEnvForTests(null);
+    }
   });
 
   it("treats a missing object as deleted, but not a missing bucket", async () => {

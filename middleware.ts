@@ -1,23 +1,32 @@
 /**
- * Edge middleware. Edge-safe on purpose: no database, no secrets, no server-only imports.
+ * Middleware, Node.js runtime (docs/admin-integrations-design.md section 11; docs/security.md). No secrets in responses;
+ * the only server-side state it reads is the integration resolver's cached snapshot (the bucket origin).
  *
- * 1. Strict Content-Security-Policy (docs/security.md): on the dynamically rendered routes (lib/security/csp.ts
- *    strictCspRoute: /account, /admin, /checkout, /orders/:id and the auth pages) every response gets a fresh nonce.
- *    The policy goes on the request (Next.js reads the nonce from the request's Content-Security-Policy header and puts
- *    it on the scripts it renders; `x-nonce` carries it for our own server code) and on the response, where it replaces
- *    the static policy from next.config.ts. Our own inline <head> scripts are allowed by hash.
+ * 1. Content-Security-Policy on EVERY page (the matcher covers all paths except /api and /_next, plus /api/dev):
+ *    - strict routes (lib/security/csp.ts strictCspRoute: /account, /admin, /checkout, /orders/:id and the auth pages)
+ *      get a fresh nonce policy. It goes on the request (Next.js reads the nonce from the request's
+ *      Content-Security-Policy header and puts it on the scripts it renders; `x-nonce` carries it for our own server
+ *      code) and on the response. Our own inline <head> scripts are allowed by hash.
+ *    - every other page gets the static policy ('unsafe-inline' scripts, for prerendered and ISR pages).
+ *    Both carry the storage bucket origin in connect-src from the RUNTIME storage configuration
+ *    (lib/integrations/csp-origin.ts: Admin > Settings > Integrations, else the env fallback; one exact origin, never a
+ *    wildcard), so a bucket change needs no rebuild. The bucket must be on every page because client-side navigation
+ *    keeps the first document's policy. The middleware's header replaces next.config.ts's (which has no bucket).
+ *    The Node.js runtime runs in the server process, so this module's copy of the resolver shares the process-wide
+ *    snapshot (globalThis) and sees a save in this process at once; other processes within 30 s.
  * 2. Optimistic redirect only (docs/decisions.md Phase 3 "Auth"): a visitor without the session cookie who opens
- *    /account/* or /admin/* goes to <APP_URL>/sign-in?next=<path> (publicOrigin below). The cookie's presence proves
- *    nothing; every page and route still authorizes on the server.
+ *    /account, /account/*, /admin or /admin/* goes to <APP_URL>/sign-in?next=<path> (publicOrigin below). The cookie's
+ *    presence proves nothing; every page and route still authorizes on the server. /accounting or /administrator are
+ *    not signed-in areas.
  * 3. Production guard for the development API (/api/dev/*): every method answers 404 there, so a production server
  *    never reveals that the routes exist (the handlers also refuse outside development; /dev/* pages 404 through
  *    app/dev/layout.tsx).
- * Other API routes, the static storefront, Next internals and static files never reach this (see `matcher`).
+ * Other API routes and Next internals (/_next) never reach this (see `matcher`).
  */
 import { NextResponse, type NextRequest } from "next/server";
+import { uploadOriginForCsp } from "@/lib/integrations/csp-origin";
 import { contentSecurityPolicy, generateNonce, NONCE_HEADER, strictCspRoute } from "@/lib/security/csp";
 import { inlineScriptHashSources } from "@/lib/security/inline-scripts";
-import { storageUploadOrigin } from "@/lib/storage/upload-origin";
 
 /** Must equal SESSION_COOKIE in lib/auth/cookies.ts (a unit test checks it; that module is server-only). */
 const SESSION_COOKIE_NAME = "axs_session";
@@ -39,12 +48,11 @@ function isUnder(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
 }
 
-let uploadOriginCache: { value: string | null } | null = null;
-
-/** The storage bucket origin for connect-src, from the server's environment (computed once per process). */
-function uploadOrigin(): string | null {
-  uploadOriginCache ??= { value: storageUploadOrigin(process.env) };
-  return uploadOriginCache.value;
+/** `/account`, `/account/...` and transport forms such as `/account.rsc` (same for /admin); not `/accounting`. */
+function inSignedInArea(pathname: string, prefix: string): boolean {
+  if (!pathname.startsWith(prefix)) return false;
+  const rest = pathname.slice(prefix.length);
+  return rest === "" || rest.startsWith("/") || /^[.][A-Za-z0-9]+$/.test(rest);
 }
 
 /**
@@ -68,7 +76,7 @@ function publicOrigin(req: NextRequest): string {
   return req.nextUrl.origin;
 }
 
-export function middleware(req: NextRequest): NextResponse {
+export async function middleware(req: NextRequest): Promise<NextResponse> {
   const { pathname } = req.nextUrl;
   if (isUnder(pathname, DEV_API_PREFIX)) {
     if (isDev()) return NextResponse.next();
@@ -78,8 +86,7 @@ export function middleware(req: NextRequest): NextResponse {
     );
   }
 
-  // Everything the "/account/:path*" and "/admin/:path*" matchers let in (transport forms such as "/account.rsc" too).
-  const signedInArea = pathname.startsWith("/account") || pathname.startsWith("/admin");
+  const signedInArea = inSignedInArea(pathname, "/account") || inSignedInArea(pathname, "/admin");
   if (signedInArea && !req.cookies.get(SESSION_COOKIE_NAME)?.value) {
     const url = new URL("/sign-in", publicOrigin(req));
     url.searchParams.set("next", `${pathname}${req.nextUrl.search}`);
@@ -88,16 +95,24 @@ export function middleware(req: NextRequest): NextResponse {
 
   const headers = new Headers(req.headers);
   if (signedInArea) headers.set(PATH_HEADER, `${pathname}${req.nextUrl.search}`);
+  const uploadOrigin = await uploadOriginForCsp();
 
   const route = strictCspRoute(pathname);
-  if (!route) return NextResponse.next({ request: { headers } });
+  if (!route) {
+    // The static policy has no nonce, so a client-sent CSP or nonce request header must not reach the renderer either.
+    headers.delete("content-security-policy");
+    headers.delete(NONCE_HEADER);
+    const res = NextResponse.next({ request: { headers } });
+    res.headers.set("Content-Security-Policy", contentSecurityPolicy({ dev: isDev(), uploadOrigin }));
+    return res;
+  }
 
   const nonce = generateNonce();
   const policy = contentSecurityPolicy({
     dev: isDev(),
     strict: { nonce, scriptHashes: inlineScriptHashSources() },
     razorpay: route.razorpay,
-    uploadOrigin: uploadOrigin(),
+    uploadOrigin,
   });
   headers.set("content-security-policy", policy);
   headers.set(NONCE_HEADER, nonce);
@@ -107,8 +122,11 @@ export function middleware(req: NextRequest): NextResponse {
 }
 
 export const config = {
-  // Literal patterns (Next.js reads them at build time). They must cover every route strictCspRoute() accepts
-  // ("/account/:path*" also matches "/account" itself) plus the development API; tests/unit/security-csp.test.ts checks it.
+  // Node.js runtime: the bucket origin comes from the integration resolver (database + process-wide cache).
+  runtime: "nodejs",
+  // Literal patterns (Next.js reads them at build time): the strict routes listed explicitly (strictCspRoute;
+  // "/account/:path*" also matches "/account"), the development API, and every other page (the last pattern: all paths
+  // except /api and /_next). tests/unit/security-csp.test.ts checks what is and is not covered.
   matcher: [
     "/account/:path*",
     "/admin/:path*",
@@ -122,5 +140,6 @@ export const config = {
     "/verify",
     "/invite",
     "/staff-invite",
+    "/((?!api/|_next/).*)",
   ],
 };

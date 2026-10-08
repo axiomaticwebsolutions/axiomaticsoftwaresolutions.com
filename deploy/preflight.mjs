@@ -8,9 +8,15 @@
  * - Refuses every value that still contains CHANGE-ME (the placeholders of deploy/.env.production.example; lib/env.ts
  *   only catches placeholders in secrets, not in APP_URL, SMTP_HOST or BOOTSTRAP_OWNER_EMAIL).
  * - Validates the result with lib/env.ts parseEnv() under the production rules (https APP_URL, REDIS_URL,
- *   TRUSTED_PROXY_HOPS >= 1, s3 storage, smtp email, a real payment provider, CATALOG_SOURCE=db, ...).
+ *   TRUSTED_PROXY_HOPS >= 1, CATALOG_SOURCE=db, no mock / local / console driver, ...).
+ * - Payments, email and storage are normally saved in Admin > Settings > Integrations, so none of their variables is
+ *   required. One line per integration says what the env fallback holds (lib/integrations/env-source.ts); values that
+ *   cannot work (the release-day stand-ins, an .invalid host, a malformed Key ID, values without their
+ *   PAYMENT_PROVIDER / EMAIL_TRANSPORT / STORAGE_DRIVER line) are a WARNING, not a failure: the app starts and shows
+ *   the integration as "Not configured" until it is saved in Admin. CHANGE-ME values still fail (see above).
  * - --first-run: BOOTSTRAP_OWNER_EMAIL and BOOTSTRAP_OWNER_PASSWORD must be set (the bootstrap checks the rest).
- * - --db: connects with DATABASE_URL; needs PostgreSQL 14+ and a UTF8 database (collation C recommended).
+ * - --db: connects with DATABASE_URL; needs PostgreSQL 14+ and a UTF8 database (collation C recommended); lists the
+ *   integrations saved in Admin (kind and date only; a missing table means the migration is still pending).
  * - --redis: PING through REDIS_URL.
  * Prints variable names, rules and server facts only, never a value. Exit 0 when everything passed, 1 otherwise.
  */
@@ -73,7 +79,32 @@ try {
   if (Array.isArray(error?.problems)) problems.push(...error.problems);
   else problems.push(`lib/env.ts could not be loaded (${error instanceof Error ? error.message : "unknown error"}); run with node --import tsx`);
 }
-if (env) info(`environment valid for production (APP_URL ${new URL(env.APP_URL).origin}, payments ${env.PAYMENT_PROVIDER}, storage ${env.STORAGE_DRIVER}, email ${env.EMAIL_TRANSPORT})`);
+if (env) info(`environment valid for production (APP_URL ${new URL(env.APP_URL).origin})`);
+
+/** One line per integration: what the env fallback holds. Names only, never values. */
+if (env) {
+  try {
+    const mod = await import(pathToFileURL(resolve(dir, "lib", "integrations", "env-source.ts")).href);
+    const classify = mod.classifyEnvIntegrations ?? mod.default?.classifyEnvIntegrations;
+    const verdicts = classify(process.env, { production: true });
+    for (const kind of ["payments", "email", "storage"]) {
+      const { selector, result } = verdicts[kind];
+      if (result.ok) {
+        const what = kind === "payments" ? `${result.config.provider} (${result.config.mode} mode)` : kind === "email" ? result.config.transport : result.config.driver;
+        info(`${kind}: server file ${what} (used while nothing is saved in Admin)`);
+      } else if (result.reason === "missing") {
+        info(`${kind}: not in the server file (set it in Admin > Settings > Integrations)`);
+      } else {
+        const names = result.names.length > 0 ? `: ${result.names.join(", ")}` : "";
+        const why = result.reason === "env_incomplete" ? "is incomplete" : result.reason === "unsupported_provider" ? `selects an unsupported provider (${selector})` : "has values that can't work";
+        info(`${kind}: server file ${why}${names} (ignored)`);
+        warnings.push(`${kind}: the server file ${why}${names}; set ${kind} in Admin > Settings > Integrations, then delete those lines`);
+      }
+    }
+  } catch (error) {
+    warnings.push(`integrations: lib/integrations/env-source.ts could not be loaded (${error instanceof Error ? error.message : "unknown error"})`);
+  }
+}
 
 const ownerEmail = process.env.BOOTSTRAP_OWNER_EMAIL?.trim();
 const ownerPassword = process.env.BOOTSTRAP_OWNER_PASSWORD ?? "";
@@ -111,6 +142,14 @@ if (env && flag("db")) {
       problems.push(`DATABASE_URL: the database encoding is ${row.encoding}; it must be UTF8. Recreate it while empty (deploy/db-setup.sh): ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0`);
     }
     if (row.collate !== "C" || row.ctype !== "C") warnings.push(`database collation ${row.collate} / ctype ${row.ctype}; C / C is recommended (deploy/db-setup.sh)`);
+    try {
+      const saved = await client.query(`SELECT kind::text AS kind, "updatedAt" AS "updatedAt" FROM "IntegrationConfig" ORDER BY kind`);
+      if (saved.rows.length === 0) info("Admin: no integrations saved yet");
+      for (const r of saved.rows) info(`Admin: ${String(r.kind).toLowerCase()} saved ${new Date(r.updatedAt).toISOString().slice(0, 16).replace("T", " ")} UTC`);
+    } catch (error) {
+      if (error?.code === "42P01") info("Admin: none yet (migration pending)");
+      else warnings.push(`Admin integrations: could not be listed (${error?.code ?? "unknown error"})`);
+    }
   } catch (error) {
     problems.push(`DATABASE_URL: cannot connect or query (${error?.code ? `${error.code} ` : ""}${error instanceof Error ? error.message : "unknown error"})`);
   } finally {

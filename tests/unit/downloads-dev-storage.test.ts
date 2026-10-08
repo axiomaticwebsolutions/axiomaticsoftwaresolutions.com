@@ -8,7 +8,7 @@ import path from "node:path";
 import { NextRequest } from "next/server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as EnvModule from "@/lib/env";
-import { setStorage } from "@/lib/storage";
+import { setStorage, type StorageDriver } from "@/lib/storage";
 import { LocalStorageDriver, signLocalRequest } from "@/lib/storage/local";
 
 const env = vi.hoisted(() => ({
@@ -137,10 +137,14 @@ describe("keys and availability", () => {
     expect((await get(url)).status).toBe(404);
   });
 
-  it("answers 404 when the storage driver is not local", async () => {
+  it("answers 404 when the effective storage driver is not local", async () => {
     const { url } = await driver.presignGet(KEY, { ttlSec: 60 });
-    env.value.STORAGE_DRIVER = "s3";
-    expect((await get(url)).status).toBe(404);
+    setStorage({ ...driver, kind: "s3" } as unknown as StorageDriver);
+    try {
+      expect((await get(url)).status).toBe(404);
+    } finally {
+      setStorage(driver);
+    }
   });
 
   it("answers 404 in production", async () => {

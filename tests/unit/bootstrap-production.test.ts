@@ -111,8 +111,8 @@ describe("buildBootstrapRows: settings and counters", () => {
     expect(settings.get("tax")).toEqual(SEED_SETTINGS.tax);
     expect(settings.get("licensing")).toEqual(SEED_SETTINGS.licensing);
     expect(settings.get("content.banner")).toEqual(SETTING_DEFAULTS["content.banner"]);
-    // No PAYMENT_PROVIDER = the app's default mock provider, i.e. test mode.
-    expect(settings.get("content.sampleNotice")).toEqual({ enabled: true, text: TEST_MODE_NOTICE_TEXT });
+    // No PAYMENT_PROVIDER: payments are set in Admin later (maybe live), so the neutral wording.
+    expect(settings.get("content.sampleNotice")).toEqual({ enabled: true, text: SAMPLE_NOTICE_TEXT });
   });
 
   it("starts production counters fresh: AX-10001, LIC-20001, T-1001 and leads at the app's own start", () => {
@@ -209,7 +209,9 @@ describe("readBootstrapConfig: business, sample flag and notice", () => {
     expect(notice({ PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: "rzp_live_AbC123" })).toEqual({ enabled: true, text: SAMPLE_NOTICE_TEXT });
     expect(notice({ PAYMENT_PROVIDER: "cashfree", PAYMENT_KEY_ID: "rzp_test_AbC123" })).toEqual({ enabled: true, text: SAMPLE_NOTICE_TEXT });
     expect(notice({ PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: "rzp_test_x", BOOTSTRAP_SAMPLE_NOTICE_TEXT: "Own text" }).text).toBe("Own text");
-    expect(isPaymentTestMode({})).toBe(true);
+    expect(isPaymentTestMode({})).toBe(false);
+    expect(isPaymentTestMode({ PAYMENT_KEY_ID: "rzp_test_AbC123" })).toBe(false);
+    expect(isPaymentTestMode({ PAYMENT_PROVIDER: "mock" })).toBe(true);
     expect(isPaymentTestMode({ PAYMENT_PROVIDER: "razorpay" })).toBe(false);
     expect(settingSchemas["content.sampleNotice"].safeParse({ enabled: true, text: TEST_MODE_NOTICE_TEXT }).success).toBe(true);
   });
@@ -322,7 +324,7 @@ describe("formatBootstrapReport", () => {
     const text = formatBootstrapReport({ dryRun: false, changed: true, plan }, { warnings: ["w1"], notes: ["x1"], appUrl: "https://shop.example.in" });
     expect(text).toContain("  - x1");
     expect(text).toContain("  Business details: sample (sample: true; enter the real ones in Admin > Settings).");
-    expect(text).toContain(`  Sample notice: on, "${TEST_MODE_NOTICE_TEXT}".`);
+    expect(text).toContain(`  Sample notice: on, "${SAMPLE_NOTICE_TEXT}".`);
     expect(text).toContain(`created ${String(rows.products.length).padStart(3)}`);
     expect(text).toContain("order=10001, license=20001, ticket=1001, lead=1001");
     expect(text).toContain("founder@axiomaticsoftwaresolutions.com");

@@ -124,13 +124,14 @@ describe("parseEnv", () => {
 
   it("reports missing required variables", () => {
     const problems = problemsOf(validEnv({ SESSION_SECRET: undefined, DATABASE_URL: "", EMAIL_FROM: "   " }));
-    expect(problems).toEqual(
-      expect.arrayContaining([
-        "SESSION_SECRET: is required",
-        "DATABASE_URL: is required",
-        "EMAIL_FROM: is required",
-      ]),
-    );
+    expect(problems).toEqual(["SESSION_SECRET: is required", "DATABASE_URL: is required"]);
+  });
+
+  it("treats EMAIL_FROM as optional, but it must parse when set", () => {
+    expect(parseEnv(validEnv({ EMAIL_FROM: undefined })).EMAIL_FROM).toBeUndefined();
+    expect(parseEnv(validEnv({ EMAIL_FROM: "no-reply@axiomatic.example" })).EMAIL_FROM).toBe("no-reply@axiomatic.example");
+    expect(problemsOf(validEnv({ EMAIL_FROM: "Axiomatic <not an address>" }))).toEqual([expect.stringMatching(/^EMAIL_FROM: must be a sender/)]);
+    expect(problemsOf(validEnv({ EMAIL_FROM: "x" }))).toEqual([expect.stringMatching(/^EMAIL_FROM: must be a sender/)]);
   });
 
   it("never echoes secret values in the error", () => {
@@ -238,16 +239,34 @@ describe("production rules", () => {
   it("allows mock, local and console outside production", () => {
     expect(() => parseEnv(validEnv({ NODE_ENV: "test" }))).not.toThrow();
   });
+
+  it("starts with none of the payment, storage or email variables (they are set in Admin)", () => {
+    const blank: Record<string, undefined> = {};
+    for (const key of Object.keys(productionEnv())) {
+      if (/^(PAYMENT|STORAGE|EMAIL|SMTP)_/.test(key) && key !== "STORAGE_LOCAL_DIR") blank[key] = undefined;
+    }
+    const env = parseEnv(productionEnv(blank));
+    expect(env.PAYMENT_PROVIDER).toBeUndefined();
+    expect(env.STORAGE_DRIVER).toBeUndefined();
+    expect(env.EMAIL_TRANSPORT).toBeUndefined();
+    expect(env.PAYMENT_WEBHOOK_SECRET).toBeUndefined();
+    expect(env.EMAIL_FROM).toBeUndefined();
+    expect(env.DOWNLOAD_LINK_TTL_SECONDS).toBe(600);
+  });
+
+  it("still refuses placeholders in integration secrets that are present", () => {
+    const problems = problemsOf(
+      productionEnv({ PAYMENT_WEBHOOK_SECRET: "change-me-run-gen-prod-env", SMTP_PASSWORD: "CHANGE-ME", PAYMENT_KEY_SECRET: "xxxxxxxxxxxx" }),
+    );
+    expect(problems.map((p) => p.split(":")[0]).sort()).toEqual(["PAYMENT_KEY_SECRET", "PAYMENT_WEBHOOK_SECRET", "SMTP_PASSWORD"]);
+    expect(problems.every((p) => /placeholder/.test(p))).toBe(true);
+  });
 });
 
-describe("conditional requirements", () => {
-  it("requires S3 credentials only when STORAGE_DRIVER=s3", () => {
+describe("integration fallbacks (no conditional requirements)", () => {
+  it("accepts a half-filled s3 fallback: lib/integrations/env-source.ts decides whether it is usable", () => {
     expect(() => parseEnv(validEnv({ STORAGE_ACCESS_KEY_ID: "", STORAGE_SECRET_ACCESS_KEY: "" }))).not.toThrow();
-    const problems = problemsOf(validEnv({ STORAGE_DRIVER: "s3", STORAGE_REGION: "ap-south-1", STORAGE_BUCKET: "axiomatic-installers" }));
-    expect(problems).toEqual([
-      "STORAGE_ACCESS_KEY_ID: is required when STORAGE_DRIVER=s3",
-      "STORAGE_SECRET_ACCESS_KEY: is required when STORAGE_DRIVER=s3",
-    ]);
+    expect(() => parseEnv(validEnv({ STORAGE_DRIVER: "s3", STORAGE_REGION: "ap-south-1", STORAGE_BUCKET: "axiomatic-installers" }))).not.toThrow();
   });
 
   it("refuses placeholder S3 credentials", () => {
@@ -263,19 +282,21 @@ describe("conditional requirements", () => {
     expect(problems.map((p) => p.split(":")[0])).toEqual(["STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY"]);
   });
 
-  it("requires provider keys only for a real payment provider", () => {
+  it("no longer requires provider keys, but still refuses a placeholder key", () => {
     expect(() => parseEnv(validEnv({ PAYMENT_KEY_ID: undefined, PAYMENT_KEY_SECRET: undefined }))).not.toThrow();
+    expect(() => parseEnv(validEnv({ PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: undefined, PAYMENT_KEY_SECRET: undefined }))).not.toThrow();
     const problems = problemsOf(validEnv({ PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: "rzp_test_xxxxxxxx", PAYMENT_KEY_SECRET: undefined }));
-    expect(problems).toEqual([
-      expect.stringMatching(/^PAYMENT_KEY_ID: is a placeholder/),
-      "PAYMENT_KEY_SECRET: is required when PAYMENT_PROVIDER=razorpay",
-    ]);
+    expect(problems).toEqual([expect.stringMatching(/^PAYMENT_KEY_ID: is a placeholder/)]);
   });
 
-  it("requires SMTP_HOST for the smtp transport", () => {
-    expect(problemsOf(validEnv({ EMAIL_TRANSPORT: "smtp", SMTP_HOST: "" }))).toEqual([
-      "SMTP_HOST: is required when EMAIL_TRANSPORT=smtp",
-    ]);
+  it("no longer requires SMTP_HOST for the smtp transport", () => {
+    expect(() => parseEnv(validEnv({ EMAIL_TRANSPORT: "smtp", SMTP_HOST: "" }))).not.toThrow();
+  });
+
+  it("leaves the selectors unset when absent (no default driver)", () => {
+    const env = parseEnv(validEnv({ PAYMENT_PROVIDER: undefined, STORAGE_DRIVER: undefined, EMAIL_TRANSPORT: undefined }));
+    expect([env.PAYMENT_PROVIDER, env.STORAGE_DRIVER, env.EMAIL_TRANSPORT]).toEqual([undefined, undefined, undefined]);
+    expect(env.STORAGE_LOCAL_DIR).toBe(".storage");
   });
 });
 

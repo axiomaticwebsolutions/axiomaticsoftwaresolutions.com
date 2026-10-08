@@ -77,6 +77,12 @@ export type WebhookVerification =
 
 export interface PaymentProvider {
   readonly key: PaymentProviderKey;
+  /**
+   * The key id provider orders are created with (Razorpay Key ID; "mock_key" for the mock). Stored on Payment as
+   * providerKeyId: attempts made with other keys are never reopened with these; reconcile and refunds reach other key
+   * ids of the same Razorpay mode too (regenerated keys of the same account; lib/payments/key-scope.ts).
+   */
+  readonly keyId: string;
   createOrder(input: CreateOrderInput): Promise<CreateOrderResult>;
   /** Hosted-checkout return signature; constant-time. Never fulfils anything by itself. */
   verifyReturnSignature(input: ReturnSignatureInput): boolean;

@@ -296,6 +296,22 @@ describe("duplicate payments (paymentId)", () => {
   });
 });
 
+describe("payments taken with other keys (Admin > Settings > Integrations changed them)", () => {
+  it("refuses with 409 provider_key_changed and changes nothing, but refunds a payment from before key ids were recorded", async () => {
+    const order = await paidOrder({ accountId: account.accountId, items: [{ plan: catalog.plans.annual }] });
+    const payment = await db.payment.findFirstOrThrow({ where: { orderId: order.id, status: "CAPTURED" } });
+    await db.payment.update({ where: { id: payment.id }, data: { providerKeyId: "rzp_live_OtherAccount01" } });
+    const res = await refund(order.id);
+    expect(res.status).toBe(409);
+    expect(await errorCodeOf(res)).toBe("provider_key_changed");
+    expect(await db.refund.count({ where: { paymentId: payment.id } })).toBe(0);
+    expect((await db.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe("PAID");
+    expect((await licenseTerms(order.licenseIds[0] as string)).status).toBe("ACTIVE");
+    await db.payment.update({ where: { id: payment.id }, data: { providerKeyId: null } });
+    expect((await refundOk(order.id)).refund.status).toBe("pending");
+  });
+});
+
 describe("refunds made in the provider dashboard", () => {
   it("records one of a duplicate payment (processed, no credit note) and leaves the order alone", async () => {
     const order = await paidOrder({ accountId: account.accountId, items: [{ plan: catalog.plans.annual }] });

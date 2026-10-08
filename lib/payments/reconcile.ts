@@ -21,13 +21,20 @@
  * refund.processed or refund.failed webhook may have been lost. From one to 30 days old, each is asked about every 6
  * hours (provider.fetchRefund) and a final state is fed through processPaymentEvent() as
  * "reconcile:<refundId>:<processed|failed>", exactly as the webhook would apply it.
+ *
+ * Only attempts and refunds the ACTIVE keys can reach are looked at (lib/payments/key-scope.ts: the active key id, a
+ * null one from before 2026-10-08, or another Razorpay key id of the same mode, so regenerated keys of the same account
+ * keep covering earlier payments; a key of another account answers "not found" and counts under `errors`). When
+ * payments are not configured, both runs are skipped (`skipped: "not_configured"`, provider null) and the cron route
+ * stays 200.
  */
 import "server-only";
 import { OrderStatus, PaymentStatus, RefundStatus } from "@/generated/prisma/client";
 import { DAY_MS } from "@/lib/dates";
 import { db } from "@/lib/db";
 import { log } from "@/lib/log";
-import { getPaymentProvider } from "./index";
+import { activePaymentProviderOrNull } from "./index";
+import { reachablePaymentKeys } from "./key-scope";
 import type { NormalizedEvent, NormalizedPayment, NormalizedRefund, PaymentProvider } from "./types";
 import { processPaymentEvent, type WebhookResult } from "./webhook";
 
@@ -55,7 +62,9 @@ export type ReconcileOptions = {
 };
 
 export type ReconcileSummary = {
-  provider: string;
+  /** The active provider's key; null when payments are not configured (then `skipped` says so). */
+  provider: string | null;
+  skipped?: "not_configured";
   /** Payment attempts asked about. */
   checked: number;
   /** Events fed through the handler, by result. */
@@ -120,6 +129,12 @@ export function closedAttemptDue(ageMs: number): boolean {
   return ageMs % every < RECONCILE_INTERVAL_MS;
 }
 
+/** The summary of a run skipped because payments are not configured (one info line per run). */
+function notConfigured(event: string): ReconcileSummary {
+  log.info(event, { reason: "not_configured" });
+  return { provider: null, skipped: "not_configured", checked: 0, results: {}, errors: 0 };
+}
+
 function clampLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return RECONCILE_DEFAULT_LIMIT;
   return Math.min(RECONCILE_MAX_LIMIT, Math.max(1, Math.floor(limit)));
@@ -129,7 +144,8 @@ type AttemptRow = { id: string; orderId: string; providerOrderId: string };
 type Attempt = AttemptRow & { closed: boolean };
 
 /** The attempts to check this run: settling first, then awaiting, then closed (see the module comment). */
-async function attemptsToCheck(providerKey: string, now: Date, limit: number): Promise<Attempt[]> {
+async function attemptsToCheck(providerKey: string, keyId: string, now: Date, limit: number): Promise<Attempt[]> {
+  const sameKeys = reachablePaymentKeys(keyId);
   const olderThan = new Date(now.getTime() - RECONCILE_MIN_AGE_MS);
   const since = (maxAgeMs: number) => new Date(now.getTime() - maxAgeMs);
   const select = { id: true, orderId: true, providerOrderId: true } as const;
@@ -147,6 +163,7 @@ async function attemptsToCheck(providerKey: string, now: Date, limit: number): P
   const settling = await db.payment.findMany({
     where: {
       provider: providerKey,
+      AND: [sameKeys],
       createdAt: { lte: olderThan, gte: since(RECONCILE_CONFIRMING_MAX_AGE_MS) },
       OR: [
         { status: { in: OPEN_PAYMENT_STATES }, order: { status: { in: [OrderStatus.CONFIRMING, OrderStatus.PENDING] } } },
@@ -166,6 +183,7 @@ async function attemptsToCheck(providerKey: string, now: Date, limit: number): P
   const awaiting = await db.payment.findMany({
     where: {
       provider: providerKey,
+      AND: [sameKeys],
       status: { in: OPEN_PAYMENT_STATES },
       createdAt: { lte: olderThan, gte: since(RECONCILE_AWAITING_MAX_AGE_MS) },
       order: { status: OrderStatus.AWAITING_PAYMENT },
@@ -180,6 +198,7 @@ async function attemptsToCheck(providerKey: string, now: Date, limit: number): P
   const closed = await db.payment.findMany({
     where: {
       provider: providerKey,
+      AND: [sameKeys],
       createdAt: { lte: olderThan, gte: since(RECONCILE_CLOSED_MAX_AGE_MS) },
       OR: [
         { status: { in: CLOSED_PAYMENT_STATES }, order: { status: { in: [OrderStatus.FAILED, OrderStatus.CANCELED] } } },
@@ -205,8 +224,9 @@ async function attemptsToCheck(providerKey: string, now: Date, limit: number): P
 export async function reconcileStuckOrders(opts: ReconcileOptions = {}): Promise<ReconcileSummary> {
   const now = opts.now ?? new Date();
   const limit = clampLimit(opts.limit);
-  const provider = opts.provider ?? getPaymentProvider();
-  const attempts = await attemptsToCheck(provider.key, now, limit);
+  const provider = opts.provider ?? (await activePaymentProviderOrNull());
+  if (!provider) return notConfigured("reconcile_skipped");
+  const attempts = await attemptsToCheck(provider.key, provider.keyId, now, limit);
 
   const summary: ReconcileSummary = { provider: provider.key, checked: 0, results: {}, errors: 0 };
   for (const attempt of attempts) {
@@ -250,7 +270,8 @@ export async function reconcileStuckOrders(opts: ReconcileOptions = {}): Promise
 export async function reconcilePendingRefunds(opts: ReconcileOptions = {}): Promise<ReconcileSummary> {
   const now = opts.now ?? new Date();
   const limit = clampLimit(opts.limit);
-  const provider = opts.provider ?? getPaymentProvider();
+  const provider = opts.provider ?? (await activePaymentProviderOrNull());
+  if (!provider) return notConfigured("reconcile_refunds_skipped");
   const candidates = await db.refund.findMany({
     where: {
       status: RefundStatus.PENDING,
@@ -259,7 +280,7 @@ export async function reconcilePendingRefunds(opts: ReconcileOptions = {}): Prom
         lte: new Date(now.getTime() - REFUND_RECONCILE_MIN_AGE_MS),
         gte: new Date(now.getTime() - REFUND_RECONCILE_MAX_AGE_MS),
       },
-      payment: { provider: provider.key },
+      payment: { provider: provider.key, ...reachablePaymentKeys(provider.keyId) },
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: CLOSED_CANDIDATES_MAX,

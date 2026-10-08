@@ -68,7 +68,8 @@ export const PERMISSION_LABELS: Readonly<Record<Permission, string>> = {
   "reports.export": "Export data",
   "staff.manage": "Manage staff",
   "audit.view": "View audit log",
-  "settings.manage": "Business & integration settings",
+  "settings.manage": "Business settings",
+  "integrations.manage": "Payment, email & storage settings",
 };
 
 /** Matrix rows in PERMS order. */

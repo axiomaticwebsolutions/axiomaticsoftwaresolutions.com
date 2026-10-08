@@ -19,6 +19,8 @@ export default defineConfig({
         test: {
           name: "unit",
           include: ["tests/unit/**/*.test.ts"],
+          // The integration resolver reads no database in unit tests (tests/unit/setup.ts).
+          setupFiles: ["tests/unit/setup.ts"],
         },
       },
       {

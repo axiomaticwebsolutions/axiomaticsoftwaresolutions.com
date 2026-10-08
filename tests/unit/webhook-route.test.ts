@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as RateLimitModule from "@/lib/auth/rate-limit";
 import { resetEnvCache } from "@/lib/env";
+import { setIntegrationEnvForTests } from "@/lib/integrations/resolver";
 import { resetPaymentProviders } from "@/lib/payments";
 import { buildMockWebhook, signMockWebhook } from "@/lib/payments/mock";
 
@@ -88,6 +89,25 @@ describe("POST /api/webhooks/payments/:provider", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     expect(mocks.process).toHaveBeenCalledWith("mock", full);
     expect(mocks.record).not.toHaveBeenCalled();
+  });
+
+  it("503 payments_not_configured for razorpay while payments are not configured (Razorpay retries), 404 for the rest", async () => {
+    setIntegrationEnvForTests({ NODE_ENV: "production" });
+    try {
+      const body = JSON.stringify({ entity: "event", event: "payment.captured", payload: {} });
+      const headers = { "content-type": "application/json", "x-razorpay-signature": "0".repeat(64) };
+      const res = await post("razorpay", body, headers);
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({ error: { code: "payments_not_configured", message: "Payments are not configured." } });
+      expect(res.headers.get("retry-after")).toBe("300");
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      for (const provider of ["mock", "cashfree", "paypal"]) expect((await post(provider, body, headers)).status, provider).toBe(404);
+      expect(mocks.process).not.toHaveBeenCalled();
+      expect(mocks.record).not.toHaveBeenCalled();
+      expect(mocks.hit).not.toHaveBeenCalled();
+    } finally {
+      setIntegrationEnvForTests(null);
+    }
   });
 
   it("404 for unknown providers and for providers other than the configured one", async () => {

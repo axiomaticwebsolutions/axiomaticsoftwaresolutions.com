@@ -58,12 +58,14 @@ describe("security headers (next.config.ts)", () => {
     for (const policy of [PERMISSIONS_POLICY, PERMISSIONS_POLICY_RAZORPAY]) expect(policy).toMatch(/^camera=\(\), microphone=\(\), geolocation=\(\)/);
   });
 
-  it("puts the storage upload origin in the static connect-src when the build has STORAGE_* set", async () => {
+  it("never bakes a storage bucket into the static policy, even with STORAGE_* set (middleware.ts adds it at runtime)", async () => {
     vi.stubEnv("STORAGE_DRIVER", "s3");
     vi.stubEnv("STORAGE_BUCKET", "axs-files");
     vi.stubEnv("STORAGE_REGION", "ap-south-1");
     const [all] = await entries();
-    expect(header(all, "Content-Security-Policy")).toMatch(/connect-src 'self'[^;]* https:\/\/axs-files\.s3\.ap-south-1\.amazonaws\.com/);
+    const policy = header(all, "Content-Security-Policy") ?? "";
+    expect(policy).toMatch(/connect-src 'self'( ws:)?;/);
+    expect(policy).not.toContain("amazonaws");
   });
 
   it("stops the build on an invalid SECURITY_HSTS_STRICT", async () => {

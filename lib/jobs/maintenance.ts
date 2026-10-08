@@ -22,7 +22,7 @@ import "server-only";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { db as defaultDb } from "@/lib/db";
 import { log } from "@/lib/log";
-import { getStorage, type StorageDriver } from "@/lib/storage";
+import { getStorage, StorageError, type StorageDriver } from "@/lib/storage";
 import { runBatches, type BatchLimits, type BatchOutcome } from "./batch";
 import { maintenanceCutoffs, type MaintenanceCutoffs } from "./retention";
 import { closeResolvedTicketsBatch, deleteStaleUploadsBatch, purgeBatch, redactSentEmailsBatch } from "./tasks";
@@ -83,7 +83,10 @@ export type MaintenanceOptions = {
   /** The run's clock for every retention cutoff (default: now). */
   now?: Date;
   client?: PrismaClient;
-  /** Storage for the upload task (default getStorage(), only created when there is a file to delete). */
+  /**
+   * Storage for the upload task (default getStorage(), only resolved when there is a file to delete). Storage not
+   * configured: the uploads task is skipped (logged maintenance_uploads_skipped), not failed.
+   */
   storage?: StorageDriver;
   /** Run only these tasks (still in the canonical order). Default: all. */
   tasks?: readonly MaintenanceTask[];
@@ -104,7 +107,7 @@ export function emptyMaintenanceCounts(): MaintenanceCounts {
 type TaskContext = {
   client: PrismaClient;
   cutoffs: MaintenanceCutoffs;
-  storage: () => StorageDriver;
+  storage: () => Promise<StorageDriver>;
   /** Adds to this task's count as batches complete, so a task that fails half-way still reports its progress. */
   add: (n: number) => void;
   uploadFailures: Set<string>;
@@ -125,7 +128,14 @@ async function runTask(task: MaintenanceTask, ctx: TaskContext, limits: BatchLim
       return counted((limit) => redactSentEmailsBatch(client, cutoffs, limit));
     case "uploads":
       return runBatches(async (limit) => {
-        const result = await deleteStaleUploadsBatch(client, cutoffs, limit, ctx.storage, ctx.uploadFailures);
+        let result;
+        try {
+          result = await deleteStaleUploadsBatch(client, cutoffs, limit, ctx.storage, ctx.uploadFailures);
+        } catch (error) {
+          if (!(error instanceof StorageError && error.code === "not_configured")) throw error;
+          log.info("maintenance_uploads_skipped", { reason: "not_configured" });
+          return { handled: 0 };
+        }
         ctx.add(result.deleted);
         for (const id of result.failedIds) ctx.uploadFailures.add(id);
         // Storage refused every file of a full batch: it is down or misconfigured, so stop instead of hammering it.
@@ -149,8 +159,8 @@ export async function runMaintenance(opts: MaintenanceOptions = {}): Promise<Mai
   const started = clock();
   const deadline = started + (opts.budgetMs ?? MAINTENANCE_DEFAULTS.budgetMs);
 
-  let driver = opts.storage;
-  const storage = (): StorageDriver => (driver ??= getStorage());
+  let driver: Promise<StorageDriver> | null = opts.storage ? Promise.resolve(opts.storage) : null;
+  const storage = (): Promise<StorageDriver> => (driver ??= getStorage());
   const counts = emptyMaintenanceCounts();
   const uploadFailures = new Set<string>();
   const more: MaintenanceTask[] = [];

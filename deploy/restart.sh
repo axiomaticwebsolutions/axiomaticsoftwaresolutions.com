@@ -5,8 +5,8 @@
 #   bash /www/wwwroot/axiomatic/current/deploy/restart.sh --recreate   pm2 delete + start: after changing AXS_INSTANCES
 #                                                                      (fork <-> cluster), AXS_PORT or the Node.js version
 # Run it as the app user. Next.js reads .env.production when the process starts, so a reload picks up new values.
-# Not enough for STORAGE_* changes: next build bakes the bucket address into the Content-Security-Policy, so run
-# deploy.sh again (same source) after changing the bucket, endpoint, region or path style.
+# That includes the STORAGE_* fallback: the bucket origin in the Content-Security-Policy is read at runtime, so a
+# restart is enough (no deploy). Payments, email and storage saved in Admin > Settings > Integrations need neither.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

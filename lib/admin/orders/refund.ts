@@ -41,7 +41,14 @@ import { log } from "@/lib/log";
 import { formatINR } from "@/lib/money";
 import { readBillingSnapshot } from "@/lib/orders/billing";
 import { orderStatusPath, signOrderToken } from "@/lib/orders/token";
-import { getPaymentProvider, isPaymentProviderKey, PaymentProviderError, type PaymentProvider } from "@/lib/payments";
+import {
+  activePaymentProviderOrNull,
+  isPaymentProviderKey,
+  PAYMENTS_UNAVAILABLE_MESSAGE,
+  PaymentProviderError,
+  type PaymentProvider,
+} from "@/lib/payments";
+import { keysCanReach } from "@/lib/payments/key-scope";
 import { mockAdoptCapturedPayment } from "@/lib/payments/mock";
 import { scheduleMockWebhook } from "@/lib/payments/mock-delivery";
 import { fulfilledProviderOrderId } from "./detail";
@@ -63,6 +70,11 @@ export const NO_CAPTURE_MESSAGE = "This order has no captured payment to refund.
 export const NOT_ORDER_PAYMENT_MESSAGE = "This payment doesn\u2019t belong to this order.";
 export const DUPLICATE_REFUNDED_MESSAGE = "This payment has already been refunded.";
 export const DUPLICATE_REFUND_ACTION = "Refunded duplicate payment";
+/**
+ * 409 `provider_key_changed`: the payment was taken with keys the active ones cannot reach (test vs live, the mock, or
+ * another Razorpay account, which Razorpay reports as "not found"; lib/payments/key-scope.ts).
+ */
+export const PROVIDER_KEY_CHANGED_MESSAGE = "This payment was taken with different payment keys. Refund it in the Razorpay Dashboard.";
 export const PROVIDER_REFUND_FAILED_MESSAGE = "The payment provider couldn\u2019t process the refund. Nothing was changed.";
 /** The provider call happens inside the transaction (after the row lock), so allow for its own timeout. */
 const TX_OPTIONS = { maxWait: 10_000, timeout: 45_000 } as const;
@@ -81,7 +93,7 @@ export type IssueRefundInput = {
   actor: AuditActor;
   body: { reason?: string | null; confirmId?: string | null; amountPaise?: number | null; paymentId?: string | null };
   now?: Date;
-  /** Tests: the provider to refund through (default: the adapter of the payment's provider). */
+  /** Tests: the provider to refund through (default: the active provider, lib/payments activePaymentProviderOrNull). */
   provider?: PaymentProvider;
 };
 
@@ -117,7 +129,14 @@ type PayingPayment = {
 };
 
 /** The provider's refund id. Provider refusals become 502 `provider_refund_failed` (the transaction rolls back). */
-async function requestProviderRefund(provider: PaymentProvider, payment: PayingPayment, amountPaise: number, refundedPaise: number, orderId: string): Promise<string> {
+async function requestProviderRefund(
+  provider: PaymentProvider,
+  payment: PayingPayment,
+  amountPaise: number,
+  refundedPaise: number,
+  orderId: string,
+  otherKeys = false,
+): Promise<string> {
   // A neutral note for the provider dashboard; the staff reason stays in the audit log.
   const request = () => provider.refund({ providerPaymentId: payment.providerPaymentId, amountPaise, reason: `Refund for order ${orderId}` });
   try {
@@ -132,6 +151,8 @@ async function requestProviderRefund(provider: PaymentProvider, payment: PayingP
   } catch (error) {
     if (!(error instanceof PaymentProviderError)) throw error;
     log.warn("admin_refund_provider_refused", { orderId, paymentId: payment.id, provider: provider.key, code: error.code });
+    // Taken with other keys of the same mode and unknown to these: another Razorpay account.
+    if (otherKeys && error.code === "not_found") throw errors.conflict("provider_key_changed", PROVIDER_KEY_CHANGED_MESSAGE);
     const detail = error.code === "invalid_request" || error.code === "not_found" ? ` (${error.message})` : "";
     throw new ApiError(502, "provider_refund_failed", `${PROVIDER_REFUND_FAILED_MESSAGE}${detail}`, { details: { providerCode: error.code } });
   }
@@ -266,6 +287,9 @@ export async function issueOrderRefund(input: IssueRefundInput): Promise<RefundO
   if (!exists) throw errors.notFound("Order");
   // Role, reason and typed id before anything else, so a bad request never reaches the provider.
   validateDestructive("orders.refund", { staff, input: body, confirmValue: orderId });
+  // Resolved before the transaction, so no configuration read happens while the order row is locked.
+  const provider = input.provider ?? (await activePaymentProviderOrNull());
+  if (!provider) throw new ApiError(503, "payments_unavailable", PAYMENTS_UNAVAILABLE_MESSAGE);
   let refundedAtProvider: string | null = null;
 
   const outcome = await runDestructive<RefundOutcome>(
@@ -316,9 +340,14 @@ export async function issueOrderRefund(input: IssueRefundInput): Promise<RefundO
       // Only a full refund of the paying payment reverses the order's effects.
       const full = !duplicate && before + amountPaise >= target.amountPaise;
 
-      const provider = input.provider ?? getPaymentProvider(target.provider);
+      // Only keys that can reach the payment refund it: the same key id, or regenerated keys of the same mode (same
+      // account). A test-to-live switch cannot; another account of the same mode answers "not found" (below).
+      if (target.provider !== provider.key || !keysCanReach(target.providerKeyId, provider.keyId)) {
+        throw errors.conflict("provider_key_changed", PROVIDER_KEY_CHANGED_MESSAGE);
+      }
       const payment: PayingPayment = { ...target, providerPaymentId: target.providerPaymentId };
-      const providerRefundId = await requestProviderRefund(provider, payment, amountPaise, before, orderId);
+      const otherKeys = target.providerKeyId !== null && target.providerKeyId !== provider.keyId;
+      const providerRefundId = await requestProviderRefund(provider, payment, amountPaise, before, orderId, otherKeys);
       refundedAtProvider = providerRefundId;
 
       // Allocated late (the per-FY counter row stays locked until commit), and only against a tax invoice; a duplicate

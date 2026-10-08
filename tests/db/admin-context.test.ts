@@ -13,11 +13,13 @@ import {
   getAdminState,
   isPaymentTestMode,
   loadAdminBadges,
+  loadAdminData,
   toAdminContextData,
 } from "@/lib/admin/context";
 import { createSession } from "@/lib/auth/sessions";
 import { db } from "@/lib/db";
-import { getEnv } from "@/lib/env";
+import { resolvePayments, setIntegrationEnvForTests } from "@/lib/integrations/resolver";
+import type { PaymentsConfig, Resolved } from "@/lib/integrations/types";
 import { lockedModulesFor } from "@/lib/rbac";
 import { makeUser } from "./auth-fixtures";
 
@@ -142,7 +144,7 @@ describe("getAdminState", () => {
   });
 
   it("loads the staff member, the module locks and the permission checks for each role", async () => {
-    const env = getEnv();
+    const payments = await resolvePayments({ fresh: true });
     for (const role of ["OWNER", "ADMIN", "SUPPORT", "FINANCE"] as const) {
       const staff = await makeStaff(role);
       await signInAs(staff);
@@ -150,7 +152,7 @@ describe("getAdminState", () => {
       expect(ctx.staff).toEqual({ id: staff.id, name: staff.name, email: staff.email, role });
       expect(ctx.auth.user.id).toBe(staff.id);
       expect(ctx.modules.filter((m) => m.locked).map((m) => m.key)).toEqual(lockedModulesFor(role).map((m) => m.key));
-      expect(ctx.testMode).toBe(isPaymentTestMode(env));
+      expect(ctx.testMode).toBe(isPaymentTestMode(payments));
       expect(ctx.can("refunds.issue")).toBe(role === "OWNER" || role === "FINANCE");
       expect(ctx.can("licenses.revoke")).toBe(role === "OWNER" || role === "ADMIN");
       expect(ctx.canView("settings")).toBe(role === "OWNER");
@@ -190,11 +192,25 @@ describe("sidebar badges", () => {
 });
 
 describe("payment test mode", () => {
-  it("is on for the mock provider and Razorpay test keys only", () => {
-    expect(isPaymentTestMode({ PAYMENT_PROVIDER: "mock", PAYMENT_KEY_ID: undefined })).toBe(true);
-    expect(isPaymentTestMode({ PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: "rzp_test_abc123" })).toBe(true);
-    expect(isPaymentTestMode({ PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: "rzp_live_abc123" })).toBe(false);
-    expect(isPaymentTestMode({ PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: undefined })).toBe(false);
-    expect(isPaymentTestMode({ PAYMENT_PROVIDER: "cashfree", PAYMENT_KEY_ID: "TEST123" })).toBe(false);
+  const secrets = { keySecret: "key-secret-0123", webhookSecret: "webhook-secret-0123456" };
+  const on = (config: PaymentsConfig): Resolved<PaymentsConfig> => ({ source: "admin", config, fingerprint: "f" });
+
+  it("follows the effective payments configuration: the mock and Razorpay test keys only", () => {
+    expect(isPaymentTestMode(on({ provider: "mock", keyId: "mock_key", mode: "test", ...secrets }))).toBe(true);
+    expect(isPaymentTestMode(on({ provider: "razorpay", keyId: "rzp_test_abc12345", mode: "test", ...secrets }))).toBe(true);
+    expect(isPaymentTestMode(on({ provider: "razorpay", keyId: "rzp_live_abc12345", mode: "live", ...secrets }))).toBe(false);
+    expect(isPaymentTestMode({ source: "none", reason: "missing", names: [] })).toBe(false);
+    expect(isPaymentTestMode({ source: "none", reason: "env_invalid", names: ["PAYMENT_KEY_ID"] })).toBe(false);
+  });
+
+  it("is off in the shell when payments are not configured", async () => {
+    setIntegrationEnvForTests({ NODE_ENV: "production" });
+    try {
+      const staff = await makeStaff("OWNER");
+      const data = await loadAdminData(db, { id: staff.id, name: staff.name, email: staff.email, staffRole: "OWNER" });
+      expect(data.testMode).toBe(false);
+    } finally {
+      setIntegrationEnvForTests(null);
+    }
   });
 });

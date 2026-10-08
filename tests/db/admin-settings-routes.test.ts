@@ -59,13 +59,19 @@ describe("GET /api/admin/settings", () => {
     expect(body.facts.nextInvoiceNumber).toMatch(/^[A-Z0-9-]{1,3}\/\d{2}-\d{2}\/\d{4,}$/);
     // The Expiring window is a fixed fact (EXPIRING_DAYS), not a setting.
     expect(body.facts.expiringDays).toBe(60);
-    expect(body.integrations.map((i) => i.id)).toEqual(["payments", "storage", "email", "redis"]);
-    for (const i of body.integrations) {
-      expect(["configured", "missing", "development"]).toContain(i.status);
+    // The Owner holds integrations.manage: the forms come with the status (no saved rows here: the env file decides).
+    expect(body.integrations.canManage).toBe(true);
+    expect(body.integrations.items.map((i) => i.id)).toEqual(["payments", "storage", "email"]);
+    expect(body.integrations.redis).toMatchObject({ id: "redis", envNames: ["REDIS_URL"] });
+    for (const i of body.integrations.items) {
+      expect(["admin", "env", "none"]).toContain(i.source);
+      expect(i.form?.kind).toBe(i.id);
       expect(i.envNames.every((n) => /^[A-Z][A-Z0-9_]+$/.test(n))).toBe(true);
     }
     const env = getEnv() as unknown as Record<string, unknown>;
-    const secrets = ["SESSION_SECRET", "CSRF_SECRET", "PAYMENT_WEBHOOK_SECRET", "PAYMENT_KEY_ID", "PAYMENT_KEY_SECRET", "STORAGE_BUCKET", "STORAGE_ACCESS_KEY_ID", "STORAGE_SECRET_ACCESS_KEY", "SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "REDIS_URL", "DATABASE_URL", "EMAIL_FROM", "LICENSE_KEY_PEPPER"];
+    // Non-secret integration values (key id, bucket, SMTP host and user, From) are the Owner's form prefill by design;
+    // secrets never appear.
+    const secrets = ["SESSION_SECRET", "CSRF_SECRET", "PAYMENT_WEBHOOK_SECRET", "PAYMENT_KEY_SECRET", "STORAGE_SECRET_ACCESS_KEY", "SMTP_PASSWORD", "REDIS_URL", "DATABASE_URL", "LICENSE_KEY_PEPPER", "LICENSE_KEY_ENC_KEY", "ORDER_TOKEN_SECRET", "CRON_SECRET"];
     for (const name of secrets) {
       const value = env[name];
       if (typeof value === "string" && value.length >= 4) expect(text.includes(value), `${name} leaked`).toBe(false);

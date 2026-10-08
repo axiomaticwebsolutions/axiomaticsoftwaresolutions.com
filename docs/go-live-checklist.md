@@ -57,8 +57,12 @@ Tick an item only after you have done the check, not because the setting "should
   any license key, and every installed app would have to be re-activated.
 - [ ] **Nothing is left to fill in.** `grep -iE '^[A-Z_]+=.*change-?me' /www/wwwroot/axiomatic/shared/.env.production | cut -d= -f1`
   prints nothing (names only, never values).
-- [ ] **Test mode is on.** `grep -c '^PAYMENT_KEY_ID=rzp_test_' /www/wwwroot/axiomatic/shared/.env.production` prints
-  `1` (a count, no secret). Admin shows the "Test mode" pill in the top bar.
+- [ ] **Test mode is on.** Admin > Settings > Integrations > Payment provider shows "Saved in Admin" and the **Test
+  mode** badge (the Key ID starts with `rzp_test_`), and Admin shows the "Test mode" pill in the top bar.
+- [ ] **No release-day stand-ins left.** Once Razorpay, email and storage are saved in Admin, the server file has no
+  integration lines: `grep -cE '^(PAYMENT|STORAGE|EMAIL|SMTP)_' /www/wwwroot/axiomatic/shared/.env.production` prints
+  `0` (`DOWNLOAD_LINK_TTL_SECONDS` stays and does not match). Otherwise delete those lines and run `restart.sh`
+  (deploy/README.md "Restart, env changes and secret rotation").
 - [ ] **Public address and proxy count.** `grep -E '^(APP_URL|TRUSTED_PROXY_HOPS)=' /www/wwwroot/axiomatic/shared/.env.production`
   shows `APP_URL=https://<domain>` (no trailing slash, no `www.`) and `TRUSTED_PROXY_HOPS=1` (2 only behind
   Cloudflare's orange-cloud proxy).
@@ -140,13 +144,15 @@ Tick an item only after you have done the check, not because the setting "should
   Until it does, leave two-step sign-in off: its codes are emailed.
 - [ ] **Settings reviewed.** Admin > Settings: business details (sample placeholders are fine today, `sample` stays
   on), support / sales / legal / privacy emails are mailboxes you read, invoice prefix `AXS` and credit-note prefix
-  `AXC` (or your choice, up to 3 characters), GST rate 18 % and SAC 997331 (to confirm with your CA). Integrations
-  shows payments in test mode, storage, email and Redis configured.
+  `AXC` (or your choice, up to 3 characters), GST rate 18 % and SAC 997331 (to confirm with your CA). Integrations:
+  payments, storage and email each say "Saved in Admin" (payments with Test mode), and "Test Razorpay keys", "Send
+  test email" and "Test bucket" each pass; Rate limits says Configured.
 - [ ] **The site says it is a test.** The sample notice strip shows on the home page.
 - [ ] **Installer uploads work.** Admin > Releases: a draft release takes an installer upload and publishes. Every
-  page allows the bucket's origin in `connect-src`, taken from the `STORAGE_*` values when the app is built: a CSP
-  error in the browser console (F12) mentioning `connect-src` means `STORAGE_*` changed after the build (run
-  `deploy.sh` again with the same source); a CORS error means the bucket's CORS rule lacks `https://<domain>` or `PUT`.
+  page allows the bucket's origin in `connect-src`, taken at runtime from the storage settings saved in Admin: a CSP
+  error in the browser console (F12) mentioning `connect-src` means the tab was opened before the bucket was saved
+  (reload) or the saved bucket differs from the one uploads go to ("Test bucket"); a CORS error means the bucket's
+  CORS rule lacks `https://<domain>` or `PUT`.
 - [ ] **Razorpay webhook is delivered.** Razorpay Dashboard (Test Mode) > Webhooks > your webhook: recent deliveries
   show response code 200; the events are `payment.captured`, `payment.failed`, `refund.processed`, `refund.failed`
   and `order.paid` (without `refund.failed` a refund Razorpay could not complete is noticed only a day later).
@@ -230,10 +236,12 @@ Tick an item only after you have done the check, not because the setting "should
 - [ ] **Razorpay account activated for live payments** (KYC, website and business details approved).
 - [ ] **Live keys and a live webhook.** In Live Mode: generate API keys; Account & Settings > Webhooks > add
   `https://<domain>/api/webhooks/payments/razorpay` with events `payment.captured`, `payment.failed`,
-  `refund.processed`, `refund.failed`, `order.paid` and a NEW secret (`openssl rand -hex 24`). Put `PAYMENT_KEY_ID=rzp_live_...`,
-  `PAYMENT_KEY_SECRET` and the new `PAYMENT_WEBHOOK_SECRET` in `shared/.env.production`, then
-  `sudo -iu axiomatic bash /www/wwwroot/axiomatic/current/deploy/restart.sh`. Check: the Admin "Test mode" pill is
-  gone; the smoke test still passes.
+  `refund.processed`, `refund.failed`, `order.paid` and a NEW secret (`openssl rand -hex 24`). Save the live Key ID
+  (`rzp_live_...`), the live Key secret and the new webhook secret in Admin > Settings > Integrations > Payment
+  provider (Replace each secret, then Save with your password); no restart. Check: the card shows **Live mode**, "Test
+  Razorpay keys" says the keys were accepted, the Admin "Test mode" pill is gone, and the smoke test still passes.
+  Unpaid test orders start a fresh payment attempt; payments taken with the test keys are refunded in the Razorpay
+  Dashboard if ever needed (Admin answers `provider_key_changed`).
 - [ ] **Automatic capture in Live Mode too.** Razorpay Account & Settings: payment capture is automatic (otherwise
   payments stay "authorized" and orders never complete).
 - [ ] **One real purchase and refund.** Buy the cheapest plan with your own card or UPI, check the invoice, then refund

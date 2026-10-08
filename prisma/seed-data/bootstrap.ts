@@ -222,11 +222,13 @@ function readBusiness(source: Source, problems: string[], warnings: string[]): {
 }
 
 /**
- * Same rule as the admin console's TEST badge (lib/admin/context.ts isPaymentTestMode), read from the raw variables:
- * the mock provider (the app's default; refused in production) or a Razorpay key id starting with "rzp_test".
+ * Whether the env file EXPLICITLY puts payments in test mode: PAYMENT_PROVIDER=mock, or razorpay with a Key ID starting
+ * with "rzp_test". Unset is not test mode: production keeps payments in Admin > Settings > Integrations (saved after
+ * this bootstrap, possibly with live keys), so the neutral sample notice is used and never claims that no real money
+ * is charged. Like the admin TEST badge (lib/admin/context.ts), "not configured" means no test-mode wording.
  */
 export function isPaymentTestMode(source: Source): boolean {
-  const provider = readValue(source, "PAYMENT_PROVIDER") ?? "mock";
+  const provider = readValue(source, "PAYMENT_PROVIDER");
   if (provider === "mock") return true;
   return provider === "razorpay" && (readValue(source, "PAYMENT_KEY_ID") ?? "").startsWith("rzp_test");
 }

@@ -36,6 +36,8 @@ export type OrderSummaryProps = {
   showSampleCodes: boolean;
   onRemoveLine: (key: string) => void;
   busy: boolean;
+  /** False when no payment provider is configured: Pay is disabled (the form shows why). */
+  paymentsAvailable?: boolean;
   couponInputRef?: React.Ref<HTMLInputElement>;
   couponRemoveRef?: React.Ref<HTMLButtonElement>;
 };
@@ -152,7 +154,7 @@ export function OrderSummary(props: OrderSummaryProps) {
         size="lg"
         loading={busy}
         loadingText={CHECKOUT_COPY.creating}
-        disabled={!ready || totalPaise === null}
+        disabled={!ready || totalPaise === null || props.paymentsAvailable === false}
         className="mt-[18px] h-[54px] w-full gap-2.5 py-0 text-base font-extrabold leading-[normal] shadow-none aria-disabled:opacity-100"
       >
         {totalPaise === null ? CHECKOUT_COPY.pay("").trim() : CHECKOUT_COPY.pay(formatINR(totalPaise))}

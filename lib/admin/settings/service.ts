@@ -2,8 +2,9 @@
  * Admin > Settings service (settings.manage = Owner; decisions.md Phase 6 "Settings").
  *
  * - getAdminSettings: the four editable sections (lib/config getSettings, defaults applied), read-only facts (next
- *   invoice and credit note numbers, offline grace from env, the fixed Expiring window) and the integrations panel (env
- *   presence only).
+ *   invoice and credit note numbers, offline grace from env, the fixed Expiring window) and the integrations panel
+ *   (lib/admin/settings/integrations.ts: a fresh resolver snapshot; forms and secret hints only for
+ *   integrations.manage, status only otherwise; never a secret).
  * - updateSettingsSection: one transaction with the SiteSetting row locked: the changed fields are merged into the
  *   stored value, the result is validated with lib/config settingSchemas (422 with field errors), written, and one
  *   "Updated settings" audit row per changed field records "old → new". After the commit the storefront settings
@@ -24,7 +25,7 @@ import { EXPIRING_DAYS } from "@/lib/licensing/status";
 import { log } from "@/lib/log";
 import { can, roleForbiddenMessage } from "@/lib/rbac";
 import { STOREFRONT_TAGS } from "@/lib/storefront/data";
-import { integrationStatuses } from "./integrations";
+import { loadIntegrationsData } from "./integrations";
 import {
   diffSection,
   SECTION_SETTING_KEYS,
@@ -45,14 +46,21 @@ async function nextDocumentNumber(client: Db, counterKey: string, start: number,
   }
 }
 
-/** GET /api/admin/settings and the Settings page. */
-export async function getAdminSettings(client: Db = defaultDb, opts: { env?: Env; now?: Date } = {}): Promise<AdminSettingsData> {
+/**
+ * GET /api/admin/settings and the Settings page. `canManage` (integrations.manage, the Owner) adds the integration
+ * forms and secret hints; without it the integrations are status only.
+ */
+export async function getAdminSettings(
+  client: Db = defaultDb,
+  opts: { env?: Env; now?: Date; canManage?: boolean } = {},
+): Promise<AdminSettingsData> {
   const env = opts.env ?? getEnv();
   const now = opts.now ?? new Date();
   const settings = await getSettings(client);
-  const [nextInvoiceNumber, nextCreditNoteNumber] = await Promise.all([
+  const [nextInvoiceNumber, nextCreditNoteNumber, integrations] = await Promise.all([
     nextDocumentNumber(client, "invoice", COUNTER_START.invoice, settings.tax.invoicePrefix, now),
     nextDocumentNumber(client, "creditnote", COUNTER_START.creditNote, settings.tax.creditNotePrefix, now),
+    loadIntegrationsData(client, { canManage: opts.canManage === true, env }),
   ]);
   return {
     business: settings.business,
@@ -60,7 +68,7 @@ export async function getAdminSettings(client: Db = defaultDb, opts: { env?: Env
     licensing: settings.licensing,
     sampleNotice: settings["content.sampleNotice"],
     facts: { nextInvoiceNumber, nextCreditNoteNumber, offlineGraceDays: env.LICENSE_OFFLINE_GRACE_DAYS, expiringDays: EXPIRING_DAYS },
-    integrations: integrationStatuses(env),
+    integrations,
   };
 }
 

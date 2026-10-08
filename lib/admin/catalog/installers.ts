@@ -15,8 +15,6 @@
 import "server-only";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { Readable } from "node:stream";
-import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getEnv } from "@/lib/env";
 import { isStorageKey, type StorageDriver } from "@/lib/storage";
 import { LocalStorageDriver } from "@/lib/storage/local";
@@ -105,42 +103,17 @@ export function uploadNonce(): string {
   return randomBytes(9).toString("base64url").replace(/[^A-Za-z0-9]/g, "x");
 }
 
-/** Optional capability of a storage driver (tests): read an object as a stream. */
+/** Optional capability of a storage driver: read an object as a stream (S3StorageDriver.openRead; tests). */
 export type ReadableStorage = { openRead(key: string): Promise<AsyncIterable<Uint8Array>> };
 
 function hasOpenRead(s: unknown): s is ReadableStorage {
   return typeof (s as Partial<ReadableStorage> | null)?.openRead === "function";
 }
 
-let s3Reader: S3Client | null = null;
-
-function s3Client(): { client: S3Client; bucket: string } {
-  const env = getEnv();
-  if (!env.STORAGE_BUCKET || !env.STORAGE_REGION || !env.STORAGE_ACCESS_KEY_ID || !env.STORAGE_SECRET_ACCESS_KEY) {
-    throw new Error("S3 storage is not configured");
-  }
-  s3Reader ??= new S3Client({
-    region: env.STORAGE_REGION,
-    endpoint: env.STORAGE_ENDPOINT,
-    forcePathStyle: env.STORAGE_FORCE_PATH_STYLE,
-    credentials: { accessKeyId: env.STORAGE_ACCESS_KEY_ID, secretAccessKey: env.STORAGE_SECRET_ACCESS_KEY },
-  });
-  return { client: s3Reader, bucket: env.STORAGE_BUCKET };
-}
-
+/** Reads through the same driver (and so the same effective storage configuration) the upload was presigned with. */
 async function openObject(storage: StorageDriver, key: string): Promise<AsyncIterable<Uint8Array>> {
   if (hasOpenRead(storage)) return storage.openRead(key);
   if (storage instanceof LocalStorageDriver) return createReadStream(storage.pathFor(key));
-  if (storage.kind === "s3") {
-    const { client, bucket } = s3Client();
-    const out = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-    const body = out.Body;
-    if (!body) throw new Error("Empty object body");
-    if (body instanceof Readable) return body;
-    const web = (body as { transformToWebStream?: () => ReadableStream<Uint8Array> }).transformToWebStream?.();
-    if (web) return Readable.fromWeb(web as Parameters<typeof Readable.fromWeb>[0]);
-    throw new Error("Unsupported object body");
-  }
   throw new Error(`Storage driver "${storage.kind}" cannot be read`);
 }
 

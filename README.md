@@ -45,7 +45,13 @@ business software in India (Next.js 15 App Router, TypeScript, Tailwind 4, Prism
 
 Local development runs with `PAYMENT_PROVIDER=mock` (the mock payment page `/dev/mock-checkout` sends real signed
 webhooks), `EMAIL_TRANSPORT=console` (emails, codes and links at `/dev/mailbox`) and `STORAGE_DRIVER=local` (files in
-`.storage/`). `lib/env.ts` refuses all three in production.
+`.storage/`); outside production these are also the defaults when the variables are unset. `lib/env.ts` refuses all
+three in production.
+
+Razorpay, SMTP and the storage bucket can also be saved by the Owner in Admin > Settings > Integrations
+(docs/admin-integrations-design.md). A configuration saved there wins over the env file for that integration, so a
+saved payment, email or storage setting replaces the development driver: remove it ("Remove saved settings") to get the
+mock, the dev mailbox or the local disk back. The e2e suite refuses to start while anything is saved there.
 
 ### No Postgres login? Use the dev database
 `pnpm db:dev` starts a private PostgreSQL 17 (embedded, dev only) on 127.0.0.1:5433 with the role and databases above
@@ -133,13 +139,18 @@ Store, aaPanel Nginx with Let's Encrypt in front), in test mode (Razorpay test k
 - Scheduled jobs (production): `GET /api/cron/emails` every minute, `GET /api/cron/reconcile` every 10 minutes,
   `GET /api/cron/renewals` once a day (renewal reminders) and `GET /api/cron/maintenance` once a day (clean-up and
   retention), all with `Authorization: Bearer $CRON_SECRET` (on the server: the `deploy/cron-*.sh` scripts). Payment
-  webhooks go to `/api/webhooks/payments/<PAYMENT_PROVIDER>`; Razorpay must send `payment.captured`, `payment.failed`,
-  `order.paid`, `refund.processed` and `refund.failed`.
+  webhooks go to `/api/webhooks/payments/razorpay` (Admin > Settings > Integrations shows the exact URL); Razorpay must
+  send `payment.captured`, `payment.failed`, `order.paid`, `refund.processed` and `refund.failed`.
 - Production access logs must not keep query strings: order links carry the order token (`/orders/<id>?t=...`).
-- `next build` fixes the static security headers, so set the `STORAGE_*` variables for the production build: the
-  storage bucket's origin is allowed in the CSP `connect-src` on every page (ticket attachments and installer uploads
-  go straight to the bucket), and `SECURITY_HSTS_STRICT` is read at build time too, so changing either needs a deploy.
-  The bucket needs CORS for `PUT` with `Content-Type` from `APP_URL`.
+- `next build` fixes the static security headers (`SECURITY_HSTS_STRICT` is read at build time, so changing it needs a
+  deploy). It no longer fixes the storage bucket: the middleware (Node.js runtime, every page) adds the bucket origin of
+  the current storage settings to the CSP `connect-src` at runtime (ticket attachments and installer uploads go
+  straight to the bucket), so a bucket saved in Admin applies without a rebuild; the Settings page reloads itself after a storage change, other
+  pages opened before it need a reload. The bucket needs CORS for `PUT` with `Content-Type` from `APP_URL`.
+- Payment, email and storage credentials: saved in Admin > Settings > Integrations (Owner only, password re-entry,
+  secrets encrypted with a key derived from `LICENSE_KEY_ENC_KEY`, audited); the `PAYMENT_*`, `EMAIL_*`, `SMTP_*` and
+  `STORAGE_*` variables are only a fallback and production starts without them (each integration then shows "Not
+  configured" and its features answer clear errors).
 - `next.config.ts` contains a guarded workaround for building on Windows exFAT volumes. It does nothing on NTFS,
   Linux or macOS.
 - Scale target (25 lakh licenses): see "Scale target" in `docs/decisions.md`, `docs/scaling.md` and

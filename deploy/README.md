@@ -79,8 +79,16 @@ Run in the aaPanel Terminal (root) unless a step says "as the app user" (`sudo -
    node /www/wwwroot/axiomaticsoftwaresolutions.com/scripts/gen-prod-env.mjs --out /www/wwwroot/axiomatic/shared/.env.production
    ```
    It generates every secret plus the PostgreSQL and Redis passwords. Open `shared/.env.production` (aaPanel > Files,
-   or `nano`) and replace every `CHANGE-ME` value it lists (Razorpay, SMTP, S3: you add those yourself). Keep a copy of
-   the file in a password manager.
+   or `nano`) and replace every `CHANGE-ME` value it lists. Razorpay, SMTP and the bucket are NOT needed here: the Owner
+   enters them in Admin > Settings > Integrations after the first sign-in (step 11); the file keeps only a commented-out
+   fallback for them. Keep a copy of the file in a password manager.
+
+   What the file must hold: `APP_URL`, `SESSION_SECRET`, `CSRF_SECRET`, `ORDER_TOKEN_SECRET`, `CRON_SECRET`,
+   `DATABASE_URL`, `CATALOG_SOURCE=db`, `LICENSE_KEY_PEPPER`, `LICENSE_KEY_ENC_KEY` (also protects the integration
+   secrets saved in Admin), `LICENSE_SIGNING_PRIVATE_KEY`, `LICENSE_SIGNING_PUBLIC_KEY`, `REDIS_URL`,
+   `TRUSTED_PROXY_HOPS`. Optional, with defaults: `DATABASE_POOL_*`, `LICENSE_OFFLINE_GRACE_DAYS`,
+   `SECURITY_HSTS_STRICT`, `DOWNLOAD_LINK_TTL_SECONDS`. Fallback only (normally left out): `PAYMENT_*`, `STORAGE_*`
+   (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*`, `SMTP_*`. What is saved in Admin wins over them, per integration.
 5. **PostgreSQL 16 or 17**: aaPanel > App Store > PostgreSQL (Manager) > install. In its settings / config file set
    `listen_addresses = 'localhost'` and restart it. Do not create the database in the aaPanel UI (it must be UTF8 with
    collation C). As root (only now, before the app has ever run; later runs as the app user, see "Privileges"):
@@ -113,11 +121,20 @@ Run in the aaPanel Terminal (root) unless a step says "as the app user" (`sudo -
    SSL > Let's Encrypt for both names > Force HTTPS on (HSTS switch off). Then the reverse proxy exactly as the header
    of `aapanel-nginx.conf` describes (target `http://127.0.0.1:3000`; replace the proxy file's content with that file).
 10. **Scheduled jobs** and **firewall**: the next two sections.
-11. **Razorpay webhook** (Test Mode > Webhooks): URL `https://<domain>/api/webhooks/payments/razorpay`, secret =
-    `PAYMENT_WEBHOOK_SECRET`, events `payment.captured`, `order.paid`, `payment.failed`, `refund.processed`,
-    `refund.failed` (a refund Razorpay could not complete puts the order in review so it can be refunded again). Then sign
-    in as the Owner (password only: the bootstrapped Owner starts with two-step sign-in off, so no working SMTP is
-    needed to get in), delete the `BOOTSTRAP_OWNER_*` lines from the env file, and from your PC run
+11. **Integrations and the Razorpay webhook.** Sign in as the Owner (password only: the bootstrapped Owner starts with
+    two-step sign-in off, so no working SMTP is needed to get in) and delete the `BOOTSTRAP_OWNER_*` lines from the env
+    file. In Admin > Settings > Integrations save, each with your password:
+    - **Payment provider**: the Razorpay Key ID and Key secret (Test Mode > API Keys), and a Webhook secret you choose.
+      In Razorpay (Test Mode > Webhooks) add the webhook URL the card shows
+      (`https://<domain>/api/webhooks/payments/razorpay`) with that same secret and the events `payment.captured`,
+      `order.paid`, `payment.failed`, `refund.processed`, `refund.failed` (a refund Razorpay could not complete puts
+      the order in review so it can be refunded again). Then "Test Razorpay keys".
+    - **Email delivery**: SMTP host, port, security, username and password, From name and address; "Send test email"
+      sends one to your own address.
+    - **Installer storage**: provider, endpoint, region, bucket, access key ID and secret access key (creating the
+      private bucket and its CORS rule: `docs/deploy-today.md` step 0.5); "Test bucket" uploads, reads and deletes a
+      tiny file under `axs-probe/` (it cannot check CORS).
+    Saves apply at once (other PM2 processes within 30 s): no restart, no deploy. From your PC run
     `node scripts/smoke-prod.mjs --base=https://<domain>`. Once email sending works, the Owner (and Finance staff) turn
     two-step on in Admin > My profile (`docs/go-live-checklist.md`; decisions.md 2026-10-08).
 
@@ -233,7 +250,13 @@ release stays on disk until later deploys prune it.
 ## Restart, env changes and secret rotation
 
 - After editing `shared/.env.production`: `bash /www/wwwroot/axiomatic/current/deploy/restart.sh` (graceful PM2 reload,
-  health check). Changes to any `STORAGE_*` value need a new deploy instead (the CSP is built in).
+  health check). That includes the `STORAGE_*` fallback: the CSP's bucket origin is set at runtime, not by the build.
+- Razorpay, SMTP and storage credentials saved in Admin > Settings > Integrations are rotated there: save the new value
+  (Replace, then Save with your password). No restart or deploy; other PM2 processes follow within 30 s. They win over
+  any `PAYMENT_*`, `EMAIL_*`, `SMTP_*` or `STORAGE_*` line, which is only a fallback when nothing is saved.
+- Removing the release-day stand-ins: save the real values in Admin first (they win at once), then delete every
+  `PAYMENT_*`, `STORAGE_*` (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*` and `SMTP_*` line and run `restart.sh`. The
+  cards then say "Saved in Admin"; if the Admin settings are removed later, nothing falls back to stand-ins.
 - Never run `pm2 reload --update-env` from a shell that exported app variables: PM2 copies the caller's environment,
   and an exported variable wins over the file. The scripts call PM2 with a clean environment.
 
@@ -243,13 +266,13 @@ release stays on disk until later deploys prune it.
 | `CSRF_SECRET` | new random value, restart | open forms fail once; reload fixes it |
 | `SESSION_SECRET` | new random value, restart | trusted devices forgotten (two-step code again for people who have it on), sign-in codes in flight void |
 | `ORDER_TOKEN_SECRET` | new random value, restart | guest order links already emailed stop working |
-| `PAYMENT_WEBHOOK_SECRET` | new value here and in the Razorpay webhook at the same time, restart | webhooks in between fail and are retried by Razorpay |
-| `PAYMENT_KEY_ID` / `PAYMENT_KEY_SECRET` | regenerate in Razorpay, restart | none |
-| `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY` | new key at the provider, restart, then delete the old key | none |
-| `SMTP_PASSWORD` | new credential at the provider, restart | none |
+| Razorpay webhook secret (Admin, or `PAYMENT_WEBHOOK_SECRET`) | save the new value in Admin and in the Razorpay webhook at the same time (fallback: edit the file, restart) | webhooks in between fail and are retried by Razorpay |
+| Razorpay Key ID / Key secret (Admin, or `PAYMENT_KEY_ID` / `PAYMENT_KEY_SECRET`) | regenerate in Razorpay, save in Admin, "Test Razorpay keys" | unpaid orders start a fresh payment attempt; payments taken with the old keys of the same account and mode are still reconciled and refundable from Admin; after a test-to-live switch or with another account, refund old payments in the Razorpay Dashboard |
+| Storage access key (Admin, or `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY`) | new key at the provider, save in Admin, "Test bucket", then delete the old key | none |
+| SMTP password (Admin, or `SMTP_PASSWORD`) | new credential at the provider, save in Admin, "Send test email" | none |
 | DB password (in `DATABASE_URL`) | edit the URL (letters and digits), as the app user `bash deploy/db-setup.sh --host 127.0.0.1 --superuser postgres`, restart | none |
 | Redis password (in `REDIS_URL`) | edit the URL, set the same `requirepass` in aaPanel > Redis, restart Redis, then restart the app | rate-limited requests may be refused until the app restarts |
-| `LICENSE_KEY_PEPPER`, `LICENSE_KEY_ENC_KEY` | **never** once a license key exists | issued keys could no longer be checked or revealed |
+| `LICENSE_KEY_PEPPER`, `LICENSE_KEY_ENC_KEY` | **never** once a license key exists | issued keys could no longer be checked or revealed; the integration secrets saved in Admin could no longer be read (enter them again) |
 | `LICENSE_SIGNING_*` | only together with an app release that embeds the new public key | old apps reject tokens signed with the new key |
 
 ## Logs

@@ -16,7 +16,7 @@ import { sha256Hex } from "@/lib/auth/tokens";
 import { db, type Db } from "@/lib/db";
 import { composeEmail } from "@/lib/email/compose";
 import { EMAIL_TEMPLATE_DEFAULTS, isEmailTemplateId } from "@/lib/email/defaults";
-import { getEmailTransport, maskEmail } from "@/lib/email/transport";
+import { EmailNotConfiguredError, getEmailTransport, maskEmail } from "@/lib/email/transport";
 import { errors } from "@/lib/http";
 import { log } from "@/lib/log";
 import { TEMPLATE_ERRORS, templateDto, templateOrder, unknownTemplateVars, type TemplateDto } from "./model";
@@ -98,6 +98,9 @@ export async function updateTemplate(
 export const TEMPLATE_TEST_LIMIT = 10;
 export const TEMPLATE_TEST_WINDOW_SEC = 3600;
 
+/** 409 `email_not_configured` of "Send test" when no email configuration is usable. */
+export const EMAIL_NOT_CONFIGURED_MESSAGE = "Email isn’t set up yet. Set it up in Settings > Integrations.";
+
 /** "Send test" per staff member: 10 / hour (same key shape as lib/auth/rate-limit RATE_LIMITS). */
 export function templateTestRule(staffId: string): RateLimitRule {
   return { key: `admin-template-test:user:${sha256Hex(staffId).slice(0, 32)}`, limit: TEMPLATE_TEST_LIMIT, windowSec: TEMPLATE_TEST_WINDOW_SEC };
@@ -120,10 +123,13 @@ export async function sendTemplateTest(
 
   const sample = isEmailTemplateId(id) ? EMAIL_TEMPLATE_DEFAULTS[id].sampleVars : {};
   const email = await composeEmail(client, id, sample, { content, unknownVars: "keep" });
-  const transport = await getEmailTransport();
   try {
+    const transport = await getEmailTransport();
     await transport.send({ to: ctx.staff.email, subject: `[Test] ${email.subject}`, html: email.html, text: email.text, templateId: id });
   } catch (error) {
+    if (error instanceof EmailNotConfiguredError) {
+      throw errors.conflict("email_not_configured", EMAIL_NOT_CONFIGURED_MESSAGE);
+    }
     log.error("admin_template_test_failed", { template: id, to: maskEmail(ctx.staff.email), error: error instanceof Error ? error.name : typeof error });
     throw errors.conflict("send_failed", "We couldn\u2019t send the test email. Check the email settings and try again.");
   }

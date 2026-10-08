@@ -4,7 +4,8 @@
  * tests/db/admin-permissions.test.ts). Only this area's builder edits this file.
  *
  * Sample bodies are harmless against the dummy id: `{}` fails validation (invite, role change) or meets a 404
- * (unknown staff member, unknown settings section). The audit log has GET routes only (append-only).
+ * (unknown staff member, unknown settings section). The audit log has GET routes only (append-only). The integration
+ * routes answer 404 for the dummy kind before reading the body, so nothing is saved, cleared or tested.
  */
 import type { AdminRouteSpec } from "./types";
 
@@ -26,4 +27,14 @@ export const ROUTES: readonly AdminRouteSpec[] = [
   // Settings (Owner only)
   { method: "GET", path: "/api/admin/settings", perm: "settings.manage" },
   { method: "PATCH", path: "/api/admin/settings/[section]", perm: "settings.manage", sampleBody: {} },
+  // Settings > Integrations (Owner only; save, clear and remove also re-check the password)
+  { method: "PUT", path: "/api/admin/settings/integrations/[kind]", perm: "integrations.manage", sampleBody: {} },
+  { method: "DELETE", path: "/api/admin/settings/integrations/[kind]", perm: "integrations.manage", sampleBody: { currentPassword: "Permission test" } },
+  {
+    method: "DELETE",
+    path: "/api/admin/settings/integrations/[kind]/secrets/[field]",
+    perm: "integrations.manage",
+    sampleBody: { currentPassword: "Permission test" },
+  },
+  { method: "POST", path: "/api/admin/settings/integrations/[kind]/test", perm: "integrations.manage", sampleBody: {} },
 ];

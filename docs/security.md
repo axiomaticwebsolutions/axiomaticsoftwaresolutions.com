@@ -10,7 +10,8 @@ Recorded 2026-10-07 for the first test-mode deployment.
 **Assets.** License keys (sold value; stored as HMAC + AES-256-GCM, never logged), the Ed25519 signing key for
 activation tokens, payments and orders (amounts, GST invoices, refunds), customer and business data (names, emails,
 phones, GSTINs, billing addresses, tickets and attachments), staff accounts (the admin console can refund, revoke and
-issue licenses), sessions and sign-in codes, and the secrets in `.env.production`.
+issue licenses), sessions and sign-in codes, the secrets in `.env.production`, and the payment, email and storage
+credentials saved in Admin > Settings > Integrations (encrypted in the database).
 
 **Actors.** Anonymous visitors and bots; customers and their team members (Owner, Billing admin, Technical contact,
 Viewer); staff (Owner, Administrator, Support, Finance); desktop and mobile apps calling the activation API; Razorpay
@@ -34,7 +35,8 @@ injected content (an admin-entered banner, a ticket message, a product descripti
 | Activation API abuse | strict JSON (8 KB), HMAC lookup, per-key and per-IP limits, device-limit lock, EdDSA tokens verified offline |
 | Injection | Prisma parameterised queries (raw SQL only with bound parameters), strict Zod bodies (unknown keys refused), size-capped bodies |
 | Open redirects | `safeNext()` allows same-origin relative paths only (no `//`, backslashes, control characters, `/api`, auth pages) |
-| Secret disclosure | secrets only in the env file (mode 600); never in code, the database, the admin UI, emails or logs (`lib/log.ts` redaction) |
+| Secret disclosure | secrets only in the env file (mode 600) or, for the Admin-saved integrations, AES-256-GCM encrypted in the database with a key derived from `LICENSE_KEY_ENC_KEY` (a database copy alone reveals nothing); never in code, the admin UI (only "set" and the last 4 characters of long secrets), API responses, emails, audit rows or logs (`lib/log.ts` redaction) |
+| Owner account takeover redirecting payments, email or storage | only the Owner holds `integrations.manage`; every save, clear and remove re-asks the password (5 tries / 15 min); CSRF and same-origin; every change and test is audited (fields by label); two-step sign-in recommended for the Owner once email works; production refuses private-network SMTP hosts and storage endpoints (SSRF guard below) |
 | Denial of service | rate limits on every public write, body caps, statement timeouts, a bounded DB pool answering 503; Nginx `client_max_body_size 12m` |
 | App compromise becoming server compromise | the app, its files, PM2, `pnpm install` and every scheduled job run as the unprivileged user `axiomatic`; aaPanel Cron tasks switch to it with `runuser`, and root never runs a file under `/www/wwwroot/axiomatic` (deploy/README.md "Privileges") |
 
@@ -44,8 +46,9 @@ served as downloads from the private bucket, never rendered inline), and hardwar
 ## HTTP security headers
 
 Set by `next.config.ts` from `lib/security/headers.ts` on every response (computed by `next build`); `middleware.ts`
-replaces the CSP with the strict one on the dynamic routes. Nginx and aaPanel must not add any of these (browsers
-would get two copies; `scripts/smoke-prod.mjs` warns).
+(Node.js runtime) replaces the CSP on every page: the strict one on the dynamic routes, the static one with the
+runtime bucket origin everywhere else. Nginx and aaPanel must not add any of these (browsers would get two copies;
+`scripts/smoke-prod.mjs` warns).
 
 | Header | Value | Why |
 |---|---|---|
@@ -59,7 +62,7 @@ would get two copies; `scripts/smoke-prod.mjs` warns).
 | X-Permitted-Cross-Domain-Policies | `none` | no Flash/PDF cross-domain policy files |
 
 `SECURITY_HSTS_STRICT` (true/false) is validated by `lib/env.ts` at start-up and read by `next.config.ts` at build time
-(a typo stops the build); a change needs a deploy, like the `STORAGE_*` values.
+(a typo stops the build); a change needs a deploy.
 
 Not set on purpose: Cross-Origin-Embedder-Policy (would break the Razorpay iframes), Cross-Origin-Resource-Policy (mail
 clients load our images cross-site), `upgrade-insecure-requests` (HSTS covers the site; it breaks local `next start`
@@ -69,15 +72,33 @@ checks over http).
 
 Two policies (`lib/security/csp.ts`) that differ only in `script-src`:
 
-| | Strict (per request, `middleware.ts`) | Static (`next.config.ts`) |
+| | Strict (per request, `middleware.ts`) | Static (`middleware.ts` on pages; `next.config.ts` elsewhere) |
 |---|---|---|
-| Routes | `/account/*`, `/admin/*`, `/checkout`, `/orders/:id`, `/sign-in`, `/register`, `/forgot`, `/reset`, `/verify`, `/invite`, `/staff-invite` | everything else: the prerendered / ISR storefront (`/`, `/software/<slug>`, `/pricing`, `/docs/*`, `/legal/*`, `/about`, `/support`, `/cart`), `/software`, `/compare`, `/contact`, APIs, 404s |
+| Routes | `/account/*`, `/admin/*`, `/checkout`, `/orders/:id`, `/sign-in`, `/register`, `/forgot`, `/reset`, `/verify`, `/invite`, `/staff-invite` | everything else: the prerendered / ISR storefront (`/`, `/software/<slug>`, `/pricing`, `/docs/*`, `/legal/*`, `/about`, `/support`, `/cart`), `/software`, `/compare`, `/contact`, 404s; APIs and `/_next` assets get `next.config.ts`'s copy, which has no bucket origin |
 | script-src | `'self' 'nonce-<128 random bits>' 'strict-dynamic' 'sha256-<price script>' 'sha256-<banner script>'`, plus `https://checkout.razorpay.com` on `/checkout` and `/orders/:id` | `'self' 'unsafe-inline'` |
 
 Shared: `default-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;
 font-src 'self'; connect-src 'self' <storage bucket origin>; frame-src 'self'; frame-ancestors 'none';
 form-action 'self'; base-uri 'none'; object-src 'none'`, with Razorpay's frame, connect and image origins on
 `/checkout` and `/orders/:id`. Development adds `'unsafe-eval'` (React refresh) and `ws:` (hot reload).
+
+**The bucket origin is a runtime value** (since 2026-10-08, decisions.md "Admin-configurable integrations"). The
+storage bucket can be changed in Admin > Settings > Integrations, so it cannot be baked in by `next build`.
+`middleware.ts` runs in the Node.js runtime (`config.runtime = "nodejs"`) and its matcher covers every page
+(prerendered, ISR and dynamic) plus `/api/dev/*`, but no other `/api` route and no `/_next` asset. On each page it asks
+`lib/integrations/csp-origin.ts` for the origin of the effective storage configuration and sets it on the strict or
+the static policy; the middleware's header replaces the `next.config.ts` one (Next.js applies config headers first,
+middleware headers after them). The origin is always one exact origin: the endpoint's origin for path-style stores, or
+`https://<bucket>.<host>` for virtual-hosted ones, never a wildcard such as `*.r2.cloudflarestorage.com` (that would let
+injected code send data to any bucket on the provider). Local disk or "not configured" adds nothing.
+- The lookup goes through the integration resolver's in-process cache (30 s; a save clears it at once in the process
+  that saved; other processes follow within 30 s). The middleware never throws and never makes a page wait more than
+  once per cold process (1 s cap; instrumentation warms the cache at start-up). While the database is down it keeps
+  the last known origin; with none known it sends no bucket origin (uploads fail visibly, pages still render).
+- On static pages the middleware also drops any client-sent `Content-Security-Policy` and `x-nonce` request headers,
+  so nothing can hand the renderer a forged nonce now that those pages pass through it.
+- A tab opened before a storage change keeps its old policy until it reloads. The Settings page reloads itself after a
+  storage save, clear or remove (so an upload right after it works); the Admin card asks to reload other tabs.
 
 **Strict policy.** Per request the middleware makes a fresh nonce and puts the policy on the request (Next.js reads
 the nonce from the request's `Content-Security-Policy` header and stamps it on every script it renders: bootstrap
@@ -161,6 +182,16 @@ before Phase 7) no longer verify, so every trusted device asks for one code afte
 - **Development routes.** `/api/dev/*` answers 404 for every method in production (`middleware.ts`); `/dev/*` pages
   404 through `app/dev/layout.tsx`; the handlers also refuse outside development. The mock payment provider, local
   storage driver, console email transport and fixture catalog are refused by `lib/env.ts` in production.
+- **SSRF guard (Admin integrations).** The SMTP host and the storage endpoint are typed by the Owner, and the server
+  also runs Redis on 127.0.0.1:6380 and other local services. In production (`lib/security/host-rules.ts`,
+  `lib/security/net-guard.ts`): loopback, private (RFC 1918, CGNAT), link-local (incl. 169.254.169.254), unique-local,
+  multicast, reserved and unspecified addresses are blocked, also inside IPv4-mapped, NAT64 and 6to4 IPv6 addresses;
+  `localhost`, `.local`, `.internal`, single-label names and numeric shorthands (`127.1`) are refused; storage
+  endpoints must be https with no user name, path, query or fragment. The rules apply three times: when saving (plus a
+  DNS lookup: any blocked address or a name that does not exist refuses the save), when resolving the configuration,
+  and when connecting (the S3 client's guarded DNS lookup; nodemailer's `getSocket` hook connects to the checked
+  address while TLS still verifies the host name), which also closes DNS rebinding. `.invalid` names are refused in
+  every environment; development allows local test servers (MinIO, Mailpit). Messages never echo the host or address.
 - **Errors.** API routes go through `route()` (`lib/http.ts`): known errors become the documented envelope, anything
   else a generic 500 "Something went wrong on our side" (logged redacted, no stack in production logs). Pages show
   Next.js's production error page or our error boundaries, which print only the error digest; 404s are plain pages.
@@ -182,11 +213,35 @@ before Phase 7) no longer verify, so every trusted device asks for one code afte
 
 ## Secrets
 
-All secrets live in one env file: `.env.local` in development (written by `pnpm secrets`), `shared/.env.production`
-(mode 600, app user only; generated by `scripts/gen-prod-env.mjs`) on the server. They are never committed, never
-stored in the database, never shown in Admin > Settings (only "configured / test / live"), never emailed and never
-logged; `lib/env.ts` refuses placeholders and reports problems by name only. Production keys are generated on the
-server, never copied from development (the dev signing key was rotated once already, Phase 3).
+Secrets have two homes:
+- **The env file**: `.env.local` in development (written by `pnpm secrets`), `shared/.env.production` (mode 600, app
+  user only; generated by `scripts/gen-prod-env.mjs`) on the server. Everything the app needs to start, plus the
+  optional fallback for payments, email and storage. `lib/env.ts` refuses placeholders and reports problems by name
+  only.
+- **The database, encrypted**: the Razorpay key and webhook secrets, the SMTP password and the storage secret access key
+  saved in Admin > Settings > Integrations (`IntegrationSecret`; decisions.md "Admin-configurable integrations").
+  AES-256-GCM with a fresh random 96-bit IV per write; the key is HKDF-SHA256 over `LICENSE_KEY_ENC_KEY` with its own
+  info label (`axs:integration-secrets:v1`), so the license-key cipher key is never reused; the associated data
+  (`axs:integration-secret:v1:<kind>:<field>`) binds each ciphertext to its integration and field
+  (`lib/integrations/crypto.ts`). Any decryption failure (wrong key, tampering, a ciphertext copied to another field)
+  fails closed: the integration is "Not configured" and the env file is not used instead. Non-secret settings (key id,
+  host, bucket, access key ID) are plain JSON.
+
+Who can change what: the env file only someone with server access; the Admin integrations only the Owner
+(`integrations.manage`), with the password re-entered for every save, clear and remove, and every change and test
+audited by field label. A saved Admin configuration wins over the env file for its integration as a whole.
+
+A saved secret is write-only, also against the Owner: a save that changes where it would be sent (the SMTP host, port
+or security; the storage endpoint) must enter every saved secret of that integration again
+(`lib/integrations/store.ts`, 422 "Enter it again: ..."), so nobody can point email at their own server, keep the
+stored password and read it out with "Send test email". The secret inputs are marked as no site password
+(`autocomplete="off"` plus the 1Password, LastPass and Bitwarden ignore attributes), so browsers do not offer to save
+them, which would copy them out of the encrypted store or overwrite the Owner's sign-in entry.
+
+Secrets are never committed, never shown again after saving (Admin shows "set", the last 4 characters of secrets of
+16+ characters, who changed it and when), never returned by an API, never emailed, never in an audit row and never
+logged. Production keys are generated on the server, never copied from development (the dev signing key was rotated
+once already, Phase 3).
 
 | Secret | Protects | If it leaks |
 |---|---|---|
@@ -194,10 +249,10 @@ server, never copied from development (the dev signing key was rotated once alre
 | `CSRF_SECRET` | CSRF tokens | CSRF protection weakens to the same-origin check; rotate |
 | `ORDER_TOKEN_SECRET` | guest order links | anyone can mint order links (view orders, one-time key reveal of undelivered keys); rotate |
 | `CRON_SECRET` | `/api/cron/*` (also blocked at Nginx) | jobs can be triggered early (idempotent); rotate |
-| `LICENSE_KEY_PEPPER`, `LICENSE_KEY_ENC_KEY` | key lookup and key encryption | with a database copy, every key can be decrypted. Cannot be rotated once keys exist: treat a leak as a re-key project (re-encrypt, reissue) |
+| `LICENSE_KEY_PEPPER`, `LICENSE_KEY_ENC_KEY` | key lookup and key encryption; `LICENSE_KEY_ENC_KEY` also derives the key of the saved integration secrets | with a database copy, every license key and every saved integration secret can be decrypted. Cannot be rotated once keys exist: treat a leak as a re-key project (re-encrypt, reissue, and re-enter the integration secrets in Admin) |
 | `LICENSE_SIGNING_PRIVATE_KEY` | activation tokens | forged offline activations until apps ship a new public key |
-| `PAYMENT_KEY_SECRET`, `PAYMENT_WEBHOOK_SECRET` | Razorpay API and webhook signatures | refunds or forged "paid" events; regenerate in Razorpay at once |
-| `STORAGE_*` keys, `SMTP_PASSWORD`, database and Redis passwords | files, outgoing mail, data, rate limits | rotate at the provider |
+| Razorpay key secret and webhook secret (Admin, or `PAYMENT_KEY_SECRET`, `PAYMENT_WEBHOOK_SECRET`) | Razorpay API and webhook signatures | refunds or forged "paid" events; regenerate in Razorpay at once and save the new values in Admin |
+| Storage secret access key, SMTP password (Admin, or `STORAGE_*`, `SMTP_PASSWORD`), database and Redis passwords | files, outgoing mail, data, rate limits | rotate at the provider; integration values are replaced in Admin (no restart) |
 
 **Rotation.** How to rotate each value and what users notice is the table in
 [`deploy/README.md`](../deploy/README.md) "Restart, env changes and secret rotation". Rotate on a schedule (yearly), when
@@ -216,7 +271,11 @@ someone with server access leaves, and after any suspected exposure. After rotat
      the reset email from Admin > Customers.
    - Everyone at once: rotate `SESSION_SECRET` (trusted devices and codes in flight) and revoke all sessions in SQL:
      `UPDATE "Session" SET "revokedAt" = now() WHERE "revokedAt" IS NULL;`
-   - A leaked secret: rotate it (deploy/README.md table). Razorpay keys: regenerate in the dashboard first.
+   - A leaked secret: rotate it (deploy/README.md table). Razorpay keys: regenerate in the dashboard first, then save
+     them in Admin > Settings > Integrations.
+   - Integration settings changed by someone else (audit log: "Updated integration settings", "Removed integration
+     settings"): contain the Owner account as above, save the right values again (or "Remove saved settings" to fall
+     back to the server file), and rotate every credential that was saved while the account was misused.
    - Payments: pause the webhook in Razorpay only if forged events are suspected (reconciliation catches up later).
    - Take the site down only for an active compromise of the server: `pm2 stop axiomatic` (Nginx then answers 502).
 3. **Preserve evidence** before cleaning up: copy `shared/logs/`, the PM2 logs, the Nginx error log and a fresh

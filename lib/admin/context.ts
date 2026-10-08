@@ -24,7 +24,8 @@ import {
 import { getCurrentAuth, hasLiveStaffAccess, type CurrentAuth, type StaffAuth } from "@/lib/auth/guards";
 import { CUSTOMER_HOME, signInPath } from "@/lib/auth/redirect";
 import { db, type Db } from "@/lib/db";
-import { getEnv, type Env } from "@/lib/env";
+import { resolvePayments } from "@/lib/integrations/resolver";
+import type { PaymentsConfig, Resolved } from "@/lib/integrations/types";
 import { can, canViewModule, type AdminModuleKey, type Permission } from "@/lib/rbac";
 
 /** Request header set by middleware.ts with the requested path + query (equals PORTAL_PATH_HEADER). */
@@ -40,7 +41,7 @@ export type AdminContextData = {
   staff: AdminStaff;
   /** Every module in sidebar order with { locked, badge } for this role. */
   modules: AdminModuleView[];
-  /** PAYMENT_PROVIDER is mock or the Razorpay key is a test key (the key itself never leaves the server). */
+  /** The effective payments configuration is the mock or a Razorpay test key (the key itself never leaves the server). */
   testMode: boolean;
 };
 
@@ -55,11 +56,12 @@ export type AdminState =
   | { kind: "ready"; context: AdminContext }
   | { kind: "inactive"; user: { id: string; name: string; email: string } };
 
-/** "Test mode" badge: the mock provider, or Razorpay with an `rzp_test_` key. */
-export function isPaymentTestMode(env: Pick<Env, "PAYMENT_PROVIDER" | "PAYMENT_KEY_ID">): boolean {
-  if (env.PAYMENT_PROVIDER === "mock") return true;
-  if (env.PAYMENT_PROVIDER === "razorpay") return (env.PAYMENT_KEY_ID ?? "").startsWith("rzp_test");
-  return false;
+/**
+ * "Test mode" badge: the effective payments configuration (lib/integrations/resolver.ts) is the mock or Razorpay with an
+ * `rzp_test_` key. Not configured -> false (no badge).
+ */
+export function isPaymentTestMode(payments: Resolved<PaymentsConfig>): boolean {
+  return payments.source !== "none" && payments.config.mode === "test";
 }
 
 /** Where a visitor of `path` must go instead of the console, or null when they may stay (staff of any status). */
@@ -91,13 +93,13 @@ export async function loadAdminBadges(client: Db, role: StaffRole): Promise<Admi
 export async function loadAdminData(
   client: Db,
   user: { id: string; name: string; email: string; staffRole: StaffRole },
-  env: Pick<Env, "PAYMENT_PROVIDER" | "PAYMENT_KEY_ID"> = getEnv(),
+  payments?: Resolved<PaymentsConfig>,
 ): Promise<AdminContextData> {
-  const badges = await loadAdminBadges(client, user.staffRole);
+  const [badges, effective] = await Promise.all([loadAdminBadges(client, user.staffRole), payments ?? resolvePayments()]);
   return {
     staff: { id: user.id, name: user.name, email: user.email, role: user.staffRole },
     modules: moduleViewsFor(user.staffRole, badges),
-    testMode: isPaymentTestMode(env),
+    testMode: isPaymentTestMode(effective),
   };
 }
 

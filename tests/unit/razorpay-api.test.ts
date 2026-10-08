@@ -1,8 +1,9 @@
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetEnvCache } from "@/lib/env";
+import { invalidateIntegrations, setIntegrationEnvForTests } from "@/lib/integrations/resolver";
 import { setLogSink } from "@/lib/log";
-import { getPaymentProvider, resetPaymentProviders } from "@/lib/payments";
+import { activePaymentProvider, activePaymentProviderOrNull, createPaymentProvider, resetPaymentProviders } from "@/lib/payments";
 import { RAZORPAY_API_BASE, RazorpayProvider } from "@/lib/payments/razorpay";
 import { PaymentProviderError } from "@/lib/payments/types";
 
@@ -60,6 +61,7 @@ const payment = (over: Record<string, unknown> = {}) => ({
 
 afterEach(() => {
   setLogSink(null);
+  setIntegrationEnvForTests(null);
   vi.unstubAllEnvs();
   resetEnvCache();
   resetPaymentProviders();
@@ -225,35 +227,61 @@ describe("configuration", () => {
     );
   });
 
-  it("getPaymentProvider('razorpay') builds the adapter from the environment", () => {
-    const pair = generateKeyPairSync("ed25519", {
-      privateKeyEncoding: { type: "pkcs8", format: "pem" },
-      publicKeyEncoding: { type: "spki", format: "pem" },
-    });
-    const env: Record<string, string> = {
-      APP_URL: "http://localhost:3000",
+  it("builds the active adapter from the effective configuration (here the env fallback), once per configuration", async () => {
+    const webhookSecret = randomBytes(32).toString("base64url");
+    setIntegrationEnvForTests({
       NODE_ENV: "test",
-      SESSION_SECRET: randomBytes(48).toString("base64url"),
-      CSRF_SECRET: randomBytes(32).toString("base64url"),
-      ORDER_TOKEN_SECRET: randomBytes(32).toString("base64url"),
-      CRON_SECRET: randomBytes(32).toString("base64url"),
-      DATABASE_URL: "postgresql://axiomatic:axiomatic@localhost:5432/axiomatic?schema=public",
-      LICENSE_KEY_PEPPER: randomBytes(32).toString("hex"),
-      LICENSE_KEY_ENC_KEY: randomBytes(32).toString("base64"),
-      LICENSE_SIGNING_PRIVATE_KEY: pair.privateKey,
-      LICENSE_SIGNING_PUBLIC_KEY: pair.publicKey,
       PAYMENT_PROVIDER: "razorpay",
       PAYMENT_KEY_ID: KEY_ID,
       PAYMENT_KEY_SECRET: KEY_SECRET,
-      PAYMENT_WEBHOOK_SECRET: randomBytes(32).toString("base64url"),
-      EMAIL_FROM: "Axiomatic Software <no-reply@axiomatic.example>",
-    };
-    for (const [k, v] of Object.entries(env)) vi.stubEnv(k, v);
-    resetEnvCache();
-    const fromEnv = getPaymentProvider();
-    expect(fromEnv).toBeInstanceOf(RazorpayProvider);
-    expect(fromEnv.key).toBe("razorpay");
-    expect((fromEnv as RazorpayProvider).keyId).toBe(KEY_ID);
-    expect(getPaymentProvider("razorpay")).toBe(fromEnv);
+      PAYMENT_WEBHOOK_SECRET: webhookSecret,
+    });
+    const active = await activePaymentProvider();
+    expect(active).toBeInstanceOf(RazorpayProvider);
+    expect(active.key).toBe("razorpay");
+    expect(active.keyId).toBe(KEY_ID);
+    expect(await activePaymentProvider()).toBe(active);
+    invalidateIntegrations();
+    expect(await activePaymentProvider()).toBe(active); // same configuration -> same adapter
+    setIntegrationEnvForTests({ NODE_ENV: "test", PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: "rzp_live_AbCdEf123456", PAYMENT_KEY_SECRET: KEY_SECRET, PAYMENT_WEBHOOK_SECRET: webhookSecret });
+    const live = await activePaymentProvider();
+    expect(live).not.toBe(active);
+    expect(live.keyId).toBe("rzp_live_AbCdEf123456");
+  });
+
+  it("has no active adapter when payments are not configured", async () => {
+    setIntegrationEnvForTests({ NODE_ENV: "production" });
+    expect(await activePaymentProviderOrNull()).toBeNull();
+    await expect(activePaymentProvider()).rejects.toMatchObject({ code: "not_configured" });
+    setIntegrationEnvForTests({ NODE_ENV: "test", PAYMENT_PROVIDER: "cashfree" });
+    expect(await activePaymentProviderOrNull()).toBeNull();
+  });
+
+  it("createPaymentProvider builds Razorpay without reading the environment", () => {
+    const p = createPaymentProvider({ provider: "razorpay", keyId: KEY_ID, keySecret: KEY_SECRET, webhookSecret: WEBHOOK_SECRET, mode: "test" });
+    expect(p).toBeInstanceOf(RazorpayProvider);
+    expect(p.keyId).toBe(KEY_ID);
+  });
+});
+
+describe("checkCredentials (Admin \"Test Razorpay keys\")", () => {
+  it("answers ok after one authenticated read-only call", async () => {
+    const { p, calls } = provider(() => jsonResponse(200, { entity: "collection", count: 0, items: [] }));
+    expect(await p.checkCredentials()).toBe("ok");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(`${RAZORPAY_API_BASE}/orders?count=1`);
+    expect(calls[0]?.init.method).toBe("GET");
+    expect(header(calls[0]!.init, "authorization")).toBe(basic);
+  });
+
+  it("answers rejected on 401 and throws provider_error otherwise, never echoing a key", async () => {
+    const rejected = provider(() => jsonResponse(401, { error: { code: "BAD_REQUEST_ERROR", description: "Authentication failed" } }));
+    expect(await rejected.p.checkCredentials()).toBe("rejected");
+    for (const handler of [() => jsonResponse(500, {}), () => Promise.reject(new TypeError("fetch failed"))] as Handler[]) {
+      const error = await providerError(() => provider(handler).p.checkCredentials());
+      expect(error.code).toBe("provider_error");
+      expect(error.message).not.toContain(KEY_ID);
+      expect(error.message).not.toContain(KEY_SECRET);
+    }
   });
 });

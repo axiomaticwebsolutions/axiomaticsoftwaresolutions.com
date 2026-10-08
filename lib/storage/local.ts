@@ -1,5 +1,6 @@
 /**
- * Local storage driver for development only (env validation refuses STORAGE_DRIVER=local in production).
+ * Local storage driver for development only (the env fallback refuses STORAGE_DRIVER=local in production and Admin
+ * cannot choose it; lib/storage/index.ts createStorageDriver builds it).
  * Objects are files under STORAGE_LOCAL_DIR. Presigned URLs point at the app's dev route,
  * "<APP_URL>/api/dev/storage/<key>?exp=<unix seconds>&sig=<hex HMAC>", which checks verifyLocalSignature().
  *
@@ -193,8 +194,3 @@ export class LocalStorageDriver implements StorageDriver {
   }
 }
 
-/** Driver configured from the environment (STORAGE_LOCAL_DIR, APP_URL, SESSION_SECRET). */
-export function localStorageFromEnv(): LocalStorageDriver {
-  const env = getEnv();
-  return new LocalStorageDriver({ dir: env.STORAGE_LOCAL_DIR, appUrl: env.APP_URL, secret: env.SESSION_SECRET });
-}

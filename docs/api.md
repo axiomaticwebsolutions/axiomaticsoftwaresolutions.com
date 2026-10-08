@@ -1,6 +1,6 @@
 # API reference
 
-The HTTP API the app implements today: 165 route files under `app/api`, read on 2026-10-07. Every handler's header
+The HTTP API the app implements today: 168 route files under `app/api`, read on 2026-10-08. Every handler's header
 comment is the detailed contract (bodies, responses, limits); this page is the map. The design-time contract is
 `../design_handoff_axiomatic/docs/api-contracts.md`; where the code differs, `docs/decisions.md` records why.
 App developers: the device API has its own guide, [`activation-api.md`](activation-api.md).
@@ -27,14 +27,18 @@ App developers: the device API has its own guide, [`activation-api.md`](activati
 | 403 | `email_unverified`, `no_account` | Portal routes: unverified customer, or no active business account |
 | 404 | `not_found` | Unknown id, and also ids that belong to another account (never 403, so ids cannot be probed) |
 | 409 | route-specific | State conflicts (`trial_used`, `already_refunded`, `last_owner`, ...) |
+| 409 | `integration_changed`, `integration_not_saved`, `integration_not_configured` | Admin integrations: the settings changed since the form loaded (reload); nothing is saved in Admin to clear or remove; nothing to test |
+| 409 | `email_not_configured`, `provider_key_changed` | Template test while email is not configured; refund of a payment the active keys cannot reach (the other test/live mode, or another Razorpay account; refund it in the Razorpay Dashboard) |
 | 410 | `code_expired`, `token_expired`, `invite_*` | Expired codes, links and invitations |
 | 413 / 415 | `payload_too_large`, `unsupported_media_type` | Body over its cap, or not JSON |
 | 422 | `validation_failed` | With `fieldErrors` (dotted paths) and `formErrors` |
 | 422 | `reason_required`, `reason_too_long`, `confirm_mismatch` | Admin destructive actions (reason 4-500 characters, typed id) |
+| 422 | `incorrect_password` | A password re-entry failed (key reveal: `fieldErrors.password`; Admin integrations: `fieldErrors.currentPassword`) |
 | 429 | `too_many_attempts` | Rate limit; `Retry-After` header |
 | 500 | `internal_error` | Unexpected error (logged redacted; no details returned) |
 | 502 | `payment_unavailable`, `provider_refund_failed` | Payment provider refused or unreachable |
 | 503 | `unavailable` | Database saturated or unreachable (`Retry-After: 5`); also Redis down for limits that guard a secret |
+| 503 | `payments_unavailable`, `payments_not_configured`, `upload_unavailable`, `download_unavailable` | The integration is not configured (Admin > Settings > Integrations, else the env file): checkout, retry and refunds; the Razorpay webhook (`Retry-After: 300`); uploads; downloads |
 
 ### Authentication
 
@@ -48,7 +52,7 @@ App developers: the device API has its own guide, [`activation-api.md`](activati
 | Order link | `t` = the order token from the order email or return URL (`o1.<exp>.<emailTag>.<sig>`, 30 days), in the body, the `X-Order-Token` header (the order page's status polls, so the token stays out of request lines) or `?t=`; or the session of a member / the placer | `/api/orders/*`, order actions in `/api/checkout/orders/:id/*` |
 | Device API | `X-App-Id: <product code>` plus the license key (`/activate`) or the activation token | `/api/v1/licenses/*` |
 | Cron | `Authorization: Bearer <CRON_SECRET>` (constant time; 401 with `WWW-Authenticate`) | `/api/cron/*` |
-| Webhook signature | Provider HMAC of the raw body with `PAYMENT_WEBHOOK_SECRET` | `/api/webhooks/payments/:provider` |
+| Webhook signature | Provider HMAC of the raw body with the webhook secret of the effective payments configuration (saved in Admin, else `PAYMENT_WEBHOOK_SECRET`) | `/api/webhooks/payments/:provider` |
 
 Server CSV exports (portal and admin) also refuse `Sec-Fetch-Site: cross-site`. Account ids never come from the
 client: portal routes act on the session's active account (`POST /api/me/active-account` switches it).
@@ -120,10 +124,10 @@ the verified payment webhook or reconciliation, never through these routes.
 | Route | Access | Purpose and response | Main errors |
 |---|---|---|---|
 | `POST /api/checkout/quote` | Public + CSRF | `{ items, couponCode?, billingState? }` -> lines, subtotal, discount, taxable, CGST/SGST/IGST, total, `issues` for refused lines | 422, 429 (120 per 10 min per IP; 20 with a coupon) |
-| `POST /api/checkout/orders` | Public or session + CSRF | `{ items, couponCode?, billing, createAccount?, acceptTerms }` -> 201 `{ orderId, orderToken, statusUrl, checkout }` (Razorpay Checkout options, or the mock page URL). Creates Order (AWAITING_PAYMENT) + Payment (CREATED); `createAccount` also signs the new customer in | 422 `validation_failed` / `cart_invalid` / `zero_total`, 403 `forbidden` / `staff_checkout`, 409 `email_taken`, 429 (20 orders per hour per IP), 502 `payment_unavailable` |
+| `POST /api/checkout/orders` | Public or session + CSRF | `{ items, couponCode?, billing, createAccount?, acceptTerms }` -> 201 `{ orderId, orderToken, statusUrl, checkout }` (Razorpay Checkout options, or the mock page URL). Creates Order (AWAITING_PAYMENT) + Payment (CREATED); `createAccount` also signs the new customer in | 422 `validation_failed` / `cart_invalid` / `zero_total`, 403 `forbidden` / `staff_checkout`, 409 `email_taken`, 429 (20 orders per hour per IP), 502 `payment_unavailable`, 503 `payments_unavailable` (payments not configured; answered before any account, password hash or provider call) |
 | `POST /api/checkout/orders/:id/return` | Order link or session + CSRF | `{ providerPaymentId, providerSignature, t? }` from the hosted checkout: verifies the signature, marks the attempt AUTHORIZED and the order CONFIRMING: `{ status }` | 400 `invalid_signature`, 401 / 403 / 404, 429 (30 per 10 min per IP) |
 | `POST /api/checkout/orders/:id/cancel` | Order link or session + CSRF | The buyer closed the payment window: AWAITING_PAYMENT -> CANCELED: `{ status }` | 401 / 403 / 404, 429 |
-| `POST /api/checkout/orders/:id/retry` | Order link or session + CSRF | "Try again" / "Return to payment": a new or reopened payment attempt for the same order: 201 like order creation | 409 `not_retryable` / `order_unavailable`, 502, 429 |
+| `POST /api/checkout/orders/:id/retry` | Order link or session + CSRF | "Try again" / "Return to payment": a new or reopened payment attempt for the same order: 201 like order creation | 409 `not_retryable` / `order_unavailable`, 502, 503 `payments_unavailable`, 429. An attempt made with other Razorpay keys is never reopened; a fresh one starts |
 | `GET /api/orders/:id/status` (token in `X-Order-Token`, or `?t=`) | Order link, account member (`invoices.view`) or the placer | The order page's data, polled every 2 s. The purchaser receives each issued key once (then masked); never to cross-site requests | 401 signed out without a token, 403 `order_link_expired`, 404 (also for foreign orders and bad tokens), 429 (300 per 5 min per IP) |
 | `GET /api/orders/:id/invoice.pdf?t=` | As the status route | The tax invoice PDF (attachment) | 409 `invoice_unavailable` before payment, 429 (30 per 10 min per IP) |
 | `POST /api/orders/:id/downloads` | As the status route + CSRF (a member reaching it by session also needs `downloads`) | `{ releaseFileId, t? }` -> presigned download link, only through licenses this order issued | 403 `not_entitled` with `reason`, 404, 429 |
@@ -188,7 +192,7 @@ Permissions (`PERMS` in `lib/rbac.ts`):
 | `customers.view`, `orders.view`, `orders.resend_invoice` | every role |
 | `refunds.issue`, `reports.export` | Owner, Finance |
 | `payments.replay`, `coupons.manage`, `reports.view` | Owner, Administrator, Finance |
-| `staff.manage`, `settings.manage` | Owner |
+| `staff.manage`, `settings.manage`, `integrations.manage` | Owner |
 
 "Any staff" below means any ACTIVE staff member (no permission).
 
@@ -220,7 +224,7 @@ Catalog writes revalidate the storefront cache.
 | Route | Permission | Notes |
 |---|---|---|
 | `GET /api/admin/orders`, `GET .../:id`, `GET .../:id/invoice.pdf` | `orders.view` | Search by order id, invoice number, email, business, GSTIN or payment id; date presets in IST |
-| `POST /api/admin/orders/:id/refund` | `refunds.issue` | `{ reason, confirmId, amountPaise?, paymentId? }`: provider refund first, then Refund (PENDING) + credit note, license revocation or term reversal and the audit row in one transaction. `paymentId` of a duplicate captured payment refunds that payment alone. 409 `already_refunded` / `not_refundable`, 422 `confirm_mismatch`, 502 `provider_refund_failed` |
+| `POST /api/admin/orders/:id/refund` | `refunds.issue` | `{ reason, confirmId, amountPaise?, paymentId? }`: provider refund first, then Refund (PENDING) + credit note, license revocation or term reversal and the audit row in one transaction. `paymentId` of a duplicate captured payment refunds that payment alone. 409 `already_refunded` / `not_refundable` / `provider_key_changed` (taken in the other test/live mode or with another Razorpay account), 422 `confirm_mismatch`, 502 `provider_refund_failed`, 503 `payments_unavailable` |
 | `POST /api/admin/orders/:id/review` | `refunds.issue` | `{ reason }`: closes a REVIEW; 409 `not_in_review` / `refund_first` / `refund_pending` |
 | `POST /api/admin/orders/:id/resend-invoice`, `POST .../resend-invoices` | `orders.resend_invoice` | Queues the confirmation email with the invoice again; 409 `invoice_unavailable` / `already_queued` |
 | `POST /api/admin/webhooks/:id/replay` | `payments.replay` | Re-runs a stored, signature-valid event through the idempotent handler; 409 `not_replayable` / `ambiguous_event` |
@@ -247,7 +251,7 @@ Catalog writes revalidate the storefront cache.
 | `GET` / `POST /api/admin/faqs`, `GET` / `PATCH` / `DELETE .../:id`, `POST .../:id/move`, `POST .../bulk` | `content.manage` | Delete needs a reason |
 | `GET` / `PATCH /api/admin/content/banner`, `.../content/sample-notice` | `content.manage` | Site banner and sample notice; revalidate the storefront |
 | `GET /api/admin/templates`, `GET` / `PATCH .../:id` | `templates.manage` | 422 for unknown `{{placeholders}}` |
-| `POST /api/admin/templates/:id/test` | `templates.manage` | Sends the (unsaved) copy to the signed-in staff member only; 10 per hour; 409 `send_failed` |
+| `POST /api/admin/templates/:id/test` | `templates.manage` | Sends the (unsaved) copy to the signed-in staff member only; 10 per hour; 409 `send_failed` / `email_not_configured` |
 | `GET /api/admin/leads`, `GET` / `PATCH .../:id` | `leads.view` | Contact and demo requests; status and notes |
 | `GET .../coupons/export.csv` | `reports.export` | |
 | `GET .../faqs/export.csv`, `.../templates/export.csv`, `.../leads/export.csv` | the module permission and `reports.export` (Owner only in practice) | |
@@ -265,14 +269,58 @@ Catalog writes revalidate the storefront cache.
 | `GET` / `POST /api/admin/staff`, `GET` / `PATCH .../:id` | `staff.manage` | Invite `{ email, role }` -> `{ staff, emailSent }`; role change needs a reason and signs the person out (two-step sign-in is never changed here: each person sets it in My profile); 409 `customer_email` / `already_staff` / `already_invited` / `own_role` / `last_owner` / `staff_changed` |
 | `POST .../staff/:id/deactivate`, `.../reactivate`, `.../resend-invite`, `DELETE .../:id/invite` | `staff.manage` | Reasons (not resend); deactivation signs them out everywhere; 409 `deactivate_self` / `not_invited` |
 | `GET /api/admin/audit`, `GET .../:id`, `GET .../export.csv` | `audit.view` | Append-only: no write routes |
-| `GET /api/admin/settings`, `PATCH .../settings/:section` | `settings.manage` | Sections `business`, `tax`, `licensing`, `sample-notice`; one audit row per changed field; integrations show configured or not, never values |
+| `GET /api/admin/settings`, `PATCH .../settings/:section` | `settings.manage` | Sections `business`, `tax`, `licensing`, `sample-notice`; one audit row per changed field. GET also returns `integrations` (below): forms and secret hints only with `integrations.manage` |
+| `PUT /api/admin/settings/integrations/:kind` | `integrations.manage` | Save payments, email or storage (below); password re-entry; 404 unknown kind, 422 `validation_failed` / `incorrect_password`, 409 `integration_changed`, 429 |
+| `DELETE /api/admin/settings/integrations/:kind` | `integrations.manage` | `{ currentPassword }`: remove the saved settings (the env file is the fallback again); 409 `integration_not_saved` |
+| `DELETE /api/admin/settings/integrations/:kind/secrets/:field` | `integrations.manage` | `{ currentPassword }`: clear one saved secret; 409 `integration_not_saved`; a secret that is not set answers `cleared: false` |
+| `POST /api/admin/settings/integrations/:kind/test` | `integrations.manage` | `{}`: test the effective configuration; 409 `integration_not_configured`; 10 per 10 minutes |
 | `GET /api/admin/staff/export.csv` | `staff.manage` | |
+
+**Integrations** (Admin > Settings > Integrations; `docs/admin-integrations-design.md`). `:kind` is `payments`,
+`email` or `storage`; `:field` is `keySecret` or `webhookSecret` (payments), `password` (email) or `secretAccessKey`
+(storage). Anything else is 404 before the body is read. Save, clear and remove re-check the Owner's password
+(`currentPassword`; 5 tries per 15 minutes, counted before checking: 422 `incorrect_password` with
+`fieldErrors.currentPassword`, then 429). Every save that changes something, every clear of a saved secret, every
+remove and every test writes an audit row naming the fields by label (a save with no changes, `changed: []`, and a
+clear of an unset secret, `cleared: false`, write none). A save that changes the SMTP host, port or security, or the
+storage endpoint, must enter every saved secret of that integration again (422 naming each field, "Enter it again:
+..."), so a kept secret is never sent to a new server. No route ever returns a secret.
+
+Save bodies (strict; an empty or missing secret keeps the stored one; `revision` is the one the form loaded, null when
+nothing is saved yet, 409 `integration_changed` when it moved on):
+
+```
+payments: { currentPassword, revision, keyId, keySecret?, webhookSecret? }          keyId: rzp_test_... or rzp_live_...
+email:    { currentPassword, revision, host, port, security: "starttls" | "tls", username ("" = no sign-in),
+            password?, fromName, fromAddress }
+storage:  { currentPassword, revision, preset: "aws" | "r2" | "spaces" | "other", endpoint ("" = AWS default),
+            region, bucket, accessKeyId, secretAccessKey?, forcePathStyle }
+```
+
+422 `validation_failed` names the field: a required secret neither stored nor entered ("Enter the key secret."), and in
+production an SMTP host or storage endpoint that is or resolves to a private, loopback or link-local address, a name
+that does not exist, or an endpoint that is not https.
+
+Responses: PUT `{ integration, changed }` (`changed` = field keys; empty when nothing differed), DELETE
+`{ integration }`, DELETE secret `{ integration, cleared }`, POST test
+`{ kind, source: "admin" | "env", ok, testedAt, steps: [{ id, label, status: "ok" | "failed" | "skipped" | "info", message }] }`
+(a failed test is still 200 with `ok: false`; messages never echo a key or host).
+
+`GET /api/admin/settings` -> `integrations: { canManage, items: IntegrationState[], redis }`, where an
+`IntegrationState` is `{ id, title, description, icon, source: "admin" | "env" | "none", development, provider,
+mode: "test" | "live" | null, problem, saved: { revision, updatedAt, updatedBy } | null, envNames, form }`. `form` is
+null without `integrations.manage`; otherwise `{ kind, prefilledFrom: "admin" | "env" | "defaults", values, secrets }`
+with the non-secret values (payments also `webhookUrl` and `lastSignedWebhookAt`) and, per secret,
+`{ set, last4, updatedAt, updatedBy }` (`last4` only for secrets of 16+ characters). `redis` is read-only:
+`{ status: "configured" | "missing" | "development", provider, note, envNames: ["REDIS_URL"] }`.
 
 ## Payment webhooks
 
-`POST /api/webhooks/payments/:provider`: no session, cookies or CSRF; only the configured `PAYMENT_PROVIDER` is
-accepted (any other name is 404). The raw body (at most 256 KB) is checked against `PAYMENT_WEBHOOK_SECRET` in
-constant time (Razorpay: `X-Razorpay-Signature`; mock: `x-mock-signature`).
+`POST /api/webhooks/payments/:provider`: no session, cookies or CSRF; only the provider of the effective payments
+configuration (saved in Admin > Settings > Integrations, else the env file) is accepted (any other name is 404). The
+raw body (at most 256 KB) is checked against that configuration's webhook secret in constant time (Razorpay:
+`X-Razorpay-Signature`; mock: `x-mock-signature`). While payments are not configured, `razorpay` answers 503
+`payments_not_configured` with `Retry-After: 300` and records nothing, so Razorpay retries until the keys are saved.
 
 | Outcome | Response |
 |---|---|
@@ -294,8 +342,8 @@ proxy blocks them from the internet.
 
 | Route | Schedule | Does | Response |
 |---|---|---|---|
-| `/api/cron/emails` | every minute | Sends due outbox emails (retries with backoff; FAILED after 5 attempts) | `{ sent, failed }` |
-| `/api/cron/reconcile` | every 10 minutes | Asks the provider about payments whose webhook never came, and about refunds still pending after a day | the run summary, refunds under `refunds` |
+| `/api/cron/emails` | every minute | Sends due outbox emails (retries with backoff; FAILED after 5 attempts; while email is not configured each due row fails through the same rules with that reason) | `{ sent, failed }` |
+| `/api/cron/reconcile` | every 10 minutes | Asks the provider about payments whose webhook never came (attempts made with the active keys), and about refunds still pending after a day | the run summary, refunds under `refunds`; `{ provider: null, skipped: "not_configured" }` while payments are not configured |
 | `/api/cron/renewals` | daily | `renewal_30` (23-30 days left) and `renewal_7` (last 7 days) reminders, once per license, template and term | `{ queued, skipped }` |
 | `/api/cron/maintenance` | daily, after the backup | Closes tickets resolved 14 days ago, deletes unfinished uploads, redacts old sent emails, purges ended sessions, tokens, rate-limit buckets, old activity and webhook deliveries | the counts per task, `more` for unfinished tasks; 500 with `failed` when a task failed |
 
@@ -321,9 +369,9 @@ customer's yearly self-service limit.
 
 | Route | Purpose |
 |---|---|
-| `POST /api/dev/mock-checkout` | Outcomes of the mock payment page (`/dev/mock-checkout`): success, pending, failed, canceled; sends signed webhooks to the real webhook route (`PAYMENT_PROVIDER=mock` only) |
+| `POST /api/dev/mock-checkout` | Outcomes of the mock payment page (`/dev/mock-checkout`): success, pending, failed, canceled; sends signed webhooks to the real webhook route (only while the effective payments configuration is the env mock: `PAYMENT_PROVIDER=mock` or unset in development, nothing saved in Admin) |
 | `POST /api/dev/mock-checkout/bank` | The bank's final answer for a pending mock payment |
-| `GET` / `PUT /api/dev/storage/<key>?exp=&sig=` | The local storage driver's signed download and upload URLs (`STORAGE_DRIVER=local` only) |
+| `GET` / `PUT /api/dev/storage/<key>?exp=&sig=` | The local storage driver's signed download and upload URLs (only while the effective storage is the env local disk) |
 
 Development pages (no API): `/dev/ui` (component gallery), `/dev/mailbox` (emails of the console transport, with codes
 and links), `/dev/mock-checkout`.
