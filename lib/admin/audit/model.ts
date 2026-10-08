@@ -208,13 +208,15 @@ export function targetTypeLabel(type: string | null | undefined): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : "\u2014";
 }
 
-export type AuditTargetModule = "orders" | "licenses" | "tickets" | "staff";
+export type AuditTargetModule = "orders" | "licenses" | "tickets" | "staff" | "customers";
 
 const TARGET_MODULES: Readonly<Record<string, AuditTargetModule>> = {
   order: "orders",
   license: "licenses",
   ticket: "tickets",
   staff: "staff",
+  // Customer rows are listed by business account id (Admin > Customers drawer).
+  customer: "customers",
 };
 
 /** Where a target opens in the console (its module's drawer, ?id=), for types listed by that id. */

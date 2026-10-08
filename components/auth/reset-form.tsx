@@ -15,7 +15,7 @@ import {
   type ResetField,
 } from "./auth-model";
 import { AuthErrorBanner, AuthErrorSummary, AuthFooter, AuthHeading, AuthSubmit, leaveAuthPage } from "./auth-ui";
-import { AUTH_COPY } from "./copy";
+import { AUTH_COPY, resetFormCopy } from "./copy";
 import { NewPasswordField } from "./new-password-field";
 
 const FIELD_IDS: Record<ResetField, string> = { password: "reset-password", confirm: "reset-confirm" };
@@ -26,13 +26,17 @@ export type ResetFormProps = {
   token: string;
   /** The account the link belongs to ("For {email}."). */
   email: string;
+  /** "set": the account has no password yet (staff-issued set-password link), so the page reads "Set your password". */
+  mode?: "set" | "reset";
 };
 
 /**
- * /reset?token=… (Account.dc.html mode "reset"). Success sends the user to /sign-in?reset=1 with the account email
- * kept (prototype: only the password fields are cleared), handed over in sessionStorage, never in the URL.
+ * /reset?token=… (Account.dc.html mode "reset"; "Set your password" for an account without one). Success sends the
+ * user to /sign-in?reset=1 with the account email kept (prototype: only the password fields are cleared), handed over
+ * in sessionStorage, never in the URL.
  */
-export function ResetForm({ token, email }: ResetFormProps) {
+export function ResetForm({ token, email, mode = "reset" }: ResetFormProps) {
+  const copy = resetFormCopy(mode);
   const [values, setValues] = React.useState<Record<ResetField, string>>({ password: "", confirm: "" });
   const [showPassword, setShowPassword] = React.useState(false);
   const [showConfirm, setShowConfirm] = React.useState(false);
@@ -104,7 +108,7 @@ export function ResetForm({ token, email }: ResetFormProps) {
 
   return (
     <>
-      <AuthHeading title={AUTH_COPY.reset.title} subtitle={AUTH_COPY.reset.subtitle(email)} />
+      <AuthHeading title={copy.title} subtitle={copy.subtitle(email)} />
       {summary.length > 0 ? (
         <AuthErrorSummary id={SUMMARY_ID} errors={summary} />
       ) : error ? (
@@ -115,7 +119,7 @@ export function ResetForm({ token, email }: ResetFormProps) {
         <input type="email" name="email" autoComplete="username" value={email} readOnly hidden />
         <NewPasswordField
           id={FIELD_IDS.password}
-          label={AUTH_COPY.reset.password}
+          label={copy.password}
           value={values.password}
           onChange={(value) => set("password", value)}
           error={errors.password}
@@ -133,7 +137,7 @@ export function ResetForm({ token, email }: ResetFormProps) {
           onVisibleChange={setShowConfirm}
           showStrength={false}
         />
-        <AuthSubmit busy={busy}>{AUTH_COPY.reset.cta}</AuthSubmit>
+        <AuthSubmit busy={busy}>{copy.cta}</AuthSubmit>
       </form>
       <AuthFooter items={[{ label: AUTH_COPY.reset.back, href: "/sign-in" }]} />
     </>

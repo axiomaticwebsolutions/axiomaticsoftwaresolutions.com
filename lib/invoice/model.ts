@@ -5,6 +5,11 @@
  * Inputs are the order snapshot (billing, totals, line amounts written at checkout) plus the invoice's seller snapshot
  * and SAC; nothing is re-priced. Line CGST/SGST shares are allocated from the order header by largest remainder, so
  * lines always sum to the header (docs/decisions.md 3). Dates display in IST; amounts are exact to the paisa.
+ *
+ * The same model renders the credit note of a billing correction (document.kind "credit_note"; Admin > Orders "Correct
+ * billing", docs/decisions.md "Admin records"): it cancels the original invoice in full, so its lines and totals are the
+ * invoice's, with its own number, date, "AGAINST INVOICE" reference and notes. A corrected invoice carries a
+ * "This invoice replaces …" note.
  */
 import { DEFAULT_GST_RATE_PCT, formatINR } from "@/lib/money";
 import { formatDateIST, istParts, MONTHS_SHORT } from "@/lib/dates";
@@ -81,7 +86,18 @@ export type InvoiceModelInput = {
   items: readonly InvoiceLineInput[];
   /** Used only when the rate cannot be read from the totals (e.g. a zero taxable value). */
   fallbackGstRatePct?: number;
+  /**
+   * Which document this is (default a tax invoice). For a credit note, `invoice` holds the credit note's own number and
+   * date, and `against` the invoice it cancels.
+   */
+  document?: InvoiceDocumentInput;
 };
+
+export type InvoiceDocumentInput =
+  | { kind: "invoice"; replaces?: { invoiceNo: string; creditNoteNo: string } | null }
+  | { kind: "credit_note"; against: { number: string; issuedAt: string | Date }; replacedBy: string | null };
+
+export type InvoiceDocumentKind = "invoice" | "credit_note";
 
 export type InvoiceLine = {
   /** 1-based row number. */
@@ -126,6 +142,18 @@ export type InvoiceParty = {
 export type InvoiceModel = {
   orderId: string;
   status: string;
+  /** "invoice" (tax invoice or order summary) or "credit_note". */
+  kind: InvoiceDocumentKind;
+  /** "Tax invoice" or "Credit note" (PDF title). */
+  docLabel: string;
+  /** "INVOICE NO." or "CREDIT NOTE NO." */
+  numberLabel: string;
+  /** "INVOICE DATE" or "DATE" */
+  dateLabel: string;
+  /** Credit notes: the invoice they cancel ("AXS/26-27/0012 · 7 Oct 2026"). */
+  reference: { label: "AGAINST INVOICE"; value: string } | null;
+  /** Extra lines for the notes (why a credit note was issued, which invoice a corrected one replaces). */
+  extraNotes: string[];
   /** True when the order has a tax invoice to show, print and download. */
   isInvoice: boolean;
   /** "Tax invoice AXS/26-27/1181" or "Order summary". */
@@ -391,7 +419,9 @@ export function buildInvoiceModel(input: InvoiceModelInput): InvoiceModel {
     display: key === "discount" ? `${MINUS}${money(paise)}` : money(paise),
     strong,
   });
-  const totalLabel = isInvoice ? "Total paid" : "Total";
+  const doc: InvoiceDocumentInput = input.document ?? { kind: "invoice" };
+  const creditNote = doc.kind === "credit_note";
+  const totalLabel = creditNote ? "Total credited" : isInvoice ? "Total paid" : "Total";
   const rows: InvoiceTotalRow[] = [row("subtotal", "Subtotal", totals.subtotalPaise)];
   if (totals.discountPaise > 0) {
     rows.push(row("discount", input.couponCode ? `Discount (${input.couponCode})` : "Discount", totals.discountPaise));
@@ -406,11 +436,33 @@ export function buildInvoiceModel(input: InvoiceModelInput): InvoiceModel {
 
   const created = toDate(input.createdAt);
   const placeCode = gstCodeForState(input.placeOfSupply);
+  const number = input.invoice?.number ?? null;
+  const extraNotes: string[] = [];
+  let reference: InvoiceModel["reference"] = null;
+  if (doc.kind === "credit_note") {
+    const againstDate = formatDateIST(toDate(doc.against.issuedAt));
+    reference = { label: "AGAINST INVOICE", value: `${doc.against.number} \u00B7 ${againstDate}` };
+    extraNotes.push(`Issued to cancel tax invoice ${doc.against.number} dated ${againstDate} in full because the billing details were corrected.`);
+    if (doc.replacedBy) extraNotes.push(`Replaced by tax invoice ${doc.replacedBy}.`);
+  } else if (doc.replaces) {
+    extraNotes.push(`This invoice replaces ${doc.replaces.invoiceNo}, cancelled by credit note ${doc.replaces.creditNoteNo} (billing details corrected).`);
+  }
+  const title = creditNote
+    ? `Credit note ${number ?? ""}`.trim()
+    : isInvoice && input.invoice
+      ? `Tax invoice ${input.invoice.number}`
+      : "Order summary";
   return {
     orderId: input.orderId,
     status: input.status,
+    kind: creditNote ? "credit_note" : "invoice",
+    docLabel: creditNote ? "Credit note" : "Tax invoice",
+    numberLabel: creditNote ? "CREDIT NOTE NO." : "INVOICE NO.",
+    dateLabel: creditNote ? "DATE" : "INVOICE DATE",
+    reference,
+    extraNotes,
     isInvoice,
-    title: isInvoice && input.invoice ? `Tax invoice ${input.invoice.number}` : "Order summary",
+    title,
     number: input.invoice?.number ?? null,
     invoiceDate: input.invoice ? formatDateIST(toDate(input.invoice.issuedAt)) : null,
     orderDateTime: formatOrderDateTime(created),
@@ -433,13 +485,21 @@ export function buildInvoiceModel(input: InvoiceModelInput): InvoiceModel {
   };
 }
 
-/** A safe download file name for an invoice number: "AXS/26-27/1181" -> "Invoice-AXS-26-27-1181.pdf". */
-export function invoiceFileName(number: string): string {
+/**
+ * A safe download file name for a document number: invoice "AXS/26-27/1181" -> "Invoice-AXS-26-27-1181.pdf", credit
+ * note "AXC/26-27/0004" -> "CreditNote-AXC-26-27-0004.pdf".
+ */
+export function documentFileName(kind: InvoiceDocumentKind, number: string): string {
   const safe = number
     .split("")
     .map((c) => (/[A-Za-z0-9-]/.test(c) ? c : "-"))
     .join("")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
-  return `Invoice-${safe || "order"}.pdf`;
+  return `${kind === "credit_note" ? "CreditNote" : "Invoice"}-${safe || "order"}.pdf`;
+}
+
+/** A safe download file name for an invoice number: "AXS/26-27/1181" -> "Invoice-AXS-26-27-1181.pdf". */
+export function invoiceFileName(number: string): string {
+  return documentFileName("invoice", number);
 }

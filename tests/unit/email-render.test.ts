@@ -220,10 +220,12 @@ describe("template defaults", () => {
   });
 
   it("keeps the auth codes and links in code-defined blocks", () => {
-    expect([...AUTH_EMAIL_TEMPLATE_IDS]).toEqual(["email_verification", "password_reset", "login_code"]);
+    expect([...AUTH_EMAIL_TEMPLATE_IDS]).toEqual(["email_verification", "password_reset", "login_code", "set_password"]);
     expect(isAuthEmailTemplateId("login_code")).toBe(true);
     expect(isAuthEmailTemplateId("order_confirmation")).toBe(false);
-    expect([...DIRECT_EMAIL_TEMPLATE_IDS]).toEqual(["email_verification", "password_reset", "login_code", "team_invite", "staff_invite"]);
+    expect([...DIRECT_EMAIL_TEMPLATE_IDS]).toEqual(["email_verification", "password_reset", "login_code", "set_password", "team_invite", "staff_invite"]);
+    expect(isDirectEmailTemplateId("set_password")).toBe(true);
+    expect(isDirectEmailTemplateId("account_email_changed")).toBe(false);
     expect(isDirectEmailTemplateId("order_confirmation")).toBe(false);
     const code = render("S", "Hi,\n\nBody.\n\nBye", EMAIL_TEMPLATE_DEFAULTS.login_code.blocks, { code: "071564" });
     expect(code.html).toContain(">071564<");

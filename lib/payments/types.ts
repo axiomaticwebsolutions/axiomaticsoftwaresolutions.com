@@ -7,6 +7,16 @@
 export const PAYMENT_PROVIDER_KEYS = ["razorpay", "cashfree", "mock"] as const;
 export type PaymentProviderKey = (typeof PAYMENT_PROVIDER_KEYS)[number];
 
+/**
+ * Payment.provider of a payment Owner or Finance recorded in Admin > Orders (cash, UPI, bank transfer, cheque). Not a
+ * PaymentProviderKey: no adapter, never reconciled or refunded through a provider (docs/decisions.md "Admin records").
+ */
+export const OFFLINE_PROVIDER = "offline";
+/** Payment.providerOrderId of an offline payment (unique, because order ids are). */
+export function offlineProviderOrderId(orderId: string): string {
+  return `offline:${orderId}`;
+}
+
 export const PAYMENT_EVENT_TYPES = ["payment.captured", "payment.failed", "refund.processed", "refund.failed"] as const;
 export type PaymentEventType = (typeof PAYMENT_EVENT_TYPES)[number];
 

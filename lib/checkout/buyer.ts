@@ -6,8 +6,10 @@
  *   that account; only roles with the `purchases` team permission (Owner, Billing) may place them.
  *   A customer without any membership buys like a guest, but the order records who placed it.
  * - staff: staff sessions can quote (NEW items only) but cannot place customer orders.
+ * Admin > Orders prices an order for an account without a session: accountPricingBuyer() is that account's Owner
+ * (PricingBuyer is all that pricing reads).
  */
-import { MemberStatus, type AccountMember, type BusinessAccount, type Session, type User } from "@/generated/prisma/client";
+import { MemberStatus, type AccountMember, type BusinessAccount, type Session, type TeamRole, type User } from "@/generated/prisma/client";
 import type { Db } from "@/lib/db";
 import { teamCan } from "@/lib/rbac";
 
@@ -17,6 +19,17 @@ export type CheckoutBuyer =
   | { kind: "guest" }
   | { kind: "staff"; user: User; session: Session }
   | { kind: "customer"; user: User; session: Session; membership: BuyerMembership | null };
+
+/** What pricing needs to know about the buyer (CheckoutBuyer is assignable to it). */
+export type PricingBuyer =
+  | { kind: "guest" }
+  | { kind: "staff" }
+  | { kind: "customer"; membership: { accountId: string; role: TeamRole } | null };
+
+/** Admin orders price as the account's owner would (target lines are checked against that account). */
+export function accountPricingBuyer(accountId: string | null): PricingBuyer {
+  return accountId ? { kind: "customer", membership: { accountId, role: "OWNER" } } : { kind: "guest" };
+}
 
 /** Same copy as TEAM_FORBIDDEN_MESSAGE in lib/auth/guards.ts (kept here so this module stays free of next/headers). */
 export const PURCHASE_FORBIDDEN_MESSAGE = "Your team role doesn’t allow this. Ask the account owner.";

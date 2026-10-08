@@ -142,6 +142,15 @@ Tick an item only after you have done the check, not because the setting "should
   starts off, so Admin is reachable before SMTP works; decisions.md 2026-10-08).
 - [ ] **Email works.** "Forgot password" on /sign-in (or a test purchase) sends an email that arrives within a minute.
   Until it does, leave two-step sign-in off: its codes are emailed.
+- [ ] **A payment-link order works end to end** (once email works). Admin > Orders > New order (Owner or Finance,
+  "Send a payment link", with a reason) for a test customer: the "Your order … is ready to pay" email arrives, the link
+  opens the order page reading "Ready for payment", the customer ticks the terms and pays (mock or Razorpay test mode),
+  and the license appears only after the verified webhook.
+- [ ] **A staff-created customer can set a password** (once email works). Admin > Customers > New customer (Owner,
+  Administrator or Support, with a reason) for an address you read: the drawer shows the set-password link once, the
+  "Set your Axiomatic password" email arrives, the link opens /reset reading "Set your password", and after setting it
+  the customer signs in (the email stays unverified until it is verified with a code or by staff). Customers can't be
+  deleted, so use a test address you keep, as with test orders.
 - [ ] **Settings reviewed.** Admin > Settings: business details (sample placeholders are fine today, `sample` stays
   on), support / sales / legal / privacy emails are mailboxes you read, invoice prefix `AXS` and credit-note prefix
   `AXC` (or your choice, up to 3 characters), GST rate 18 % and SAC 997331 (to confirm with your CA). Integrations:
@@ -247,6 +256,18 @@ Tick an item only after you have done the check, not because the setting "should
 - [ ] **One real purchase and refund.** Buy the cheapest plan with your own card or UPI, check the invoice, then refund
   it from Admin > Orders & payments. Check: Razorpay shows the refund; the order reads Refunded; a credit-note number
   exists.
+- [ ] **Decide who records offline payments.** Only Owner and Finance can "Record a payment we've received" in Admin >
+  Orders, which issues licenses and the tax invoice at once. Finance checks the UTR (or the cheque, once cleared)
+  against the bank statement before recording, and the amount must equal the order total. Orders paid offline can't be
+  refunded in the console yet: refund them by bank transfer, have the Owner or an Administrator revoke the order's
+  licenses in Admin > Licenses (with a reason), and handle the credit note with your accountant.
+- [ ] **Know where customers find keys for orders you prepared.** Payment links from Admin > Orders are pay-only: they
+  never show the license key, even to the customer after paying. The customer gets the key from the order confirmation
+  email, or reveals it in their account (Owner or Technical contact, with their password). Until email works, make sure
+  such customers can sign in (send a set-password link from Admin > Customers if they have no password).
+- [ ] **Billing corrections with your CA.** "Correct billing" on a paid order issues a credit note for the full invoice
+  and a new invoice (same amounts, same place of supply). Confirm with your CA that this is how you want to fix a
+  missing GSTIN or a wrong address after payment.
 
 ### Email deliverability
 - [ ] **SPF, DKIM and DMARC for the sending domain.** DNS has the provider's SPF include (one SPF record only), its DKIM

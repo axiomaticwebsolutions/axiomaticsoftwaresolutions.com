@@ -4,6 +4,12 @@
  * UTC `timestamp(3)`, so "+ 330 minutes" gives the IST calendar date; India has no DST), Prisma groupBy/count for
  * statuses. Only the rare rows that need splitting in code (partly refunded orders, credit notes) are read one by one,
  * with a cap.
+ *
+ * Billing corrections (Admin > Orders, InvoiceCorrection): the Invoice row holds the order's CURRENT invoice, renumbered
+ * by each correction. So every invoice ever issued is counted once, in the month it was issued: current invoices by
+ * Invoice.issuedAt, plus each cancelled original by InvoiceCorrection.originalIssuedAt (with its amounts). Every
+ * correction's credit note counts in the month it was issued, so the correction month nets to zero and the original
+ * month is unchanged.
  */
 import "server-only";
 import { LicenseStatus, OrderStatus, RefundStatus, TicketStatus } from "@/generated/prisma/client";
@@ -109,31 +115,54 @@ export async function paidSalesByProduct(client: Db, w: Window): Promise<Map<str
 
 export type InvoiceAggRow = { key: string; count: number; taxablePaise: number; cgstPaise: number; sgstPaise: number; igstPaise: number };
 
-/** Tax invoices issued in the window per IST month ("YYYY-MM") of Invoice.issuedAt, with the orders' tax split. */
+/**
+ * Tax invoices issued in the window per IST month ("YYYY-MM"), with the tax split: current invoices by
+ * Invoice.issuedAt, plus invoices a billing correction cancelled, by their original issue date.
+ */
 export async function invoicesByMonth(client: Db, w: Window): Promise<InvoiceAggRow[]> {
   const rows = await client.$queryRaw<Array<{ key: string; count: number; taxable: unknown; cgst: unknown; sgst: unknown; igst: unknown }>>`
-    SELECT to_char(i."issuedAt" + interval '330 minutes', 'YYYY-MM') AS "key", count(*)::int AS "count",
-           coalesce(sum(o."taxablePaise"), 0)::bigint AS "taxable", coalesce(sum(o."cgstPaise"), 0)::bigint AS "cgst",
-           coalesce(sum(o."sgstPaise"), 0)::bigint AS "sgst", coalesce(sum(o."igstPaise"), 0)::bigint AS "igst"
-    FROM "Invoice" i
-    JOIN "Order" o ON o."id" = i."orderId"
-    WHERE i."issuedAt" >= ${w.from}::timestamp(3) AND i."issuedAt" < ${w.to}::timestamp(3)
+    SELECT to_char(d."at" + interval '330 minutes', 'YYYY-MM') AS "key", count(*)::int AS "count",
+           coalesce(sum(d."taxable"), 0)::bigint AS "taxable", coalesce(sum(d."cgst"), 0)::bigint AS "cgst",
+           coalesce(sum(d."sgst"), 0)::bigint AS "sgst", coalesce(sum(d."igst"), 0)::bigint AS "igst"
+    FROM (
+      SELECT i."issuedAt" AS "at", o."taxablePaise" AS "taxable", o."cgstPaise" AS "cgst", o."sgstPaise" AS "sgst", o."igstPaise" AS "igst"
+      FROM "Invoice" i
+      JOIN "Order" o ON o."id" = i."orderId"
+      WHERE i."issuedAt" >= ${w.from}::timestamp(3) AND i."issuedAt" < ${w.to}::timestamp(3)
+      UNION ALL
+      SELECT c."originalIssuedAt", c."taxablePaise", c."cgstPaise", c."sgstPaise", c."igstPaise"
+      FROM "InvoiceCorrection" c
+      WHERE c."originalIssuedAt" >= ${w.from}::timestamp(3) AND c."originalIssuedAt" < ${w.to}::timestamp(3)
+    ) d
     GROUP BY 1`;
   return rows.map(toInvoiceAgg);
 }
 
-/** Tax invoices issued in the window per place of supply (state). */
+/** Tax invoices issued in the window per place of supply (state), cancelled originals included (as invoicesByMonth). */
 export async function invoicesByState(client: Db, w: Window): Promise<InvoiceAggRow[]> {
   const rows = await client.$queryRaw<Array<{ key: string; count: number; taxable: unknown; cgst: unknown; sgst: unknown; igst: unknown }>>`
-    SELECT o."placeOfSupply" AS "key", count(*)::int AS "count",
-           coalesce(sum(o."taxablePaise"), 0)::bigint AS "taxable", coalesce(sum(o."cgstPaise"), 0)::bigint AS "cgst",
-           coalesce(sum(o."sgstPaise"), 0)::bigint AS "sgst", coalesce(sum(o."igstPaise"), 0)::bigint AS "igst"
-    FROM "Invoice" i
-    JOIN "Order" o ON o."id" = i."orderId"
-    WHERE i."issuedAt" >= ${w.from}::timestamp(3) AND i."issuedAt" < ${w.to}::timestamp(3)
+    SELECT d."state" AS "key", count(*)::int AS "count",
+           coalesce(sum(d."taxable"), 0)::bigint AS "taxable", coalesce(sum(d."cgst"), 0)::bigint AS "cgst",
+           coalesce(sum(d."sgst"), 0)::bigint AS "sgst", coalesce(sum(d."igst"), 0)::bigint AS "igst"
+    FROM (
+      SELECT o."placeOfSupply" AS "state", o."taxablePaise" AS "taxable", o."cgstPaise" AS "cgst", o."sgstPaise" AS "sgst", o."igstPaise" AS "igst"
+      FROM "Invoice" i
+      JOIN "Order" o ON o."id" = i."orderId"
+      WHERE i."issuedAt" >= ${w.from}::timestamp(3) AND i."issuedAt" < ${w.to}::timestamp(3)
+      UNION ALL
+      SELECT o."placeOfSupply", c."taxablePaise", c."cgstPaise", c."sgstPaise", c."igstPaise"
+      FROM "InvoiceCorrection" c
+      JOIN "Order" o ON o."id" = c."orderId"
+      WHERE c."originalIssuedAt" >= ${w.from}::timestamp(3) AND c."originalIssuedAt" < ${w.to}::timestamp(3)
+    ) d
     GROUP BY 1
     ORDER BY 1`;
   return rows.map(toInvoiceAgg);
+}
+
+/** Invoices a billing correction cancelled whose original issue date is in the window (salesByProduct's count). */
+export async function cancelledInvoicesInWindow(client: Db, w: Window): Promise<number> {
+  return client.invoiceCorrection.count({ where: { originalIssuedAt: { gte: w.from, lt: w.to } } });
 }
 
 function toInvoiceAgg(r: { key: string; count: number; taxable: unknown; cgst: unknown; sgst: unknown; igst: unknown }): InvoiceAggRow {
@@ -147,22 +176,33 @@ function toInvoiceAgg(r: { key: string; count: number; taxable: unknown; cgst: u
   };
 }
 
-/** Per product: invoiced orders containing it and its line taxable value (gross), invoices issued in the window. */
+/**
+ * Per product: invoices containing it (distinct document numbers, so a corrected order counts its original and its new
+ * invoice) and its line taxable value (gross), for invoices issued in the window, cancelled originals included.
+ */
 export async function invoicedSalesByProduct(client: Db, w: Window): Promise<Map<string, { orders: number; taxablePaise: number }>> {
   const rows = await client.$queryRaw<Array<{ productId: string; orders: number; taxable: unknown }>>`
-    SELECT pl."productId" AS "productId", count(DISTINCT o."id")::int AS "orders",
+    SELECT pl."productId" AS "productId", count(DISTINCT d."docNo")::int AS "orders",
            coalesce(sum(oi."taxablePaise"), 0)::bigint AS "taxable"
-    FROM "Invoice" i
-    JOIN "Order" o ON o."id" = i."orderId"
-    JOIN "OrderItem" oi ON oi."orderId" = o."id"
+    FROM (
+      SELECT i."number" AS "docNo", i."orderId" AS "orderId"
+      FROM "Invoice" i
+      WHERE i."issuedAt" >= ${w.from}::timestamp(3) AND i."issuedAt" < ${w.to}::timestamp(3)
+      UNION ALL
+      SELECT c."originalInvoiceNo", c."orderId"
+      FROM "InvoiceCorrection" c
+      WHERE c."originalIssuedAt" >= ${w.from}::timestamp(3) AND c."originalIssuedAt" < ${w.to}::timestamp(3)
+    ) d
+    JOIN "OrderItem" oi ON oi."orderId" = d."orderId"
     JOIN "Plan" pl ON pl."id" = oi."planId"
-    WHERE i."issuedAt" >= ${w.from}::timestamp(3) AND i."issuedAt" < ${w.to}::timestamp(3)
     GROUP BY 1`;
   return new Map(rows.map((r) => [r.productId, { orders: sqlNumber(r.orders), taxablePaise: sqlNumber(r.taxable) }]));
 }
 
 export type CreditNoteRow = {
   id: string;
+  /** "refund" (Refund.creditNoteNo) or "correction" (a billing correction's credit note, always PROCESSED). */
+  kind: "refund" | "correction";
   number: string;
   status: RefundStatus;
   issuedAt: Date;
@@ -174,8 +214,64 @@ export type CreditNoteRow = {
   order: { id: string; email: string; billing: unknown; placeOfSupply: string; invoiceNumber: string | null };
 };
 
-/** Credit notes (refunds with a number, not FAILED) issued in the window, oldest first, at most `take`. */
+/**
+ * Credit notes issued in the window, oldest first, at most `take`: refunds with a number (not FAILED), and the credit
+ * notes of billing corrections (the full value of the invoice they cancel, split from the correction's own columns).
+ */
 export async function creditNotesInWindow(client: Db, w: Window, take: number = SPLIT_ROWS_LIMIT): Promise<CreditNoteRow[]> {
+  const [refundNotes, corrections] = await Promise.all([refundCreditNotes(client, w, take), correctionCreditNotes(client, w, take)]);
+  return [...refundNotes, ...corrections]
+    .sort((a, b) => a.issuedAt.getTime() - b.issuedAt.getTime() || a.number.localeCompare(b.number))
+    .slice(0, take);
+}
+
+async function correctionCreditNotes(client: Db, w: Window, take: number): Promise<CreditNoteRow[]> {
+  const rows = await client.invoiceCorrection.findMany({
+    where: { issuedAt: { gte: w.from, lt: w.to } },
+    orderBy: [{ issuedAt: "asc" }, { id: "asc" }],
+    take,
+    select: {
+      id: true,
+      creditNoteNo: true,
+      issuedAt: true,
+      originalInvoiceNo: true,
+      originalBilling: true,
+      taxablePaise: true,
+      cgstPaise: true,
+      sgstPaise: true,
+      igstPaise: true,
+      totalPaise: true,
+      order: {
+        select: {
+          id: true,
+          email: true,
+          placeOfSupply: true,
+          items: { select: { taxablePaise: true, plan: { select: { productId: true } } }, orderBy: { id: "asc" } },
+        },
+      },
+    },
+  });
+  return rows.map((c) => {
+    const split: TaxSplit = { taxablePaise: c.taxablePaise, cgstPaise: c.cgstPaise, sgstPaise: c.sgstPaise, igstPaise: c.igstPaise };
+    const shares = splitOverLines(split.taxablePaise, c.order.items.map((i) => i.taxablePaise));
+    const byProduct = new Map<string, number>();
+    c.order.items.forEach((item, i) => byProduct.set(item.plan.productId, (byProduct.get(item.plan.productId) ?? 0) + (shares[i] ?? 0)));
+    return {
+      id: c.id,
+      kind: "correction" as const,
+      number: c.creditNoteNo,
+      status: RefundStatus.PROCESSED,
+      issuedAt: c.issuedAt,
+      processedAt: c.issuedAt,
+      amountPaise: c.totalPaise,
+      split,
+      byProduct,
+      order: { id: c.order.id, email: c.order.email, billing: c.originalBilling, placeOfSupply: c.order.placeOfSupply, invoiceNumber: c.originalInvoiceNo },
+    };
+  });
+}
+
+async function refundCreditNotes(client: Db, w: Window, take: number): Promise<CreditNoteRow[]> {
   const refunds = await client.refund.findMany({
     where: { creditNoteNo: { not: null }, status: { not: RefundStatus.FAILED }, createdAt: { gte: w.from, lt: w.to } },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
@@ -216,6 +312,7 @@ export async function creditNotesInWindow(client: Db, w: Window, take: number = 
     o.items.forEach((item, i) => byProduct.set(item.plan.productId, (byProduct.get(item.plan.productId) ?? 0) + (shares[i] ?? 0)));
     return {
       id: r.id,
+      kind: "refund" as const,
       number: r.creditNoteNo ?? "",
       status: r.status,
       issuedAt: r.createdAt,

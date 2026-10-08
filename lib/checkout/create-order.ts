@@ -17,9 +17,13 @@
  *    Payment(CREATED) with the provider order id and the key id it was created with (providerKeyId). So an order never
  *    exists without a payment attempt.
  * 6. After commit: the verification email (lib/auth/flows/verify-email) and a session for the new customer.
+ *
+ * assertPricedCart() and orderCreateData() are shared with Admin > Orders (lib/admin/orders/create.ts), so staff-created
+ * orders are refused and built by exactly the same code as checkout's.
  */
 import { OrderStatus, PaymentStatus } from "@/generated/prisma/enums";
 import type { PrismaClient } from "@/generated/prisma/client";
+import type { Quote } from "@/lib/pricing";
 import { isPlaceholderUser } from "@/lib/auth/flows/common";
 import { sendVerificationEmail } from "@/lib/auth/flows/verify-email";
 import { hashPassword } from "@/lib/auth/password";
@@ -30,7 +34,7 @@ import { Prisma } from "@/lib/db";
 import { ApiError, errors } from "@/lib/http";
 import { log } from "@/lib/log";
 import { activePaymentProviderOrNull, PAYMENTS_UNAVAILABLE_MESSAGE, type PaymentProvider } from "@/lib/payments";
-import { billingSnapshot } from "@/lib/orders/billing";
+import { billingSnapshot, type BillingSnapshot } from "@/lib/orders/billing";
 import { teamCan } from "@/lib/rbac";
 import type { CreateOrderRequest } from "@/lib/validation/checkout";
 import { LEGAL_DOCUMENTS } from "@/content/legal/documents";
@@ -38,7 +42,7 @@ import { createCheckoutCustomer, EMAIL_TAKEN_MESSAGE, type CheckoutCustomer } fr
 import { buyerUserId, PURCHASE_FORBIDDEN_MESSAGE, purchasingAccountId, STAFF_CHECKOUT_MESSAGE, type CheckoutBuyer } from "./buyer";
 import { couponAvailability, lockCoupon } from "./coupon-hold";
 import { checkoutStart, createProviderOrder, type CheckoutStart } from "./payment-attempt";
-import { priceCart } from "./quote";
+import { priceCart, type PricedCart } from "./quote";
 
 export const CART_INVALID_MESSAGE = "Some items in your cart can’t be bought as they are. Review your cart and try again.";
 export const ZERO_TOTAL_MESSAGE = "This order has nothing to pay. Remove the coupon or contact us to complete it.";
@@ -68,6 +72,73 @@ function isUniqueViolation(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
+/** 422 `cart_invalid` (issues) / `couponCode` / `items` (empty) / `zero_total`, exactly as checkout refuses a cart. */
+export function assertPricedCart(priced: PricedCart): void {
+  if (priced.issues.length > 0) {
+    throw new ApiError(422, "cart_invalid", CART_INVALID_MESSAGE, { details: { issues: priced.issues } });
+  }
+  const q = priced.quote;
+  if (q.coupon && !q.coupon.ok) throw errors.validation({ couponCode: q.coupon.message });
+  if (q.lines.length === 0) throw errors.validation({ items: "Your cart is empty." });
+  if (q.totalPaise <= 0) throw new ApiError(422, "zero_total", ZERO_TOTAL_MESSAGE);
+}
+
+/** The order lines of a priced cart (OrderItem create data without the order id). */
+export function orderItemsData(quote: Quote): Prisma.OrderItemUncheckedCreateWithoutOrderInput[] {
+  return quote.lines.map((line) => ({
+    planId: line.planId,
+    kind: line.kind,
+    quantity: line.qty,
+    unitPricePaise: line.unitPricePaise,
+    creditPaise: line.creditPaise,
+    discountPaise: line.discountPaise,
+    taxablePaise: line.taxablePaise,
+    taxPaise: line.taxPaise,
+    targetLicenseId: line.targetLicenseId,
+  }));
+}
+
+export type OrderCreateDataInput = {
+  id: string;
+  accountId: string | null;
+  placedByUserId: string | null;
+  billing: BillingSnapshot;
+  quote: Quote;
+  couponCode: string | null;
+  now: Date;
+  /** Checkout: { acceptedAt: now, version: CHECKOUT_TERMS_VERSION }; admin: null (the customer accepts before paying). */
+  terms: { acceptedAt: Date; version: string } | null;
+  /** Orders created in Admin > Orders. */
+  staff?: { createdByStaffId: string; staffRequestId: string };
+};
+
+/** The Order.create data for a priced cart (checkout and admin): amounts, line snapshots, placeOfSupply = billing.state. */
+export function orderCreateData(input: OrderCreateDataInput): Prisma.OrderUncheckedCreateInput {
+  const q = input.quote;
+  return {
+    id: input.id,
+    accountId: input.accountId,
+    placedByUserId: input.placedByUserId,
+    email: input.billing.email,
+    billing: input.billing,
+    status: OrderStatus.AWAITING_PAYMENT,
+    couponCode: input.couponCode,
+    subtotalPaise: q.subtotalPaise,
+    discountPaise: q.discountPaise,
+    taxablePaise: q.taxablePaise,
+    cgstPaise: q.cgstPaise,
+    sgstPaise: q.sgstPaise,
+    igstPaise: q.igstPaise,
+    totalPaise: q.totalPaise,
+    placeOfSupply: input.billing.state,
+    termsAcceptedAt: input.terms?.acceptedAt ?? null,
+    termsVersion: input.terms?.version ?? null,
+    createdAt: input.now,
+    ...(input.staff ? { createdByStaffId: input.staff.createdByStaffId, staffRequestId: input.staff.staffRequestId } : {}),
+    items: { create: orderItemsData(q) },
+  };
+}
+
 export async function createCheckoutOrder(
   db: PrismaClient,
   input: CreateOrderRequest,
@@ -82,13 +153,8 @@ export async function createCheckoutOrder(
 
   const billing = billingSnapshot(input.billing);
   const priced = await priceCart(db, { items: input.items, couponCode: input.couponCode, billingState: billing.state }, buyer, now);
-  if (priced.issues.length > 0) {
-    throw new ApiError(422, "cart_invalid", CART_INVALID_MESSAGE, { details: { issues: priced.issues } });
-  }
+  assertPricedCart(priced);
   const q = priced.quote;
-  if (q.coupon && !q.coupon.ok) throw errors.validation({ couponCode: q.coupon.message });
-  if (q.lines.length === 0) throw errors.validation({ items: "Your cart is empty." });
-  if (q.totalPaise <= 0) throw new ApiError(422, "zero_total", ZERO_TOTAL_MESSAGE);
 
   // Before the register rate limit and the password hash: without payments nothing else may happen.
   const provider = ctx.provider ?? (await activePaymentProviderOrNull());
@@ -100,7 +166,7 @@ export async function createCheckoutOrder(
     // An invited address's placeholder user is taken over in the order transaction (createCheckoutCustomer).
     const existing = await db.user.findUnique({
       where: { email: billing.email },
-      select: { kind: true, passwordHash: true, emailVerifiedAt: true },
+      select: { kind: true, passwordHash: true, emailVerifiedAt: true, createdByStaffId: true },
     });
     if (existing && !isPlaceholderUser(existing)) throw errors.conflict("email_taken", EMAIL_TAKEN_MESSAGE);
     passwordHash = await hashPassword(input.createAccount.password);
@@ -126,39 +192,16 @@ export async function createCheckoutOrder(
       }
       const created = passwordHash ? await createCheckoutCustomer(tx, { billing, passwordHash, now, next: `/orders/${orderId}` }) : null;
       await tx.order.create({
-        data: {
+        data: orderCreateData({
           id: orderId,
           accountId: created ? created.account.id : purchasingAccountId(buyer),
           placedByUserId: created ? created.user.id : buyerUserId(buyer),
-          email: billing.email,
           billing,
-          status: OrderStatus.AWAITING_PAYMENT,
+          quote: q,
           couponCode,
-          subtotalPaise: q.subtotalPaise,
-          discountPaise: q.discountPaise,
-          taxablePaise: q.taxablePaise,
-          cgstPaise: q.cgstPaise,
-          sgstPaise: q.sgstPaise,
-          igstPaise: q.igstPaise,
-          totalPaise: q.totalPaise,
-          placeOfSupply: billing.state,
-          termsAcceptedAt: now,
-          termsVersion: CHECKOUT_TERMS_VERSION,
-          createdAt: now,
-          items: {
-            create: q.lines.map((line) => ({
-              planId: line.planId,
-              kind: line.kind,
-              quantity: line.qty,
-              unitPricePaise: line.unitPricePaise,
-              creditPaise: line.creditPaise,
-              discountPaise: line.discountPaise,
-              taxablePaise: line.taxablePaise,
-              taxPaise: line.taxPaise,
-              targetLicenseId: line.targetLicenseId,
-            })),
-          },
-        },
+          now,
+          terms: { acceptedAt: now, version: CHECKOUT_TERMS_VERSION },
+        }),
       });
       await tx.payment.create({
         data: {

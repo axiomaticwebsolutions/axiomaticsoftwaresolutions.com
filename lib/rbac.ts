@@ -1,7 +1,9 @@
 /**
  * Single source of truth for authorisation, used by both the UI (cosmetic hiding) and every API route
  * (enforcement). Staff permissions: docs/decisions.md section 7 plus `leads.view` (Phase 6). Customer team
- * permissions: section 8 and the portal "Team & access" matrix. Pure and client-safe.
+ * permissions: section 8 and the portal "Team & access" matrix. Admin records (2026-10-08): customers.create, customers.edit
+ * and customers.verify_email for Owner, Administrator and Support; orders.create, orders.edit, payments.record_offline and
+ * invoices.correct for Owner and Finance. Pure and client-safe.
  */
 import type { IconSourceName } from "@/components/icons/icon-names";
 import type { StaffRole, TeamRole } from "@/generated/prisma/enums";
@@ -24,8 +26,15 @@ export const PERMS = {
   "releases.manage": ["OWNER", "ADMIN"],
   "customers.view": ["OWNER", "ADMIN", "SUPPORT", "FINANCE"],
   "customers.manage": ["OWNER", "ADMIN", "SUPPORT"],
+  "customers.create": ["OWNER", "ADMIN", "SUPPORT"],
+  "customers.edit": ["OWNER", "ADMIN", "SUPPORT"],
+  "customers.verify_email": ["OWNER", "ADMIN", "SUPPORT"],
   "orders.view": ["OWNER", "ADMIN", "SUPPORT", "FINANCE"],
   "orders.resend_invoice": ["OWNER", "ADMIN", "SUPPORT", "FINANCE"],
+  "orders.create": ["OWNER", "FINANCE"],
+  "orders.edit": ["OWNER", "FINANCE"],
+  "payments.record_offline": ["OWNER", "FINANCE"],
+  "invoices.correct": ["OWNER", "FINANCE"],
   "refunds.issue": ["OWNER", "FINANCE"],
   "payments.replay": ["OWNER", "ADMIN", "FINANCE"],
   "licenses.manage": ["OWNER", "ADMIN", "SUPPORT"],
@@ -146,9 +155,9 @@ export const ADMIN_MODULES = [
   { key: "releases", label: "Releases", title: "Software releases", icon: "new_releases", viewPerm: null, group: "CATALOG",
     description: "Installers, supported platforms and release notes. Files live in private storage; customers get signed links only after an entitlement check." },
   { key: "orders", label: "Orders & payments", title: "Orders, payments & refunds", icon: "receipt_long", viewPerm: "orders.view", group: "SALES",
-    description: "Orders are marked paid only after a verified payment webhook. Refunds revoke the licenses they issued." },
+    description: "Orders are marked paid after a verified payment webhook, or when Owner or Finance record an offline payment. Refunds revoke the licenses they issued." },
   { key: "customers", label: "Customers", title: "Customers & business accounts", icon: "storefront", viewPerm: "customers.view", group: "SALES",
-    description: "Businesses that have bought or trialled software. Guest purchases link to an account by email." },
+    description: "Businesses that have bought or trialled software. Staff can add customers, fix their details and confirm emails. Guest purchases link to an account by email." },
   { key: "coupons", label: "Coupons", title: "Coupons & promotions", icon: "confirmation_number", viewPerm: null, group: "SALES",
     description: "Codes are validated on the server at checkout against dates, limits and eligible products." },
   { key: "renewals", label: "Renewals", title: "Renewals & maintenance", icon: "autorenew", viewPerm: "customers.view", group: "SALES",
@@ -235,6 +244,9 @@ export const DESTRUCTIVE_ACTIONS = {
   "staff.deactivate": { perm: "staff.manage", reason: true, typedId: false, label: "Deactivate" },
   "staff.reactivate": { perm: "staff.manage", reason: true, typedId: false, label: "Reactivate" },
   "staff.revoke_invite": { perm: "staff.manage", reason: true, typedId: false, label: "Revoke invitation" },
+  "customers.verify_email": { perm: "customers.verify_email", reason: true, typedId: false, label: "Mark verified" },
+  "customers.set_password_link": { perm: "customers.manage", reason: true, typedId: false, label: "Create link" },
+  "orders.cancel": { perm: "orders.edit", reason: true, typedId: false, label: "Cancel order" },
 } as const satisfies Record<string, DestructiveActionRule>;
 
 export type DestructiveActionKey = keyof typeof DESTRUCTIVE_ACTIONS;

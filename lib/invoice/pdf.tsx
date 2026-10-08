@@ -1,6 +1,7 @@
 /**
- * Tax invoice PDF (A4) rendered with @react-pdf/renderer from the shared invoice model (lib/invoice/model.ts), in
- * the look of the order page's printable invoice. Server-only (Node): fonts are read from node_modules/@fontsource.
+ * Tax invoice and credit note PDF (A4) rendered with @react-pdf/renderer from the shared invoice model
+ * (lib/invoice/model.ts), in the look of the order page's printable invoice. Labels come from the model (docLabel,
+ * numberLabel, dateLabel, reference, extraNotes), so a credit note is the same document with its own wording. Server-only (Node): fonts are read from node_modules/@fontsource.
  *
  * Fonts: Manrope 400/600/700/800 and JetBrains Mono 400, each registered twice, from the `latin` and the
  * `latin-ext` subsets, as two families listed together (fontFamily: [main, ext]). react-pdf substitutes per code
@@ -256,7 +257,12 @@ function Notes({ model }: { model: InvoiceModel }) {
     { style: s.notes, wrap: false },
     h(Text, { style: s.note }, `${supply} SAC ${model.sac}. Tax is not payable on reverse charge.`),
     h(Text, { style: s.note }, `Amounts are in Indian rupees (INR). Order placed on ${model.orderDateTime} IST.`),
-    h(Text, { style: s.note }, "This is a computer-generated invoice and does not need a signature."),
+    ...model.extraNotes.map((note, i) => h(Text, { key: `x${i}`, style: s.note }, note)),
+    h(
+      Text,
+      { style: s.note },
+      `This is a computer-generated ${model.kind === "credit_note" ? "credit note" : "invoice"} and does not need a signature.`,
+    ),
   );
 }
 
@@ -279,13 +285,14 @@ export function InvoiceDocument({ model }: { model: InvoiceModel }) {
       h(LogoMark),
       h(View, { style: s.brandText }, h(Text, { style: s.brandName }, "Axiomatic"), h(Text, { style: s.brandSub }, "SOFTWARE SOLUTIONS")),
     ),
-    h(View, { style: s.titleBlock }, h(Text, { style: s.title }, "Tax invoice"), h(Text, { style: s.titleSub }, "Original for recipient")),
+    h(View, { style: s.titleBlock }, h(Text, { style: s.title }, model.docLabel), h(Text, { style: s.titleSub }, "Original for recipient")),
   );
   const meta = h(
     View,
     { style: s.meta },
-    h(MetaCell, { label: "INVOICE NO.", value: number }),
-    h(MetaCell, { label: "INVOICE DATE", value: model.invoiceDate ?? model.orderDate }),
+    h(MetaCell, { label: model.numberLabel, value: number }),
+    h(MetaCell, { label: model.dateLabel, value: model.invoiceDate ?? model.orderDate }),
+    ...(model.reference ? [h(MetaCell, { key: "ref", label: model.reference.label, value: model.reference.value })] : []),
     h(MetaCell, { label: "ORDER", value: model.orderId }),
     h(MetaCell, { label: "PLACE OF SUPPLY", value: model.placeOfSupplyLabel }),
   );
@@ -299,13 +306,13 @@ export function InvoiceDocument({ model }: { model: InvoiceModel }) {
   const footer = h(
     View,
     { style: s.footer, fixed: true },
-    h(Text, null, `${model.seller.name} · Invoice ${number}`),
+    h(Text, null, `${model.seller.name} · ${model.docLabel} ${number}`),
     h(Text, { render: ({ pageNumber, totalPages }: { pageNumber: number; totalPages: number }) => `Page ${pageNumber} of ${totalPages}` }),
   );
   return h(
     Document,
     {
-      title: `Tax invoice ${number}`,
+      title: `${model.docLabel} ${number}`,
       author: model.seller.name,
       creator: model.seller.name,
       producer: model.seller.name,

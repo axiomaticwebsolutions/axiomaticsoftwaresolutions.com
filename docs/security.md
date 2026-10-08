@@ -24,13 +24,13 @@ injected content (an admin-entered banner, a ticket message, a product descripti
 | Account takeover (password guessing, stuffing) | argon2id hashes; per-email and per-IP limits (Redis) counted before the check; same error and same work for unknown emails; optional emailed two-step codes for every account, staff included (turned on in Security or Admin > My profile; Owner and Finance turn it on once SMTP works) |
 | Stolen sign-in code or reset link | codes bound to the browser that passed the password step (challenge id, only its hash stored); 10/30-minute lifetimes, 5 guesses, single use; a new code or link voids older ones |
 | Trusted device outliving a security event | trusted-device cookie bound to the user's security epoch and password hash (see below) |
-| Session theft | httpOnly, SameSite=Lax, Secure cookies; only the SHA-256 of the token in the database; idle expiry (customers 30 days, staff 12 hours); rotation on sign-in, two-step and verification; "sign out everywhere"; revocation on password reset, role change and deactivation |
+| Session theft | httpOnly, SameSite=Lax, Secure cookies; only the SHA-256 of the token in the database; idle expiry (customers 30 days, staff 12 hours); rotation on sign-in, two-step and verification; "sign out everywhere"; revocation on password reset, role change, deactivation and a staff change of a customer's email |
 | CSRF | HMAC CSRF token bound to the session in a header on every mutation, plus a same-origin check (Origin / Sec-Fetch-Site); cron and webhook routes take no cookies |
 | Cross-account access (IDOR) | every route resolves the actor's account membership or staff permission on the server (`lib/rbac.ts`, `requireAccountRole`, `adminRoute(perm)`); foreign ids answer 404; the middleware redirect is optimistic only |
 | Privilege misuse by staff | permission per route (table-driven test over every route and role), reasons and typed confirmation for destructive actions, append-only audit log with exactly one row per action |
 | XSS | React escaping; no user content through `dangerouslySetInnerHTML`; JSON-LD escaped; strict nonce CSP on the portal, admin, checkout, order and auth pages; `script-src-attr 'none'` everywhere |
 | Clickjacking | `frame-ancestors 'none'` and `X-Frame-Options: DENY` |
-| Payment tampering | the server re-prices every order; webhook signature, amount, currency and provider-order checks; licenses only from the signed webhook (or audited staff issue) |
+| Payment tampering | the server re-prices every order (staff-created orders too); webhook signature, amount, currency and provider-order checks; licenses only from the signed webhook, an audited manual staff issue, or an Owner/Finance offline payment record (reason required, amount equal to the server total, idempotent, one transaction through the webhook's own fulfilment code, audited; see "Offline payments" below); a late capture of a payment attempt a staff edit replaced goes to REVIEW |
 | License key leakage | shown once to the purchaser (`Cache-Control: no-store`), afterwards only after the password; masked in logs, emails and exports |
 | Activation API abuse | strict JSON (8 KB), HMAC lookup, per-key and per-IP limits, device-limit lock, EdDSA tokens verified offline |
 | Injection | Prisma parameterised queries (raw SQL only with bound parameters), strict Zod bodies (unknown keys refused), size-capped bodies |
@@ -172,10 +172,112 @@ console access (403).
 `2.<securityEpoch>.<expiry>.<HMAC-SHA256(SESSION_SECRET)>` over the user id, `User.securityEpoch`, the expiry and a
 fingerprint of the password hash (`lib/auth/trusted-device.ts`). A sign-in skips the code only while all of them still
 match. The epoch is incremented, invalidating every trusted device of that user at once, on: password reset, password
-change, turning two-step off, staff deactivation, staff reactivation and staff role change
-(`lib/auth/flows/reset-password.ts`, `change-password.ts`, `lib/portal/profile.ts`, `lib/admin/staff/service.ts`).
+change, turning two-step off, staff deactivation, staff reactivation, staff role change and an admin email change of a
+customer (`lib/auth/flows/reset-password.ts`, `change-password.ts`, `lib/portal/profile.ts`,
+`lib/admin/staff/service.ts`, `lib/admin/customers/records.ts`).
 `tests/db/security-epoch.test.ts` proves an old cookie asks for a code again after each event. Version-1 cookies (from
 before Phase 7) no longer verify, so every trusted device asks for one code after this release.
+
+## Staff powers over customer accounts (admin records, 2026-10-08)
+
+Admin > Customers lets staff create customers, fix their details and confirm emails (`docs/admin-records-design.md`
+PART A; decisions.md "Admin records"). Each action is checked on the server (`adminRoute(perm)` plus, for "verified",
+`customers.verify_email`), needs CSRF and the same origin, takes a reason first and writes one AuditLog row with field
+names only.
+
+| Action | Permission | Owner | Administrator | Support | Finance |
+|---|---|---|---|---|---|
+| Create a customer (`POST /api/admin/customers`) | `customers.create` | yes | yes | yes | no |
+| Edit name, mobile, email and business details (`PATCH /api/admin/customers/:id`) | `customers.edit` | yes | yes | yes | no |
+| Mark an email verified, or tick "verified" when creating or changing an email | `customers.verify_email` | yes | yes | yes | no |
+| Create a set-password link, resend verification, send a password reset | `customers.manage` | yes | yes | yes | no |
+| View customers | `customers.view` | yes | yes | yes | yes |
+
+- **Marking an email verified** voids the person's open verification codes and claims that address's guest orders
+  (and their licenses) into the account they created and own, exactly as entering the emailed code does. Staff do it
+  only after confirming the person owns the address; the confirmation dialog says what moves. The same holds for
+  "Email already verified" on create and "verified" on an email change. Every one of these audit rows lists the
+  orders that moved by id ("· 2 guest orders moved to this account: AX-…"), so a verification that handed someone
+  else's purchases to an account is traceable. Accepted risk (owner decision, 2026-10-08): Owner, Administrator and
+  Support can all verify, and the staff member who creates a customer also sees the one-time set-password link, so a
+  dishonest staff member could take over a guest buyer's address; the audit row with the order ids, the email to the
+  address and /forgot (which lets the real owner reset the password) are the controls.
+- **Email changes** bump the security epoch (every trusted device asks for a code again), revoke every session, void
+  open EMAIL_VERIFY, PASSWORD_RESET, LOGIN_OTP and TEAM_INVITE tokens, clear verification unless ticked, and queue a
+  notice to the OLD address (only a hint of the new one), so a socially engineered change is visible to the real owner.
+  Team invitations are voided because a link mailed to the old address could otherwise set the password of a customer
+  who has none and verify the NEW address; as defence in depth, accepting a team invitation is refused (410
+  `invite_revoked`) whenever the invitee's email is no longer the address the link was sent to
+  (`lib/portal/invites.ts`). The inviting owner resends the invitation.
+- **Set-password links** (customers created by staff have no password; nobody but the customer ever knows it): a
+  `PASSWORD_RESET` token with `meta.purpose = "set_password"`, single use, 256-bit secret with only its SHA-256 stored,
+  bound to the address, valid 7 days. It is shown once to the staff member who created it (201 body, `no-store`) and
+  emailed directly; it is never stored in plain text, logged, audited or put in a URL the console navigates to. A new
+  link, a password reset or an email change voids it; it is refused once the account has a password (defence in
+  depth in `findResetToken`). Completing it sets the password but does not verify the email. 5 links an hour per
+  customer, separate from the public /forgot limit. /forgot sends a staff-created customer without a password a
+  30-minute set-password link.
+- **No takeover through registration.** A customer staff created (`User.createdByStaffId`) is never treated as a
+  team-invite placeholder, so /register and checkout "Create an account" for that address answer 409 instead of
+  setting a password on it.
+- Staff never see or set a customer's password, and staff addresses cannot be used for customers (409).
+- **Staff never receive the one-time license key.** A staff session is never the purchaser of an order
+  (`lib/orders/access.ts`), even with a valid order link. The payment links staff copy and share are **pay-only** order
+  links (`lib/orders/token.ts`: `p1.<exp>.<emailTag>.<sig>`, signed over `order-pay:p1:…`, so a pay-only link can't be
+  turned into a full one): they open the order, its invoice and "Pay now", never the one-time key view, even signed out
+  in a private window, and a payment started from one answers with a pay-only token. The customer gets the key from the
+  order_confirmation email (a full link signed at payment) or reveals it in their account. A staff session also never
+  pays, accepts the terms, cancels or reports a return for a customer's order (403 `staff_checkout`), even with a link;
+  a signed-out link holder can, which is why the link should only go to the customer.
+
+## Staff powers over orders and offline payments (admin records, 2026-10-08)
+
+Admin > Orders lets Owner and Finance create orders for a customer, edit or cancel unpaid ones, record payments
+received outside the payment provider and correct the billing details of paid orders (`docs/admin-records-design.md`
+PART B; decisions.md "Admin records" D10-D20). Every route is checked on the server (`adminRoute(perm)`; the quote of
+an existing order also needs `orders.edit`), needs CSRF and the same origin, is rate limited per staff member, takes a
+reason first (except the read-only quote, re-sharing a payment link and PDF downloads) and writes one AuditLog row with
+field names, amounts and document numbers only (never a token, a link or a key).
+
+| Action | Permission | Owner | Administrator | Support | Finance |
+|---|---|---|---|---|---|
+| Quote, create a payment-link order, re-share or email its link | `orders.create` | yes | no | no | yes |
+| Edit an unpaid order's items, coupon or billing; cancel an unpaid order | `orders.edit` | yes | no | no | yes |
+| Record an offline payment (creates, pays and fulfils the order) | `payments.record_offline` | yes | no | no | yes |
+| Correct the billing of a paid order (credit note and new invoice) | `invoices.correct` | yes | no | no | yes |
+| View orders, resend invoices, open invoice and credit-note PDFs | `orders.view`, `orders.resend_invoice` | yes | yes | yes | yes |
+
+### Offline payments: the one exception to "licenses only from the webhook"
+
+A paid order's licenses are otherwise issued only by the signature-verified payment webhook. An offline payment
+record (`POST /api/admin/orders/offline`, `lib/admin/orders/offline.ts`) is the single documented exception:
+
+- **Who:** Owner and Finance only (`payments.record_offline`), with a reason of 4-500 characters checked before
+  anything else. Finance should check the UTR or cheque against the bank statement before recording it.
+- **What:** the order is priced on the server exactly like checkout; the amount entered must **equal** that total (no
+  partial payments); UPI, bank transfers and cheques need a reference; the received date must be within the last 180
+  IST days and not in the future.
+- **How:** ONE transaction creates the order and an offline `Payment` (provider `offline`, never sent to or reconciled
+  with a provider), locks the order row and runs `fulfilPaidOrder()` (`lib/payments/fulfilment.ts`), the same code the
+  webhook runs: licenses with HMAC + AES-GCM keys, terms snapshots, the gap-free invoice number, coupon redemption and
+  the customer emails (never a full key). Any fulfilment error rolls everything back (409 `fulfilment_failed`).
+- **Exactly once:** the console's `requestId` is stored unique on the order; a repeat by the same staff member returns
+  the first order and stores nothing, a concurrent repeat is answered the same way (also when it failed on the limited
+  coupon slot the first one used, so staff are never told "coupon used up" for a payment that was recorded), and
+  another staff member's repeat is refused (409). A deadlock or lock timeout answers 503 `try_again` with nothing
+  stored. Fulfilment takes its locks in one order everywhere (order, coupon, license counter, invoice counter), so an
+  offline payment and a webhook sharing a coupon do not deadlock.
+- **Audit:** one "Recorded offline payment" row naming the method, reference, amount, received date, invoice number
+  and license count, plus the reason. Refunds of offline payments are not available in the console in this release.
+
+Other order safeguards: a payment-link order has no payment attempt until the customer accepts the terms and pays
+through the existing retry path (staff never accept terms for the customer); editing an unpaid order closes and stamps
+its open payment attempts so an old provider checkout can never pay the old amount (a late capture goes to REVIEW);
+a staff cancel is final for the customer; a billing correction cannot change the place of supply, the email or the
+amounts, so the GST split stays the same, and it is refused while a refund exists or when the seller's state or GSTIN in
+Settings no longer matches the original invoice (a credit note must come from the registration that issued the invoice
+it cancels). A late `payment.failed` for an attempt a staff edit or cancel replaced is recorded on the attempt only: the
+order keeps its status and no "try again" email goes out.
 
 ## Other controls (Phase 7 review)
 

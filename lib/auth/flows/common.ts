@@ -16,6 +16,13 @@ import { ApiError, errors } from "@/lib/http";
 export const EMAIL_CODE_TTL_MS = 15 * 60_000;
 export const LOGIN_CODE_TTL_MS = 10 * 60_000;
 export const RESET_TOKEN_TTL_MS = 30 * 60_000;
+/**
+ * Set-password links staff create in Admin > Customers (docs/admin-records-design.md D5): PASSWORD_RESET tokens with
+ * meta.purpose "set_password", valid 7 days. Ones /forgot sends to a staff-created customer without a password keep
+ * RESET_TOKEN_TTL_MS.
+ */
+export const SET_PASSWORD_TTL_MS = 7 * 24 * 60 * 60_000;
+export const SET_PASSWORD_PURPOSE = "set_password";
 /** Wrong guesses allowed per emailed code (verification and two-step). */
 export const MAX_CODE_ATTEMPTS = 5;
 /** "{n} attempts left." appears once this many sign-in attempts were counted for the email. */
@@ -180,11 +187,18 @@ export async function ownAccountId(client: Db, userId: string): Promise<string |
  * A placeholder user: created by a team invitation for an address without an account (lib/portal/team.ts), with no
  * password, no name and an unverified email, until the person accepts. It must never block that address from
  * creating its own account, so registration and checkout take it over (takeOverPlaceholderUser).
+ * A customer staff created in Admin > Customers (createdByStaffId set) is never a placeholder, even before they set a
+ * password or verify the email: otherwise whoever registered the address first would own the account staff set up.
  */
-export const PLACEHOLDER_USER_WHERE = { kind: "CUSTOMER", passwordHash: null, emailVerifiedAt: null } as const satisfies Prisma.UserWhereInput;
+export const PLACEHOLDER_USER_WHERE = {
+  kind: "CUSTOMER",
+  passwordHash: null,
+  emailVerifiedAt: null,
+  createdByStaffId: null,
+} as const satisfies Prisma.UserWhereInput;
 
-export function isPlaceholderUser(user: Pick<User, "kind" | "passwordHash" | "emailVerifiedAt">): boolean {
-  return user.kind === "CUSTOMER" && user.passwordHash === null && user.emailVerifiedAt === null;
+export function isPlaceholderUser(user: Pick<User, "kind" | "passwordHash" | "emailVerifiedAt" | "createdByStaffId">): boolean {
+  return user.kind === "CUSTOMER" && user.passwordHash === null && user.emailVerifiedAt === null && user.createdByStaffId === null;
 }
 
 /**

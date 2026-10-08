@@ -142,7 +142,8 @@ export function mergeBillingDetails(current: BillingDetails, patch: BillingDetai
   };
 }
 
-const DETAIL_KEYS = ["legalName", "gstin", "address", "city", "state", "pin"] as const satisfies readonly (keyof BillingDetails)[];
+/** The business detail fields (also compared by the admin customer edit, lib/admin/customers/records.ts). */
+export const BILLING_DETAIL_KEYS = ["legalName", "gstin", "address", "city", "state", "pin"] as const satisfies readonly (keyof BillingDetails)[];
 
 /** "GSTIN 27ABCDE1234F1Z5" or "No GSTIN" (prototype activity target). */
 export function billingActivityTarget(gstin: string | null): string {
@@ -177,7 +178,7 @@ export async function updateBilling(
     const next = mergeBillingDetails(current, input.patch);
     const issue = billingDetailsIssue(next);
     if (issue) throw errors.validation({ [issue.field]: issue.message });
-    if (DETAIL_KEYS.every((key) => next[key] === current[key])) return false;
+    if (BILLING_DETAIL_KEYS.every((key) => next[key] === current[key])) return false;
     await tx.businessAccount.update({ where: { id: input.accountId }, data: next });
     await recordAccountActivity(tx, {
       accountId: input.accountId,

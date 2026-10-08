@@ -238,7 +238,7 @@ describe("password routes", () => {
     const resetToken = resetTokenIn(lastMail(mail.sent, user.email, "password_reset"));
 
     const peek = await call(resetGET as Handler, `/api/auth/reset-password?token=${encodeURIComponent(resetToken)}`, { method: "GET" });
-    expect(await bodyOf(peek)).toEqual({ email: user.email });
+    expect(await bodyOf(peek)).toEqual({ email: user.email, mode: "reset" });
 
     const res = await call(resetPOST as Handler, "/api/auth/reset-password", { body: { token: resetToken, password: OTHER_PASSWORD } });
     expect(res.status).toBe(200);

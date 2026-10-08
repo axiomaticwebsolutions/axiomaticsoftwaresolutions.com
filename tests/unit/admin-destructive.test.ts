@@ -176,6 +176,9 @@ describe("destructive vocabulary and body fields", () => {
       "staff.deactivate": "Deactivated staff",
       "staff.reactivate": "Reactivated staff",
       "staff.revoke_invite": "Revoked staff invitation",
+      "customers.verify_email": "Marked email as verified",
+      "customers.set_password_link": "Created set-password link",
+      "orders.cancel": "Cancelled order",
     });
     expect(Object.keys(DESTRUCTIVE_AUDIT_ACTIONS).sort()).toEqual([...ACTION_KEYS].sort());
   });

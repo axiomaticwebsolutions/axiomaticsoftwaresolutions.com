@@ -64,7 +64,7 @@ export function locationLimitMessage(max: number = MAX_LOCATIONS): string {
 }
 
 /** Optional single-line text: "" and null clear the field (null), otherwise cleaned and length-checked. */
-function optionalLine(max: number, tooLong: string) {
+export function optionalLine(max: number, tooLong: string) {
   return z
     .union([z.null(), z.string({ error: tooLong })], { error: tooLong })
     .transform((value) => (value === null ? null : cleanLine(value)))
@@ -74,7 +74,7 @@ function optionalLine(max: number, tooLong: string) {
 
 // ---------- Billing & tax details ----------
 
-const legalNameSchema = z
+export const legalNameSchema = z
   .string({ error: PORTAL_ERRORS.legalName })
   .overwrite(cleanLine)
   .superRefine((value, ctx) => {
@@ -82,19 +82,19 @@ const legalNameSchema = z
     else if (value.length > BUSINESS_NAME_MAX) ctx.addIssue(PORTAL_ERRORS.legalNameTooLong);
   });
 
-const gstinFieldSchema = z
+export const gstinFieldSchema = z
   .union([z.null(), z.string().max(BILLING_MAX.gstinInput, { message: PORTAL_ERRORS.gstin })], { error: PORTAL_ERRORS.gstin })
   .transform((value) => (value === null ? null : normalizeGstin(value)))
   .transform((value) => (value === "" ? null : value))
   .refine((value) => value === null || isValidGstin(value), { message: PORTAL_ERRORS.gstin });
 
-const stateFieldSchema = z
+export const stateFieldSchema = z
   .union([z.null(), z.string()], { error: PORTAL_ERRORS.state })
   .transform((value) => (value === null ? null : cleanLine(value)))
   .transform((value) => (value === "" ? null : value))
   .refine((value) => value === null || isIndianState(value), { message: PORTAL_ERRORS.state });
 
-const pinFieldSchema = z
+export const pinFieldSchema = z
   .union([z.null(), z.string()], { error: PORTAL_ERRORS.pin })
   .transform((value) => (value === null ? null : value.trim()))
   .transform((value) => (value === "" ? null : value))
@@ -195,7 +195,7 @@ export const emailPrefsPatchSchema = z
   .refine((v) => EMAIL_PREF_KEYS.some((k) => v[k] !== undefined), { message: PORTAL_ERRORS.nothingToUpdate });
 export type EmailPrefsPatch = z.output<typeof emailPrefsPatchSchema>;
 
-const personNameSchema = z
+export const personNameSchema = z
   .string({ error: PORTAL_ERRORS.name })
   .transform((v) => cleanLine(v.normalize("NFC")))
   .pipe(
@@ -207,7 +207,7 @@ const personNameSchema = z
   );
 
 /** Indian mobile ("+91 98200 00000" -> "9820000000"); "" or null removes the number. */
-const phoneFieldSchema = z
+export const phoneFieldSchema = z
   .union([z.null(), z.string()], { error: PORTAL_ERRORS.phone })
   .transform((value) => (value === null ? "" : value.trim()))
   .superRefine((value, ctx) => {

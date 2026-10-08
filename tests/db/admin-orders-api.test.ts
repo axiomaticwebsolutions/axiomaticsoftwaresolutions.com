@@ -155,7 +155,7 @@ describe("GET /api/admin/orders/:id", () => {
     expect(order.licenses[0]?.maskedKey).toMatch(new RegExp(`^${catalog.product.code}-\u2022{4}-\u2022{4}-\u2022{4}-[A-Z2-9]{4}$`));
     expect(JSON.stringify(order)).not.toMatch(/keyCiphertext|keyHash/);
     expect(order.history.map((h) => h.action)).toContain("Webhook processed");
-    expect(order.refund).toEqual({ allowed: true, amountPaise: paid.totalPaise, licenseCount: 1, changeCount: 0 });
+    expect(order.refund).toEqual({ allowed: true, amountPaise: paid.totalPaise, licenseCount: 1, changeCount: 0, unavailableReason: null });
   });
 
   it("refund is not allowed for an unpaid order; unknown ids are 404", async () => {

@@ -5,7 +5,9 @@
  * then emails the code. Guest orders are NOT linked here; that happens on verification.
  * 409 `email_taken` uses the prototype copy (registration necessarily reveals that the address has an account).
  * An address with a pending team invitation only has a placeholder user (no password, unverified): registration
- * takes that row over (takeOverPlaceholderUser) instead of answering 409, and the invitation stays pending.
+ * takes that row over (takeOverPlaceholderUser) instead of answering 409, and the invitation stays pending. A customer
+ * staff created in Admin > Customers is not a placeholder: registering that address answers 409 `email_taken` (they use
+ * their set-password link or /forgot).
  */
 import "server-only";
 import type { BusinessAccount, Session, User } from "@/generated/prisma/client";
@@ -47,7 +49,7 @@ export async function registerUser(
   // Cheap check first so a taken address does not cost an argon2 hash; the unique index decides races.
   const existing = await db.user.findUnique({
     where: { email: input.email },
-    select: { kind: true, passwordHash: true, emailVerifiedAt: true },
+    select: { kind: true, passwordHash: true, emailVerifiedAt: true, createdByStaffId: true },
   });
   if (existing && !isPlaceholderUser(existing)) throw emailTaken();
 

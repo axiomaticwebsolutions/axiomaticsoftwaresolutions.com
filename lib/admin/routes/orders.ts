@@ -17,4 +17,13 @@ export const ROUTES: readonly AdminRouteSpec[] = [
   { method: "POST", path: "/api/admin/orders/[id]/resend-invoice", perm: "orders.resend_invoice" },
   { method: "POST", path: "/api/admin/orders/[id]/review", perm: "refunds.issue", sampleBody: { reason: "Permission test" } },
   { method: "POST", path: "/api/admin/webhooks/[id]/replay", perm: "payments.replay" },
+  // Admin records (2026-10-08). Empty bodies answer 422 (reason or validation) before any write; dummy ids 404.
+  { method: "POST", path: "/api/admin/orders", perm: "orders.create" },
+  { method: "POST", path: "/api/admin/orders/quote", perm: "orders.create" },
+  { method: "POST", path: "/api/admin/orders/offline", perm: "payments.record_offline" },
+  { method: "PATCH", path: "/api/admin/orders/[id]", perm: "orders.edit" },
+  { method: "POST", path: "/api/admin/orders/[id]/cancel", perm: "orders.edit" },
+  { method: "POST", path: "/api/admin/orders/[id]/payment-link", perm: "orders.create", sampleBody: { send: false } },
+  { method: "POST", path: "/api/admin/orders/[id]/correct-billing", perm: "invoices.correct" },
+  { method: "GET", path: "/api/admin/orders/[id]/credit-notes/[noteId]", perm: "orders.view" },
 ];

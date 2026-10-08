@@ -12,7 +12,7 @@ import { formatDateTimeIST } from "@/lib/dates";
 import { isProduction } from "@/lib/env";
 import { paiseToDecimalString } from "@/lib/money";
 import { readBillingSnapshot } from "@/lib/orders/billing";
-import { PAYMENT_PROVIDER_KEYS } from "@/lib/payments/types";
+import { OFFLINE_PROVIDER, PAYMENT_PROVIDER_KEYS } from "@/lib/payments/types";
 import { orderOrderBy, orderWhere } from "./filters";
 import {
   ADMIN_ORDERS_BULK_MAX,
@@ -21,6 +21,7 @@ import {
   itemLabel,
   ORDER_DATE_FILTERS,
   ORDER_METHOD_FILTERS,
+  ORDER_PROVIDER_FILTERS,
   ORDER_SORTS,
   ORDER_STATUS_FILTER_LABELS,
   ORDER_STATUS_FILTERS,
@@ -56,7 +57,7 @@ export function orderQueryFromRequest(input: Request | URL): AdminOrderQuery {
       from: parseDayFilter,
       to: parseDayFilter,
       coupon: parseCouponFilter,
-      provider: PAYMENT_PROVIDER_KEYS,
+      provider: ORDER_PROVIDER_FILTERS,
     },
     sortable: ORDER_SORTS,
     defaultSort: { id: "createdAt", desc: true },
@@ -167,7 +168,7 @@ export async function adminOrderStats(db: Db): Promise<AdminOrderStats> {
 
 /**
  * Options of the Product, Coupon and Provider selects: products by short name in catalog rank order (as the Plans and
- * Releases filters). The mock provider is listed outside production only.
+ * Releases filters). The mock provider is listed outside production only; "Offline" (payments staff recorded) always.
  */
 export async function adminOrderFilterOptions(db: Db): Promise<AdminOrderFilterOptions> {
   const [products, coupons] = await Promise.all([
@@ -177,7 +178,7 @@ export async function adminOrderFilterOptions(db: Db): Promise<AdminOrderFilterO
   return {
     products: products.map((p) => ({ value: p.id, label: productLabel(p) })),
     coupons: coupons.map((c) => c.code),
-    providers: PAYMENT_PROVIDER_KEYS.filter((k) => k !== "mock" || !isProduction()),
+    providers: [...PAYMENT_PROVIDER_KEYS.filter((k) => k !== "mock" || !isProduction()), OFFLINE_PROVIDER],
   };
 }
 

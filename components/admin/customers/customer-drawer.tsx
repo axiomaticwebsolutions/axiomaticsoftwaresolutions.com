@@ -3,12 +3,16 @@
 import * as React from "react";
 import { AdminAction } from "@/components/admin/admin-action";
 import { adminToast } from "@/components/admin/admin-toaster";
+import { DestructiveAction } from "@/components/admin/destructive-action";
 import { AdminDrawer, type AdminDrawerSection, type AdminField } from "@/components/admin/drawer";
 import { SectionRow, SectionRows } from "@/components/admin/section";
 import { statusMeta } from "@/components/admin/status-badge";
 import { useAdminDetail } from "@/components/admin/licenses/use-detail";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   CUSTOMER_COPY,
+  CUSTOMER_RECORD_COPY as RECORD_COPY,
   locationLabel,
   TEAM_ROLE_SHORT,
   type AdminCustomerDetail,
@@ -19,6 +23,8 @@ import { apiFetch } from "@/lib/client/api";
 import { formatDateIST } from "@/lib/dates";
 import { formatINR } from "@/lib/money";
 import { EmailBadge } from "./customer-columns";
+import { useCustomerEdit } from "./customer-edit-form";
+import { SetPasswordLinkPanel, type OneTimeLink } from "./set-password-link";
 
 const date = (iso: string | null, fallback: string) => (iso ? formatDateIST(new Date(iso)) : fallback);
 const customerPath = (id: string, verb?: string) => `/api/admin/customers/${encodeURIComponent(id)}${verb ? `/${verb}` : ""}`;
@@ -125,9 +131,15 @@ function sectionsOf(c: AdminCustomerDetail): AdminDrawerSection[] {
 
 type EmailAction = "resend-verification" | "password-reset";
 
-/** Footer (prototype): "Resend verification" and "Send password reset" for the owner (customers.manage). */
-function FooterActions({ c }: { c: AdminCustomerDetail }) {
+/**
+ * Footer: "Resend verification" (customers.manage), "Mark email as verified" (customers.verify_email), and "Send
+ * password reset" for an owner with a password, else "Create set-password link" (customers.manage) for an active
+ * owner without one. The set-password link opens once in a dialog and is dropped when it closes.
+ */
+function FooterActions({ c, onChanged }: { c: AdminCustomerDetail; onChanged: () => void }) {
   const [busy, setBusy] = React.useState<EmailAction | null>(null);
+  const [link, setLink] = React.useState<OneTimeLink | null>(null);
+  const linkRef = React.useRef<HTMLDivElement>(null);
   const owner = c.owner;
   const unavailable = !owner ? CUSTOMER_COPY.noOwner : !owner.hasPassword ? CUSTOMER_COPY.noPassword : undefined;
   async function send(action: EmailAction) {
@@ -143,6 +155,7 @@ function FooterActions({ c }: { c: AdminCustomerDetail }) {
       setBusy(null);
     }
   }
+  const ownerName = owner ? owner.name || owner.email : "";
   return (
     <>
       <AdminAction
@@ -155,19 +168,83 @@ function FooterActions({ c }: { c: AdminCustomerDetail }) {
       >
         {CUSTOMER_COPY.resendVerification}
       </AdminAction>
-      <AdminAction perm="customers.manage" size="sm" icon="lock_reset" busy={busy === "password-reset"} disabledReason={unavailable} onClick={() => send("password-reset")}>
-        {CUSTOMER_COPY.sendPasswordReset}
-      </AdminAction>
+      <DestructiveAction
+        actionKey="customers.verify_email"
+        targetId={owner?.email ?? c.id}
+        disabledReason={!owner ? RECORD_COPY.noActiveOwner : owner.verified ? RECORD_COPY.verifiedAlready : undefined}
+        consequence={owner ? RECORD_COPY.verifyConsequence(owner.email, ownerName, c.legalName) : null}
+        successMessage={RECORD_COPY.verifyDone}
+        onConfirm={async ({ reason }) => {
+          await apiFetch(customerPath(c.id, "verify-email"), { method: "POST", body: { reason } });
+          onChanged();
+        }}
+      />
+      {owner && !owner.hasPassword && owner.canSetPassword ? (
+        <DestructiveAction
+          actionKey="customers.set_password_link"
+          targetId={owner.email}
+          targetLabel={ownerName}
+          consequence={RECORD_COPY.linkConsequence(ownerName, owner.email)}
+          onConfirm={async ({ reason }) => {
+            const result = await apiFetch<{ url: string; expiresAt: string; emailSent: boolean }>(customerPath(c.id, "set-password-link"), {
+              method: "POST",
+              body: { reason },
+            });
+            setLink({ url: result.url, expiresAt: result.expiresAt, emailSent: result.emailSent, name: ownerName });
+          }}
+        />
+      ) : (
+        <AdminAction perm="customers.manage" size="sm" icon="lock_reset" busy={busy === "password-reset"} disabledReason={unavailable} onClick={() => send("password-reset")}>
+          {CUSTOMER_COPY.sendPasswordReset}
+        </AdminAction>
+      )}
+      <Dialog open={link !== null} onOpenChange={(next) => (next ? undefined : setLink(null))}>
+        <DialogContent
+          className="leading-[normal]"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            linkRef.current?.querySelector<HTMLElement>("[data-link-panel]")?.focus();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{RECORD_COPY.linkDialogTitle}</DialogTitle>
+            <DialogDescription className="text-[13.5px]">{ownerName}</DialogDescription>
+          </DialogHeader>
+          <div ref={linkRef}>{link ? <SetPasswordLinkPanel link={link} /> : null}</div>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="secondary" size="sm">
+                {RECORD_COPY.close}
+              </Button>
+            </DialogClose>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
 
-export type CustomerDrawerProps = { id: string | null; open: boolean; onOpenChange: (open: boolean) => void };
+export type CustomerDrawerProps = {
+  id: string | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** After a change in the drawer (edit, verify): re-read the list. */
+  onChanged?: () => void;
+};
 
-/** The customer drawer (Admin Console.dc.html customers detail) for one business account. */
-export function CustomerDrawer({ id, open: isOpen, onOpenChange }: CustomerDrawerProps) {
+/**
+ * The customer drawer (Admin Console.dc.html customers detail) for one business account: facts, the "Edit details"
+ * card (customers.edit; read only otherwise), members, licenses, orders, tickets and the footer actions.
+ */
+export function CustomerDrawer({ id, open: isOpen, onOpenChange, onChanged }: CustomerDrawerProps) {
   const detail = useAdminDetail<{ customer: AdminCustomerDetail }, AdminCustomerDetail>(id ? customerPath(id) : null, (r) => r.customer);
   const c = detail.data;
+  const { reload } = detail;
+  const changed = React.useCallback(() => {
+    reload();
+    onChanged?.();
+  }, [reload, onChanged]);
+  const edit = useCustomerEdit(c, changed);
   return (
     <AdminDrawer
       open={isOpen}
@@ -179,8 +256,9 @@ export function CustomerDrawer({ id, open: isOpen, onOpenChange }: CustomerDrawe
       loading={detail.loading}
       error={detail.error}
       fields={c ? fieldsOf(c) : undefined}
+      edit={edit}
       sections={c ? sectionsOf(c) : undefined}
-      footer={c ? <FooterActions c={c} /> : undefined}
+      footer={c ? <FooterActions c={c} onChanged={changed} /> : undefined}
     />
   );
 }

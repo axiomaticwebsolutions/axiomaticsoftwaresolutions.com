@@ -22,7 +22,7 @@ import { LicenseTermsError, renewalTerms, upgradeTerms } from "@/lib/licensing/t
 import { DEFAULT_MAX_QTY, normalizeQuantity, PricingError, quote, type CartLine } from "@/lib/pricing";
 import { teamCan } from "@/lib/rbac";
 import type { CheckoutItem } from "@/lib/validation/checkout";
-import { NO_ACCOUNT_MESSAGE, PURCHASE_FORBIDDEN_MESSAGE, STAFF_CHECKOUT_MESSAGE, type CheckoutBuyer } from "./buyer";
+import { NO_ACCOUNT_MESSAGE, PURCHASE_FORBIDDEN_MESSAGE, STAFF_CHECKOUT_MESSAGE, type PricingBuyer } from "./buyer";
 import type { CheckoutPlan, PricingContext } from "./pricing-context";
 
 export const LINE_MESSAGES = {
@@ -111,7 +111,7 @@ function needsTarget(kind: ItemKind, planType: PlanType): boolean {
 export async function validateCheckoutLines(
   db: Db,
   items: readonly CheckoutItem[],
-  buyer: CheckoutBuyer,
+  buyer: PricingBuyer,
   ctx: PricingContext,
   now: Date,
 ): Promise<{ lines: ValidLine[]; issues: LineIssue[] }> {

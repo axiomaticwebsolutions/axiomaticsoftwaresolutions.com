@@ -202,3 +202,35 @@ export async function processRefund(order: PaidOrder, providerRefundId: string, 
     currency: "INR",
   });
 }
+
+/** Billing details of an order staff create for `email` (Maharashtra, like the seller: CGST + SGST). */
+export function adminOrderBilling(email: string, over: Record<string, unknown> = {}) {
+  return {
+    name: "Priya Sharma",
+    email,
+    phone: "9820000000",
+    business: `Sharma Medicals ${fxTag}`,
+    address: "Shop 4, MG Road",
+    city: "Pune",
+    state: "Maharashtra",
+    pin: "411004",
+    ...over,
+  };
+}
+
+/** A raw POST /api/admin/orders body (Admin > Orders "New order"): one annual license unless `items` is given. */
+export function makeAdminOrderInput(
+  account: TestAccount,
+  plans: OrdersCatalog["plans"],
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    requestId: crypto.randomUUID(),
+    accountId: account.accountId,
+    items: [{ planId: plans.annual.id, qty: 1 }],
+    couponCode: null,
+    billing: adminOrderBilling(account.ownerEmail),
+    reason: "Phone order from the owner",
+    ...over,
+  };
+}

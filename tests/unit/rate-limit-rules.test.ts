@@ -72,6 +72,12 @@ describe("Customer portal rules in RATE_LIMITS (Phase 4 device actions, Phase 5)
       [RATE_LIMITS.adminExport(u), `admin-export:user:${id(u)}`, 60, 600],
       [RATE_LIMITS.integrationPassword(u), `integration-password:user:${id(u)}`, 5, 900],
       [RATE_LIMITS.integrationTest(u), `integration-test:user:${id(u)}`, 10, 600],
+      [RATE_LIMITS.adminCustomerCreate(u), `admin-customer-create:user:${id(u)}`, 30, 3600],
+      [RATE_LIMITS.adminCustomerWrite(u), `admin-customer-write:user:${id(u)}`, 60, 600],
+      [RATE_LIMITS.adminSetPasswordLink(u), `admin-set-password:user:${id(u)}`, 5, 3600],
+      [RATE_LIMITS.adminOrderQuote(u), `admin-order-quote:user:${id(u)}`, 120, 600],
+      [RATE_LIMITS.adminOrderCreate(u), `admin-order-create:user:${id(u)}`, 30, 3600],
+      [RATE_LIMITS.adminOrderWrite(u), `admin-order-write:user:${id(u)}`, 60, 600],
     ];
     for (const [rule, key, limit, windowSec] of cases) expect(rule).toEqual({ key, limit, windowSec });
   });

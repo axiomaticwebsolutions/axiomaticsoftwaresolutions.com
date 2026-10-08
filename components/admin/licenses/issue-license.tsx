@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import * as React from "react";
 import { AdminAction } from "@/components/admin/admin-action";
 import { adminToast } from "@/components/admin/admin-toaster";
+import { useAccountSearch } from "@/components/admin/customers/use-account-search";
 import { useDrawerParam } from "@/components/admin/use-drawer-param";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -37,31 +38,6 @@ export const ISSUE_COPY = {
 } as const;
 
 type Errors = Partial<Record<"accountId" | "planId" | "quantity" | "reason" | "form", string>>;
-
-function useAccountSearch(query: string) {
-  const [results, setResults] = React.useState<AdminCustomerRow[]>([]);
-  const [loading, setLoading] = React.useState(false);
-  React.useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
-      return;
-    }
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      setLoading(true);
-      apiFetch<{ items: AdminCustomerRow[] }>(`/api/admin/customers?q=${encodeURIComponent(q)}&pageSize=6&sort=business`, { signal: controller.signal })
-        .then((r) => setResults(r.items))
-        .catch(() => setResults([]))
-        .finally(() => setLoading(false));
-    }, 250);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [query]);
-  return { results, loading };
-}
 
 function IssueForm({ plans, onDone }: { plans: readonly ManualIssuePlanOption[]; onDone: (result: ManualIssueResult) => void }) {
   const id = React.useId();

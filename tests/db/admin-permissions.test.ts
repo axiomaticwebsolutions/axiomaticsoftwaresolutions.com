@@ -188,6 +188,13 @@ const EXPLICIT_CASES: { title: string; method: AdminRouteMethod; match: RegExp; 
   { title: "Support cannot view the audit log", method: "GET", match: /^\/api\/admin\/audit(\/|$)/, caller: "SUPPORT", outcome: 403 },
   { title: "Finance can refund", method: "POST", match: /^\/api\/admin\/orders\/\[[^\]]+\]\/refund$/, caller: "FINANCE", outcome: "allowed" },
   { title: "Finance cannot revoke a license", method: "POST", match: /^\/api\/admin\/licenses\/\[[^\]]+\]\/revoke$/, caller: "FINANCE", outcome: 403 },
+  // Admin records (2026-10-08): customer records are Owner / Administrator / Support.
+  { title: "Finance cannot create customers", method: "POST", match: /^\/api\/admin\/customers$/, caller: "FINANCE", outcome: 403 },
+  { title: "Support can mark emails verified", method: "POST", match: /^\/api\/admin\/customers\/\[[^\]]+\]\/verify-email$/, caller: "SUPPORT", outcome: "allowed" },
+  // Admin records (2026-10-08): order records are Owner / Finance.
+  { title: "Support cannot create orders", method: "POST", match: /^\/api\/admin\/orders$/, caller: "SUPPORT", outcome: 403 },
+  { title: "Administrator cannot record offline payments", method: "POST", match: /^\/api\/admin\/orders\/offline$/, caller: "ADMIN", outcome: 403 },
+  { title: "Finance can correct billing", method: "POST", match: /^\/api\/admin\/orders\/\[[^\]]+\]\/correct-billing$/, caller: "FINANCE", outcome: "allowed" },
 ];
 
 describe("api-contracts examples", () => {

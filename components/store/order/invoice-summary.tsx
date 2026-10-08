@@ -15,7 +15,8 @@ const SMALL_BUTTON = "gap-1.5 rounded-10 px-3.5 py-2.5 text-[14px] leading-[norm
 
 /**
  * "Order summary" / "Tax invoice {number}" card (Order.dc.html). Paid orders add SOLD BY / BILLED TO / INVOICE and
- * the print and PDF buttons; with the order page's print stylesheet this card is the printable invoice.
+ * the print and PDF buttons; with the order page's print stylesheet this card is the printable invoice. A corrected
+ * invoice also lists the model's notes ("This invoice replaces …, cancelled by credit note …"), as the PDF does.
  */
 export function InvoiceSummary({ model, pdfHref }: InvoiceSummaryProps) {
   return (
@@ -70,6 +71,14 @@ export function InvoiceSummary({ model, pdfHref }: InvoiceSummaryProps) {
           </div>
         ))}
       </dl>
+      {model.isInvoice && model.extraNotes.length > 0 ? (
+        // A corrected invoice says which invoice it replaces (D18); kept in print, like the PDF.
+        <ul className="mt-3.5 grid list-none gap-1 p-0 text-sm text-ink-2">
+          {model.extraNotes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      ) : null}
       {model.isInvoice ? (
         <div className="mt-5 flex flex-wrap gap-2.5 border-t border-line-subtle pt-4 print:hidden">
           <Button type="button" variant="secondary" className={SMALL_BUTTON} onClick={() => window.print()}>

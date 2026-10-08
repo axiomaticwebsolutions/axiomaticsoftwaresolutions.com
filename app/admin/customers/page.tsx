@@ -1,12 +1,15 @@
 /**
  * /admin/customers (Admin Console.dc.html #customers; customers.view): business accounts with their owner, active
  * licenses, paid orders and lifetime value for the URL state (?q=&filter[gst|state]=&sort=-ltv&page=), and the
- * customer drawer (?id=) with Resend verification / Send password reset (customers.manage).
+ * customer drawer (?id=) with the edit card (customers.edit), Resend verification / Send password reset / Create
+ * set-password link (customers.manage) and Mark email as verified (customers.verify_email), and the "New customer"
+ * drawer (?new=1; customers.create).
  */
 import { Suspense } from "react";
 import { unstable_rethrow } from "next/navigation";
 import { adminPageMetadata } from "@/components/admin/admin-nav";
 import { CustomersView } from "@/components/admin/customers/customers-view";
+import { NewCustomerAction } from "@/components/admin/customers/new-customer";
 import { AdminModulePage } from "@/components/admin/module-page";
 import { getAdminState } from "@/lib/admin/context";
 import { CUSTOMER_DEFAULT_SORT, CUSTOMERS_LIST } from "@/lib/admin/customers/model";
@@ -34,7 +37,14 @@ export default async function AdminCustomersPage({ searchParams }: PageProps) {
     log.warn("admin_customers_unavailable", { error: error instanceof Error ? error.message : String(error) });
   }
   return (
-    <AdminModulePage moduleKey="customers">
+    <AdminModulePage
+      moduleKey="customers"
+      actions={
+        <Suspense fallback={null}>
+          <NewCustomerAction />
+        </Suspense>
+      }
+    >
       <Suspense>
         <CustomersView data={data} states={states} />
       </Suspense>

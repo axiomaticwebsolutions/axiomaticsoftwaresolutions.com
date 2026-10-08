@@ -29,9 +29,11 @@ import {
   type OrderFilterKey,
   type ResendResponse,
 } from "@/lib/admin/orders/model";
+import type { AdminOrderPlanOption } from "@/lib/admin/orders/records-model";
 import { apiFetch } from "@/lib/client/api";
 import { isListFiltered } from "@/lib/url-state";
 import { downloadAdminCsv } from "./download";
+import { NEW_ORDER_PARAM, NewOrderDrawer } from "./new-order";
 import { OrderDrawer } from "./order-drawer";
 import { ORDER_COLUMNS, orderCard } from "./order-columns";
 
@@ -39,6 +41,8 @@ export type OrdersViewProps = {
   /** The page of orders for the URL state, or null when loading failed. */
   list: AdminOrderList | null;
   options: AdminOrderFilterOptions;
+  /** Plans for "New order" and "Edit order" (empty for roles that can do neither). */
+  plans?: readonly AdminOrderPlanOption[];
 };
 
 const getRowId = (row: AdminOrderRow) => row.id;
@@ -47,10 +51,11 @@ const ALL = { value: "all", label: "All" };
 const ORDERS_SEARCH_CLASS = "flex-[1_1_340px]";
 
 /** Orders table (Admin Console.dc.html #orders): URL-synced list, filters, CSV, bulk bar and the order drawer. */
-export function OrdersView({ list: data, options }: OrdersViewProps) {
+export function OrdersView({ list: data, options, plans = [] }: OrdersViewProps) {
   const router = useRouter();
   const list = useListState(ADMIN_ORDERS_LIST);
   const drawer = useDrawerParam();
+  const create = useDrawerParam(NEW_ORDER_PARAM);
   const [selected, setSelected] = React.useState<string[]>([]);
   const [busy, setBusy] = React.useState<"csv" | "selected" | "resend" | null>(null);
   const filtered = isListFiltered(list.applied, ADMIN_ORDERS_LIST);
@@ -179,7 +184,8 @@ export function OrdersView({ list: data, options }: OrdersViewProps) {
           )
         }
       />
-      <OrderDrawer id={drawer.id} open={drawer.isOpen} onOpenChange={drawer.onOpenChange} onChanged={() => router.refresh()} />
+      <OrderDrawer id={drawer.id} open={drawer.isOpen} onOpenChange={drawer.onOpenChange} onChanged={() => router.refresh()} plans={plans} />
+      <NewOrderDrawer open={create.isOpen && !drawer.isOpen} onOpenChange={create.onOpenChange} plans={plans} onCreated={() => router.refresh()} />
     </>
   );
 }

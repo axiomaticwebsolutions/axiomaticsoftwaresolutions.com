@@ -3,7 +3,7 @@ import { createSession } from "@/lib/auth/sessions";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/http";
 import { assertCanActOnOrder, ORDER_LINK_EXPIRED_MESSAGE, resolveOrderAccessFor } from "@/lib/orders/access";
-import { signOrderToken } from "@/lib/orders/token";
+import { signOrderPayToken, signOrderToken } from "@/lib/orders/token";
 import { authOf, makeCustomer, makeStaff, placeOrder, seedCatalog, uniq, type CustomerFixture } from "./checkout-fixtures";
 
 let owner: CustomerFixture;
@@ -60,6 +60,36 @@ describe("resolveOrderAccessFor: tokens", () => {
     expect(e).toBeInstanceOf(ApiError);
     const apiError = e as ApiError;
     expect([apiError.status, apiError.code, apiError.message]).toEqual([403, "order_link_expired", ORDER_LINK_EXPIRED_MESSAGE]);
+  });
+});
+
+describe("resolveOrderAccessFor: staff with an order link (admin records D19)", () => {
+  it("lets a staff session open a payment link it shares, but never makes it the purchaser or lets it act", async () => {
+    const staff = await makeStaff();
+    const access = await resolveOrderAccessFor(guestOrder.orderId, { auth: authOf(staff), token: guestOrder.orderToken });
+    expect(access).toMatchObject({ viaToken: true, isPurchaser: false, canAct: false, viewer: { staff: true } });
+    const e = await denied(Promise.resolve().then(() => assertCanActOnOrder(access)));
+    expect(e).toEqual([403, "staff_checkout"]);
+  });
+});
+
+describe("resolveOrderAccessFor: pay-only links (staff-shared payment links)", () => {
+  it("open the order and let the holder pay, but never deliver the one-time key", async () => {
+    const pay = signOrderPayToken(guestOrder.orderId, "priya@sharmamedicals.example");
+    expect(pay.startsWith("p1.")).toBe(true);
+    const access = await resolveOrderAccessFor(guestOrder.orderId, { auth: null, token: pay });
+    expect(access).toMatchObject({ viaToken: true, tokenScope: "pay", isPurchaser: false, canAct: true });
+    const full = await resolveOrderAccessFor(guestOrder.orderId, { auth: null, token: guestOrder.orderToken });
+    expect(full).toMatchObject({ tokenScope: "full", isPurchaser: true });
+  });
+
+  it("cannot be turned into a full link, and is bound to the order and its email", async () => {
+    const pay = signOrderPayToken(guestOrder.orderId, "priya@sharmamedicals.example");
+    const forged = `o1${pay.slice(2)}`;
+    const upgraded = `p1${guestOrder.orderToken.slice(2)}`;
+    for (const token of [forged, upgraded, signOrderPayToken(guestOrder.orderId, "someone-else@example.test"), signOrderPayToken(accountOrder.orderId, "priya@sharmamedicals.example")]) {
+      expect(await denied(resolveOrderAccessFor(guestOrder.orderId, { auth: null, token }))).toEqual([404, "not_found"]);
+    }
   });
 });
 

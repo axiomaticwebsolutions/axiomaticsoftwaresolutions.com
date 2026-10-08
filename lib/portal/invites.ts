@@ -167,8 +167,8 @@ type ResolvedInvite = {
 
 /**
  * Looks the token up and explains why it cannot be used: 404 `invite_invalid` (malformed, unknown, wrong secret,
- * account gone), 410 `invite_used` (already accepted), 410 `invite_revoked` (revoked, replaced by a newer link, or
- * the person was removed), 410 `invite_expired`.
+ * account gone), 410 `invite_used` (already accepted), 410 `invite_revoked` (revoked, replaced by a newer link, the
+ * person was removed, or their email changed since the link was sent), 410 `invite_expired`.
  */
 export async function resolveInvite(client: PrismaClient | Tx, rawToken: string, now: Date): Promise<ResolvedInvite> {
   const invalid = () => new ApiError(404, "invite_invalid", INVITE_MESSAGES.invalid);
@@ -192,6 +192,9 @@ export async function resolveInvite(client: PrismaClient | Tx, rawToken: string,
   }
   if (!member) throw new ApiError(410, "invite_revoked", INVITE_MESSAGES.revoked);
   if (member.status === "ACTIVE") throw new ApiError(410, "invite_used", INVITE_MESSAGES.used);
+  // The link was mailed to token.email: once the person's sign-in email changed (staff edit a customer's email in
+  // Admin > Customers), whoever holds the old address's link must not set the password of the new one.
+  if (token.email.trim().toLowerCase() !== invitee.email.trim().toLowerCase()) throw new ApiError(410, "invite_revoked", INVITE_MESSAGES.revoked);
   if (token.expiresAt.getTime() <= now.getTime()) throw new ApiError(410, "invite_expired", INVITE_MESSAGES.expired);
   return { token, meta, member, account, invitee };
 }

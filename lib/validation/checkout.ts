@@ -96,6 +96,16 @@ export const orderActionRequestSchema = z.strictObject({
 
 export type OrderActionRequest = z.output<typeof orderActionRequestSchema>;
 
+/**
+ * POST /api/checkout/orders/:id/retry: `acceptTerms` is required (true) when the order was created by staff and its
+ * customer has not accepted the terms yet (Admin > Orders payment links); otherwise it may be omitted.
+ */
+export const retryRequestSchema = orderActionRequestSchema.extend({
+  acceptTerms: z.literal(true, { error: CHECKOUT_ERRORS.acceptTerms }).optional(),
+});
+
+export type RetryRequest = z.output<typeof retryRequestSchema>;
+
 /** POST /api/checkout/orders/:id/return: what the hosted checkout hands back to the browser. */
 export const orderReturnRequestSchema = z.strictObject({
   providerPaymentId: z.string().trim().regex(/^[A-Za-z0-9_-]{1,128}$/, { message: "The payment reference isn’t valid." }),

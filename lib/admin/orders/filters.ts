@@ -2,7 +2,7 @@
  * Prisma `where` / `orderBy` for the admin order list and export (pure: no database access, unit-tested).
  *
  * Search classifies the term first so the common lookups use an index at scale: an order id ("AX-10294") is an id
- * prefix, an invoice number an exact match, a provider id ("pay_...", "order_...") an exact match on Payment, a GSTIN
+ * prefix, an invoice number an exact match (also an invoice a billing correction cancelled, or its credit note), a provider id ("pay_...", "order_...") an exact match on Payment, a GSTIN
  * an exact JSON match, an email a case-insensitive match on Order.email. Anything else searches id, email, business,
  * billing name, account name, GSTIN and invoice number (case-insensitive contains).
  */
@@ -31,7 +31,14 @@ export function orderSearchWhere(q: string): Where | undefined {
   if (!term) return undefined;
   const upper = term.toUpperCase();
   if (ORDER_ID_RE.test(term)) return { id: { startsWith: upper } };
-  if (DOCUMENT_NO_RE.test(term)) return { invoice: { is: { number: upper } } };
+  if (DOCUMENT_NO_RE.test(term)) {
+    return {
+      OR: [
+        { invoice: { is: { number: upper } } },
+        { invoiceCorrections: { some: { OR: [{ originalInvoiceNo: upper }, { creditNoteNo: upper }] } } },
+      ],
+    };
+  }
   if (PROVIDER_ID_RE.test(term)) {
     return { payments: { some: { OR: [{ providerPaymentId: term }, { providerOrderId: term }] } } };
   }
@@ -46,6 +53,7 @@ export function orderSearchWhere(q: string): Where | undefined {
       { billing: { path: ["gstin"], string_contains: upper } },
       { account: { is: { legalName: { contains: term, mode: "insensitive" } } } },
       { invoice: { is: { number: { contains: upper } } } },
+      { invoiceCorrections: { some: { originalInvoiceNo: { contains: upper } } } },
     ],
   };
 }

@@ -47,7 +47,9 @@ decision taken where the handoff was silent, contradictory, or out of date. Acce
    To be confirmed with the company CA.
 4. **Invoice numbers**: `AXS/<FY>/<4-digit>` e.g. `AXS/26-27/1181`. FY = April-March in Asia/Kolkata, from `paidAt`.
    Gap-free per FY via `Counter("invoice:<FY>")`, allocated inside the payment transaction. Seed continues at 1181.
-   Prefix base (`AXS`) is editable (<= 3 chars [A-Z0-9-]); the next number is read-only. Credit notes `AXC/<FY>/<4-digit>`.
+   Prefix base (`AXS`) is editable (<= 3 chars [A-Z0-9-]); the next number is read-only. Credit notes `AXC/<FY>/<4-digit>`
+   from `Counter("creditnote:<FY>")`, one gap-free series shared by refunds and (2026-10-08) billing corrections; a
+   billing correction also takes the next invoice number for the corrected invoice (see "Admin records" below).
    GST (CGST Rules 46(b), 53) caps the number at 16 characters: `AXS/26-27/` leaves 6 digits, i.e. 999,999 documents
    per FY (a 2-char prefix allows 9,999,999). `lib/counters.ts` never returns a longer number: it throws
    `DocumentSeriesExhaustedError` (payment transaction rolls back, order goes to REVIEW) and logs
@@ -63,6 +65,10 @@ decision taken where the handoff was silent, contradictory, or out of date. Acce
 7. **Staff permissions** (`lib/rbac.ts` is the only source): the handoff PERMS map plus
    `customers.manage` (owner, admin, support), `payments.replay` (owner, admin, finance),
    `orders.resend_invoice` (all staff), `renewals.remind` (owner, admin, support).
+   Admin records (2026-10-08): `customers.create`, `customers.edit` and `customers.verify_email` (owner, admin,
+   support); `customers.manage` also covers set-password links; `orders.create`, `orders.edit`,
+   `payments.record_offline` and `invoices.correct` (owner, finance). Counts: Owner 29, Administrator 21, Support 11,
+   Finance 12 (29 permissions). See "Admin records" below.
    Every CSV export requires `reports.export` (audit export requires `audit.view`) and is itself audited.
 8. **Customer team roles** follow the portal matrix (TEAM_PERMS in `lib/rbac.ts`): Technical can view invoices;
    only Owner and Billing can buy/renew/upgrade; Viewer can read tickets but not create/reply;
@@ -91,7 +97,10 @@ decision taken where the handoff was silent, contradictory, or out of date. Acce
 ## Other assumptions
 - Portal routes live under `/account/...` (the README's `/software` collides with the catalog).
 - "Licenses only in the webhook" applies to paid licenses. Trials and staff manual issue go through the same
-  `issueLicense()` on separately audited paths; checkout and the payment return can never reach it.
+  `issueLicense()` on separately audited paths; checkout and the payment return can never reach it. The one
+  documented exception for paid orders (2026-10-08): an offline payment Owner or Finance record in Admin > Orders
+  runs the webhook's own `fulfilPaidOrder()` (lib/payments/fulfilment.ts) in one transaction with the order, with a
+  reason, an amount equal to the server total, a double-submit guard and one audit row (D12 below; docs/security.md).
 - License keys: `<CODE>-XXXX-XXXX-XXXX-XXXX`, alphabet `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` drawn with
   `crypto.randomInt`. Stored as HMAC-SHA256 (pepper) + AES-256-GCM ciphertext (`v1.<iv>.<tag>.<ct>`, base64url) +
   last 4. The sample key `GST-TRIA-...` contains `I`, which the format bans, so the seed replaces it.
@@ -843,7 +852,8 @@ Open items (owner decisions and later phases)
 - Jobs: close RESOLVED tickets 14 days after resolution (store CLOSED + closedAt); delete PENDING uploads older than
   24 h with their files; purge or redact the html/text of SENT team_invite outbox rows.
 - Register flow: an invited address has a password-less placeholder user, so /register answers 409 `email_taken` until
-  the invitation is accepted or revoked; consider letting registration take over the placeholder.
+  the invitation is accepted or revoked; consider letting registration take over the placeholder. (Done in the Phase 5
+  build below; since 2026-10-08 a customer staff created in Admin > Customers is never a placeholder.)
 - `POST /api/account/trials` still issues a trial when the account holds a working paid license of the product (the
   portal no longer offers it); consider 409.
 - `GET /api/me/sessions` is unpaged; `GET /api/account/billing` returns the newest 100 payments (a server
@@ -859,7 +869,8 @@ Open items (owner decisions and later phases)
   invitation, even after being made Owner there. A user with no own account leaves the orders unclaimed. (Fixes a
   review finding: an Owner could otherwise capture a stranger's guest orders by inviting and promoting them.)
 - Registration and checkout "Create an account" take over an invited address's placeholder user; the invitation
-  stays pending and its link then needs a sign-in.
+  stays pending and its link then needs a sign-in. A customer staff created (`User.createdByStaffId`, 2026-10-08) is
+  never a placeholder, even before they set a password or verify the email: registering that address answers 409.
 - Ticket uploads: the presigned PUT lasts 5 minutes and signs Content-Type and the exact Content-Length; a size
   mismatch at confirm deletes the object (`StorageDriver.delete`). Production S3 needs a bucket CORS rule for PUT
   from the site origin.
@@ -1090,7 +1101,8 @@ Open items (owner decisions and later phases)
 - HSTS: `max-age=31536000` by default for the test release; `includeSubDomains; preload` only when
   SECURITY_HSTS_STRICT=1 (turn on before live sales once every subdomain serves HTTPS).
 - Trusted-device cookies carry User.securityEpoch; it is bumped on password reset/change, staff deactivation or role
-  change and turning two-step off, which invalidates every trusted device at once.
+  change, turning two-step off and (2026-10-08) a staff change of a customer's email, which invalidates every trusted
+  device at once.
 - Maintenance job (`/api/cron/maintenance`, daily): close tickets RESOLVED for 14 days, delete PENDING uploads older
   than 24 h (storage + row), redact bodies of SENT outbox emails older than 30 days, purge expired rate-limit buckets,
   sessions and auth tokens older than 30 days past expiry, AccountActivity older than 24 months, WebhookDelivery older
@@ -1120,8 +1132,8 @@ Security (docs/security.md):
   `includeSubDomains; preload` when SECURITY_HSTS_STRICT is true; read by `next build`, so turning it on needs a
   deploy, not a restart. `deploy/.env.production.example` carries `SECURITY_HSTS_STRICT=false`.
 - Trusted-device cookies are version 2 and carry User.securityEpoch, bumped in the same transaction on password reset
-  and change, staff deactivation, reactivation and role change, and turning two-step off
-  (tests/db/security-epoch.test.ts). Version 1 cookies are refused (one extra code per trusted device).
+  and change, staff deactivation, reactivation and role change, turning two-step off and (2026-10-08) a staff email
+  change in Admin > Customers (tests/db/security-epoch.test.ts). Version 1 cookies are refused (one extra code per trusted device).
 - `lib/log.ts` also masks Bearer tokens, Authorization values and secret-looking name=value pairs in free text.
 - Storefront links into /account and /admin stay client navigations (S4 in owner-decisions.md).
 
@@ -1421,3 +1433,185 @@ in production, integration values without their `PAYMENT_PROVIDER` / `EMAIL_TRAN
 reported as incomplete (naming the selector) instead of "not in the server file"; and the first-run bootstrap only
 uses the test-mode storefront notice when the env file explicitly selects the mock provider or an `rzp_test_` key,
 since payments are normally saved in Admin afterwards, possibly with live keys.
+## Admin records: customers and orders (owner decisions, 2026-10-08)
+
+The owner asked for staff to confirm a customer's email by hand and to create and edit customers and orders in the
+Admin console. The implementation contract is `docs/admin-records-design.md` (decisions D1-D20). PART A (customers) and
+PART B (orders) are recorded here.
+
+PART A, customers (Admin > Customers & business accounts; Owner, Administrator and Support; Finance keeps read access):
+- **D1 (data, 2026-10-08).** Additive migration `admin_records_customers`: `User.createdByStaffId` (the staff user who
+  created the customer). The order columns and the `InvoiceCorrection` table of D1 come with PART B in their own
+  additive migration (deviation from "one migration", recorded in the design document).
+- **D2 (permissions, 2026-10-08).** `customers.create`, `customers.edit` and `customers.verify_email` for Owner,
+  Administrator and Support. `customers.manage` also covers set-password links. Counts are now Owner 25, Administrator
+  21, Support 11, Finance 8 (25 permissions); PART B adds the four order permissions.
+- **D3 (confirmations, 2026-10-08).** `customers.verify_email` ("Mark verified") and `customers.set_password_link`
+  ("Create link") are `DESTRUCTIVE_ACTIONS`: one-click confirmations with a reason, no typed id. Customer create and
+  edit are forms with a reason field (`requireReason()`).
+- **D4 (reasons, 2026-10-08).** Every new customer write needs a reason (4-500 characters), checked before anything
+  else, and writes one AuditLog row with field names only (never the link, a token or a full old address). A no-op
+  (an already verified email, an edit that changes nothing) answers `changed: false` and writes nothing.
+- **D5 (no password, 2026-10-08).** A customer staff create has no password. The staff member sees a single-use
+  set-password link once (201 body, `no-store`, never logged or audited): a `PASSWORD_RESET` token with
+  `meta.purpose = "set_password"`, valid 7 days, opened on the existing `/reset` page, which reads "Set your password"
+  while the account has none (`GET /api/auth/reset-password` returns `mode`). The same link is emailed directly with the
+  new `set_password` template; a failed email never blocks the creation. A new link voids the older open ones, and a
+  set-password link is refused once the account has a password.
+- **D6 (no takeover, 2026-10-08).** `createdByStaffId` users are never placeholders (`PLACEHOLDER_USER_WHERE`,
+  `isPlaceholderUser`), so `/register` and checkout "Create an account" for that address answer 409 `email_taken`
+  instead of setting a password on the account staff set up. `/forgot` sends such a user (no password yet) a 30-minute
+  set-password link with the `set_password` email instead of nothing. Sample users and team-invite placeholders stay
+  locked. Creating a customer for an address that only has a team-invite placeholder takes the row over; its pending
+  invitations stay.
+- **D7 (verification, 2026-10-08).** Completing a set-password link does not verify the email (a copied link proves
+  only that someone has it). Staff verify on purpose: "Email already verified" when creating, "New email already
+  verified" when changing the email, or "Mark email as verified".
+- **D8 (guest orders, 2026-10-08).** Marking an email verified (or creating / editing with "verified") voids open
+  verification codes and claims that address's guest orders in the same transaction, exactly as code verification
+  does (into the account the person created and owns). The confirmation says so.
+- **D9 (email change, 2026-10-08).** An email change by staff bumps `securityEpoch`, revokes every session, voids open
+  EMAIL_VERIFY, PASSWORD_RESET and LOGIN_OTP tokens, clears verification unless "verified" is ticked (needs
+  `customers.verify_email`) and queues `account_email_changed` (outbox) to the **old** address with a hint of the new
+  one. Order email snapshots and the old address's guest orders do not move. Name, mobile and email belong to the
+  person and change in every account they are in; the form says so.
+- Rate limits: `adminCustomerCreate` 30 / hour per staff member, `adminCustomerWrite` 60 / 10 min per staff member
+  (edit, verify, set-password link) and `adminSetPasswordLink` 5 / hour per customer (separate from `forgotEmail`,
+  which anyone can fill through /forgot).
+- Existing actions: "Resend verification" and "Send password reset" still answer 409 `no_password` for people without
+  a password; for an active customer member the message now points to "Create set-password link".
+- Audit rows of customers (`targetType` `customer`, `targetId` the business account) open the customer drawer from
+  the audit log. Activity entries written by staff read "Axiomatic team" (no member actor).
+
+PART B, orders (Admin > Orders & payments; Owner and Finance; Administrator and Support keep read access and "Resend
+invoice"):
+- **D1 (data, 2026-10-08).** Additive migration `admin_records_orders`: `Order.createdByStaffId`,
+  `Order.staffRequestId` (unique), `Order.canceledByStaffAt`; `Payment.reference`, `receivedAt`, `recordedById` and
+  `supersededAt`; the append-only `InvoiceCorrection` table. No enum changes; nothing becomes nullable.
+- **D2 (permissions, 2026-10-08).** `orders.create` (quote, payment-link orders, re-sharing links), `orders.edit`
+  (unpaid-order edits and cancels), `payments.record_offline` and `invoices.correct`, each for Owner and Finance.
+  Counts: Owner 29, Administrator 21, Support 11, Finance 12 (29 permissions).
+- **D3 (confirmations, 2026-10-08).** `orders.cancel` ("Cancel order", `orders.edit`) is a `DESTRUCTIVE_ACTIONS` key:
+  a one-click confirmation with a reason, no typed id. Create, offline payment, edit and billing correction are forms
+  with a reason field (`requireReason()`).
+- **D4 (reasons, 2026-10-08).** Every new order write needs a reason (4-500 characters), checked before any lookup or
+  write; the read-only quote, re-sharing or emailing an existing payment link (audited "Shared payment link") and the
+  PDF downloads need none. Audit rows carry field names, amounts and document numbers, never tokens, links or keys.
+- **D10 (payment links, 2026-10-08).** A payment-link order is built by checkout's own code (`assertPricedCart`,
+  `orderCreateData`, priced with `priceCart` for the account's Owner) and stored AWAITING_PAYMENT with **no** payment
+  attempt and no provider call; `placedByUserId` stays null (the owner did not place it; the portal says "by Axiomatic
+  team"). The console shows the tokenised order link (30 days) once with a Copy button, and `order_payment_link`
+  (outbox) emails it. The customer's first "Pay now" goes through the existing retry path, which creates the provider
+  order at the order's current total. Licenses come only from the verified webhook (rule unchanged). Known limit: such
+  an order holds no coupon slot until the first "Pay now"; a coupon used up meanwhile answers 409
+  `order_unavailable`, and staff edit the order or create a new one.
+- **D11 (terms, 2026-10-08).** Staff cannot accept the terms for the customer. The order page of a staff-created order
+  shows the checkout terms checkbox above "Pay now", and `POST /api/checkout/orders/:id/retry` needs
+  `acceptTerms: true` (422 `acceptTerms`) until `termsAcceptedAt` is recorded with the attempt.
+- **D12 (offline payments, 2026-10-08).** "Record a payment we've received" (cash, UPI, bank transfer, cheque, other;
+  `payments.record_offline`) creates the order, an offline `Payment` (provider `offline`, CAPTURED, providerOrderId
+  `offline:<order id>`, reference, `receivedAt` = the IST day received, `recordedById`) and runs the webhook's own
+  `fulfilPaidOrder()` in ONE transaction: licenses with sealed keys and terms snapshots, the late invoice number, the
+  coupon redemption, account activity, notifications and the confirmation and license emails. The amount must equal the
+  server total (no partial payments); the received date must be within 180 IST days and not in the future; UPI, bank
+  transfers and cheques need a reference. `paidAt` is the moment staff record it (invoice numbers stay in date order and
+  license terms start at delivery); the received date is stored apart. A fulfilment error rolls everything back and
+  answers 409 `fulfilment_failed` (no REVIEW: no money moved through us). One audit row "Recorded offline payment" and
+  no "Webhook processed" row. This is the only exception to "licenses only from the webhook" for paid orders.
+- **D13 (double submit, 2026-10-08).** The console generates `requestId` when the "New order" drawer opens and keeps it
+  across retries; `Order.staffRequestId` is unique. A repeat by the same staff member returns the first order
+  (`replayed: true`, 200) and stores nothing; a concurrent repeat's unique violation is answered the same way; another
+  staff member's repeat, or a payment-link request replayed as an offline payment, is 409 `duplicate_request`.
+- **D14 (stale attempts, 2026-10-08).** Editing an unpaid order (items, coupon, billing; AWAITING_PAYMENT, FAILED or
+  customer-cancelled, never while a payment settles) re-prices it with `priceCart` (its own coupon slot excluded),
+  replaces its lines, updates totals, email and place of supply, cancels every CREATED attempt and stamps open,
+  cancelled and failed attempts `supersededAt`. A late capture of a stamped attempt goes to REVIEW
+  (`SUPERSEDED_ATTEMPT_REASON`, no licenses), and `retryPayment` reopens a CREATED attempt only when its amount equals
+  the order total (and re-checks the total and the staff cancel inside its transaction). `termsAcceptedAt` is kept. An
+  email change makes old order links invalid; the drawer shows the new link. The account of an order never changes.
+- **D15 (staff cancel, 2026-10-08).** "Cancel order" sets CANCELED and `canceledByStaffAt` (and closes open
+  attempts). Retry refuses such orders (409 `not_retryable`), the order page reads "Order cancelled" with "Contact
+  support" only, and a second cancel answers `changed: false` without a new audit row. The customer's own cancel is
+  unchanged.
+- **D16 (corrections, Option A, 2026-10-08).** A billing correction appends an `InvoiceCorrection` row (credit note
+  number, the cancelled original's number, date, billing and seller, the new invoice number, the corrected billing,
+  amounts, changed field names, reason, staff), renumbers the `Invoice` row in place (new number, date and seller
+  snapshot) and updates `Order.billing`, in one transaction with both counter rows locked (gap-free). Every reader of
+  `order.invoice` sees the current invoice. Reports count every invoice once in the month it was issued (current
+  invoices by `Invoice.issuedAt`, cancelled originals by `InvoiceCorrection.originalIssuedAt`) and every credit note
+  in its month, so the correction month nets to zero and the original month is unchanged. The sales register lists
+  the cancelled originals ("Cancelled by AXC/…") and marks the replacement ("Replaces AXS/…"); the refunds register
+  shows "Billing correction".
+- **D17 (correction limits, 2026-10-08).** Only PAID orders with an invoice and no PENDING or PROCESSED refund (409
+  `not_correctable`). Name, mobile, business, address, city, PIN and GSTIN may change; the billing state (place of
+  supply) and the email may not (422), nor a GSTIN registered in another state; with the place of supply fixed and the
+  seller's state required to match the original invoice (409 `seller_state_changed` otherwise), the CGST/SGST/IGST
+  split cannot change. Adding or removing a same-state GSTIN changes only B2B/B2C reporting. Amounts, items, licenses,
+  payments, `paidAt`, the email and the place of supply are never touched. A refund afterwards takes the next credit
+  note number of the same series.
+- **D18 (documents, 2026-10-08).** The invoice model renders a credit note (title "Credit note", "CREDIT NOTE NO.",
+  "AGAINST INVOICE" with the cancelled invoice and its date, "Total credited", the reason note and "Replaced by tax
+  invoice …") and a corrected invoice carries "This invoice replaces …, cancelled by credit note …". Staff open the
+  credit note from the drawer (`GET /api/admin/orders/:id/credit-notes/:noteId`, orders.view) and customers download
+  it from the order page (`GET /api/orders/:id/credit-notes/:noteId`, the invoice PDF's access rules).
+- **D19 (key delivery, 2026-10-08).** A staff session is never the purchaser (`isPurchaser = false`), even with a valid
+  order link, so opening a shared payment link after payment never uses up the customer's one-time key view.
+- **D20 (offline refunds, 2026-10-08).** Orders paid offline cannot be refunded in the console in this release: the
+  refund action is shown disabled with "Refunds of offline payments aren’t available in the console yet." and the API
+  answers 409 `not_refundable`. Follow-up: a "record offline refund" path (a PROCESSED refund without a provider call,
+  a credit note and the license reversal).
+- Rate limits: `adminOrderQuote` 120 / 10 min, `adminOrderCreate` 30 / hour (payment-link and offline orders share it)
+  and `adminOrderWrite` 60 / 10 min (edit, cancel, payment link, billing correction), per staff member.
+- Console: "New order" (`?new=1`) with a customer search, item rows (plan, type, target license, quantity), coupon,
+  billing prefilled from the customer, the live server quote (debounced 300 ms) and "How will they pay?"; the order
+  drawer gains the "Edit order" card (unpaid orders), "Payment link", "Cancel order", "Correct billing", "Invoice
+  corrections" with each credit note's PDF, "Created by … (staff)", offline payment details and a disabled refund
+  for offline payments. The Provider filter lists "Offline"; the Method filter adds Cash, Bank transfer, Cheque and
+  Other.
+
+### Admin records review fixes (2026-10-08)
+
+A security, money and UI review of the admin records build. Each fix is in the code, the tests and docs/security.md.
+
+- **R1 (team invitations on an email change).** A staff email change also voids the person's open TEAM_INVITE links,
+  and accepting a team invitation is refused (410 `invite_revoked`) whenever the invitee's email is no longer the
+  address the link was mailed to (`lib/portal/invites.ts`). Without this, the old address's link could set the password
+  of a customer without one and verify the new address. The audit row says how many invitations were voided; the
+  inviting owner resends.
+- **R2 (pay-only payment links; amends D19).** The payment links staff copy, re-share or have emailed
+  (`order_payment_link`) are pay-only order links (`lib/orders/token.ts` "p1", signed over `order-pay:p1:…`). They open
+  the order, its invoice and "Pay now" but never the one-time key view, also signed out, and a payment started from one
+  answers with a pay-only token. The customer gets the key from the order_confirmation email (a full link signed at
+  payment) or reveals it in their account. A replay of a payment-link submit whose order was paid or cancelled since
+  answers 409 `not_payable` instead of a fresh link.
+- **R3 (staff never act on a customer's order; amends D11).** A staff session is never `canAct` on an order: retry,
+  cancel and the payment return answer 403 `staff_checkout`, so staff cannot accept the terms or start a payment for
+  the customer even with the link. A signed-out holder of the link can (it cannot be told apart from the customer), so
+  the link should only go to the customer.
+- **R4 (guest claims are listed).** Staff verification (create with "Email already verified", an email change ticked
+  verified, "Mark email as verified") lists the guest orders it moved by id in the audit row, and PATCH returns
+  `claimedOrders`. Accepted risk, kept by owner decision: Owner, Administrator and Support may all verify, so a
+  dishonest staff member could take over a guest buyer's address; the audit row, the notice email and /forgot are the
+  controls. Refusing verification when guest orders exist was rejected: it would block the main use (customers whose
+  verification email does not arrive).
+- **R5 (late failures after a staff edit or cancel).** A `payment.failed` for an attempt a staff edit or cancel replaced
+  (`supersededAt`), or for any attempt of an order staff cancelled, is recorded on the attempt only: the order keeps its
+  status (AWAITING_PAYMENT or CANCELED) and no payment_failed email is queued (`stale_attempt`).
+- **R6 (lock order).** `fulfilPaidOrder()` locks the order's coupon row before the license and invoice counters, so the
+  webhook, offline payments, retries and unpaid-order edits all lock order, coupon, counters in that order and cannot
+  deadlock on a shared coupon. An offline payment that still hits a deadlock or lock timeout answers 503 `try_again`
+  (nothing stored).
+- **R7 (concurrent double submit).** Any failure of an offline payment or payment-link submit (the unique requestId, a
+  limited coupon's last slot taken by the first submit at pricing or under the lock, the amount) first looks for the
+  order the same `requestId` created and answers it as a replay, so staff are never told "coupon used up" for a payment
+  that was recorded.
+- **R8 (seller registration).** A billing correction is also refused (409 `seller_state_changed`, reworded "state or
+  GSTIN") when the business GSTIN in Settings differs from the original invoice's: the credit note must come from the
+  registration that issued the invoice it cancels.
+- **R9 (console).** The "New order" customer picker keeps its result list (controlled radios, "Selected: …" hint) so
+  arrow keys never drop focus; the payment link an unpaid-order email change produces stays on screen after the reload;
+  "Cancel order" offers "Keep order" as its dismiss button; the "Payment link" dialog keeps focus inside while loading
+  and moves it to a refusal; offline-payment refusals without a field stay in the confirmation dialog; the quote summary
+  says what is missing and clears a failed quote (no stale total or amount hint); quote issues describe the Plan select;
+  re-share and email copy no longer assume a staff-prepared order; the printable invoice card shows "This invoice
+  replaces …".

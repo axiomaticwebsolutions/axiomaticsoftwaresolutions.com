@@ -51,7 +51,7 @@ const planSelect = {
  */
 export async function loadPricingContext(
   db: Db,
-  input: { planIds: readonly string[]; couponCode?: string | null; now?: Date },
+  input: { planIds: readonly string[]; couponCode?: string | null; now?: Date; excludeOrderId?: string | null },
 ): Promise<PricingContext> {
   const ids = [...new Set(input.planIds)];
   const code = input.couponCode ? normalizeCouponCode(input.couponCode) : "";
@@ -65,7 +65,7 @@ export async function loadPricingContext(
   for (const row of planRows) plans.set(row.id, { ...row, product: { ...row.product } });
 
   const held =
-    couponRow && couponRow.maxRedemptions !== null && input.now ? await heldCouponSlots(db, couponRow.code, { now: input.now }) : 0;
+    couponRow && couponRow.maxRedemptions !== null && input.now ? await heldCouponSlots(db, couponRow.code, { now: input.now, excludeOrderId: input.excludeOrderId ?? null }) : 0;
   const coupon: CouponRule | null = couponRow
     ? {
         code: couponRow.code,

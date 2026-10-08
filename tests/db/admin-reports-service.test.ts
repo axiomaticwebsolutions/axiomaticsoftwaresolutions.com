@@ -222,7 +222,7 @@ describe("exports", () => {
   it("sales register: one row per invoice issued in the range, amounts in rupees, IST dates", async () => {
     const built = await buildReportExport(db, "sales-register", { range: "12m", now: NOW });
     expect(built.rows.map((r) => r[0])).toEqual([invoices.o3, invoices.o1, invoices.o2]);
-    expect(built.rows[2]).toEqual([invoices.o2, o2Id, "2033-06-02", "Priya Sharma", "27ABCDE1234F1Z5", "Karnataka", "5000.00", "0.00", "0.00", "900.00", "5900.00", "Refunded"]);
+    expect(built.rows[2]).toEqual([invoices.o2, o2Id, "2033-06-02", "Priya Sharma", "27ABCDE1234F1Z5", "Karnataka", "5000.00", "0.00", "0.00", "900.00", "5900.00", "Refunded", ""]);
     expect(built.rows[1]?.[3]).toBe("Sharma Medicals");
     expect(built.scope).toBe("Last 12 months (1 Jul 2032 \u2013 15 Jun 2033)");
   });

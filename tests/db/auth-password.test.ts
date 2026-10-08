@@ -124,7 +124,7 @@ describe("reset password", () => {
   it("sets the new password, revokes every session and sends the user to sign in", async () => {
     const { user, sessions } = await withSessions(2);
     const token = await linkFor(user.email);
-    expect(await inspectResetToken(token, ctx(at(1)))).toEqual({ email: user.email });
+    expect(await inspectResetToken(token, ctx(at(1)))).toEqual({ email: user.email, mode: "reset" });
     const result = await resetPassword({ token, password: OTHER_PASSWORD }, ctx(at(1)));
     expect(result).toMatchObject({ redirectTo: "/sign-in?reset=1", userId: user.id, revokedSessions: 2 });
     for (const s of sessions) expect(await resolveSession(db, s.token, at(2))).toBeNull();

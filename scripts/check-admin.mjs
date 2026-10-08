@@ -8,18 +8,21 @@
  *     [--roles=owner,admin,support,finance] [--widths=1280,360] [--concurrency=3] [--shots=<dir>] [--json=<file>]
  *     [--keep-data] [--keep-limits] [--verbose]
  *
- *   pages    Every /admin module (lib/rbac.ts ADMIN_MODULES), My profile, a few drawers (?id=) and an unknown admin URL, for each
- *            role at each width: HTTP 200 (the unknown URL shows the noindex in-shell "Page not found"), the
- *            permission-denied panel exactly on the modules lib/rbac.ts locks for the role (and the sidebar lock on the
- *            same modules), no console errors, page errors, 404s or 5xx responses, no horizontal overflow, one <h1> and
- *            one main landmark, and no axe-core violations (WCAG 2.0 A/AA and 2.1 AA).
- *   reasons  Every destructive or reason-bearing admin API (DESTRUCTIVE_ACTIONS plus release withdraw, order review and
- *            the bulk license and plan actions) answers 422 `reason_required` without a reason and 422 with a
+ *   pages    Every /admin module (lib/rbac.ts ADMIN_MODULES), My profile, a few drawers (?id=, and the "New customer"
+ *            and "New order" drawers ?new=1) and an unknown admin URL, for each role at each width: HTTP 200 (the unknown URL shows the
+ *            noindex in-shell "Page not found"), the permission-denied panel exactly on the modules lib/rbac.ts locks
+ *            for the role (and the sidebar lock on the same modules), no console errors, page errors, 404s or 5xx
+ *            responses, no horizontal overflow, one <h1> and one main landmark, and no axe-core violations (WCAG 2.0
+ *            A/AA and 2.1 AA).
+ *   reasons  Every destructive or reason-bearing admin API (DESTRUCTIVE_ACTIONS plus release withdraw, order review, the
+ *            bulk license and plan actions, customer create and edit, order create with a payment link or an offline
+ *            payment, order edit and billing correction) answers 422 `reason_required` without a reason and 422 with a
  *            2-character one, as the Owner, against real records (an invited staff member's invitation, a draft
- *            release and its installer when the data has them); nothing changes (no audit rows; the license,
- *            category, release, installer, staff, coupon, FAQ, plan and product targets are unchanged). In the UI,
- *            "Revoke invitation" (staff drawer of an invited member) keeps its confirm button disabled until a
- *            reason of 4+ characters is typed, then is cancelled.
+ *            release and its installer when the data has them); nothing changes (no audit rows; the license, category,
+ *            release, installer, staff, coupon, FAQ, plan, product, customer and paid-order targets are unchanged; no
+ *            reason-check customer or order is created). In the UI, "Revoke invitation" (staff drawer of an
+ *            invited member) keeps its confirm button disabled until a reason of 4+ characters is typed, then is
+ *            cancelled.
  *   admin    Vikram changes a plan price (audit row "old -> new"; the storefront product page shows the new price
  *            after revalidation; the price is then restored), creates a draft release, uploads a small installer
  *            ("Remove" installer and "Delete draft" both refuse to confirm without a reason, then are cancelled),
@@ -28,10 +31,14 @@
  *            audit row with the reason), and creates, activates, pauses and deletes a coupon.
  *   support  Sneha replies to a ticket that Priya (Sharma Medicals) opened and adds an internal note: the portal shows
  *            the reply, never the note. She suspends and reinstates a license with reasons. Finance cannot open
- *            Tickets (403).
+ *            Tickets (403). She then creates a customer in "New customer" (one-time set-password link shown and copied
+ *            through a stubbed clipboard, never in an audit row), marks the email verified and edits the mobile number.
  *   finance  Priya buys a license with the mock provider; Karan cannot revoke it (disabled button, API 403), then
  *            refunds the order with a reason and the typed order id: the license is revoked in Priya's portal and the
- *            refund carries a credit note number.
+ *            refund carries a credit note number. Karan then creates an order for Priya's business in "New order" with a
+ *            payment link (signed out, the link shows "Ready for payment"; no license yet), records an offline payment
+ *            for another order (paid, invoiced and licensed at once) and corrects its billing in the drawer: a credit
+ *            note and a new invoice, listed under "Invoice corrections", whose credit-note PDF downloads.
  *   owner    The Owner invites a staff member (accepted from the /dev/mailbox link in a fresh browser), changes their
  *            role, edits a setting (audit row; then restored) and exports the audit log CSV.
  *
@@ -39,13 +46,15 @@
  * (`pnpm db:seed`; SEED_OWNER_EMAIL / SEED_OWNER_PASSWORD / SEED_DEMO_PASSWORD in .env.local) and DATABASE_URL in
  * .env.local. With TRUSTED_PROXY_HOPS=0 every local request shares the "unknown" IP rate-limit buckets, so the script
  * first deletes those rows (local servers only; --keep-limits skips it). Afterwards it removes exactly the rows the
- * journeys created (recorded by id: the order and its license, payments, refund, invoice and webhooks; the release and
- * its files; the category; the ticket; the invited staff member; and the audit, activity, notification, outbox and license-event
+ * journeys created (recorded by id: the orders and their licenses, payments, refunds, invoice corrections, invoices and
+ * webhooks; the release and
+ * its files; the category; the ticket; the invited staff member; the customer Support created (membership, tokens,
+ * activity, account, user); and the audit, activity, notification, outbox and license-event
  * rows written during the journeys), unless --keep-data (local servers only). Counter values used up (order, invoice,
  * credit note, license and ticket numbers) are never lowered. Every browser session it opened is signed out. Never
  * prints passwords, keys, codes or tokens. Exit code 1 when any check fails.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import AxeBuilder from "@axe-core/playwright";
@@ -154,6 +163,9 @@ const created = {
   accountIds: [],
   emails: [],
   targets: [],
+  /** Customers (user + their own business account) Support creates in Admin > Customers. */
+  customerUserIds: [],
+  customerAccountIds: [],
 };
 const remember = (key, value) => {
   if (value !== null && value !== undefined && !created[key].includes(value)) created[key].push(value);
@@ -252,7 +264,20 @@ async function loadFixtures() {
     ticket: ticket?.id ?? null,
     otherStaff: otherStaff.id,
     audit: audit?.id ?? null,
+    // A valid "New order" body for Priya's business (the reason checks send it without a reason).
+    orderInput: {
+      requestId: randomUUID(),
+      accountId: customer.accountId,
+      items: [{ planId: buyPlan.id, qty: 1 }],
+      couponCode: null,
+      billing: ORDER_BILLING(customer.legalName),
+    },
   };
+}
+
+/** Billing details of the orders the checks create for Priya's business (Maharashtra, like the seller). */
+function ORDER_BILLING(business) {
+  return { name: "Priya Sharma", email: USERS.customer.email, phone: "9820012345", business, address: "12 MG Road", city: "Pune", state: "Maharashtra", pin: "411001" };
 }
 
 // ---------- browser ----------
@@ -455,6 +480,10 @@ function pageRoutes(fx) {
     { key: "licenses", path: `/admin/licenses?id=${encodeURIComponent(fx.license.id)}` },
     { key: "plans", path: `/admin/plans?id=${encodeURIComponent(fx.plan.id)}` },
     { key: "customers", path: `/admin/customers?id=${encodeURIComponent(fx.customer.accountId)}` },
+    // "New customer" drawer (read only for Finance, which lacks customers.create).
+    { key: "customers", path: "/admin/customers?new=1" },
+    // "New order" drawer (read only for Administrator and Support, which lack orders.create).
+    { key: "orders", path: "/admin/orders?new=1" },
     ...(fx.ticket ? [{ key: "tickets", path: `/admin/tickets?id=${encodeURIComponent(fx.ticket)}` }] : []),
     { key: "staff", path: `/admin/staff?id=${encodeURIComponent(fx.otherStaff)}` },
     ...(fx.audit ? [{ key: "audit", path: `/admin/audit?id=${encodeURIComponent(fx.audit)}` }] : []),
@@ -605,7 +634,18 @@ async function reasonsJourney(page, fx) {
       fx.releaseFile ? `/api/admin/releases/${fx.releaseFile.releaseId}/files/${fx.releaseFile.id}` : null,
       {},
     ],
+    // Admin records (customers): one-click confirmations with a reason.
+    ["customers.verify_email", "POST", `/api/admin/customers/${fx.customer.accountId}/verify-email`, {}],
+    ["customers.set_password_link", "POST", `/api/admin/customers/${fx.customer.accountId}/set-password-link`, {}],
+    // Admin records (orders): cancel is a one-click confirmation with a reason (refused first, even for a paid order).
+    ["orders.cancel", "POST", `/api/admin/orders/${fx.paidOrder}/cancel`, {}],
     // Reason-bearing actions outside DESTRUCTIVE_ACTIONS.
+    ["customer create", "POST", "/api/admin/customers", { name: "Reason Check", email: `reason-${TAG}@example.com` }],
+    ["customer edit", "PATCH", `/api/admin/customers/${fx.customer.accountId}`, { name: "Changed" }],
+    ["order create (link)", "POST", "/api/admin/orders", fx.orderInput],
+    ["order create (offline)", "POST", "/api/admin/orders/offline", { ...fx.orderInput, method: "cash", receivedOn: istDate(0), amountPaise: 1 }],
+    ["order edit", "PATCH", `/api/admin/orders/${fx.paidOrder}`, { couponCode: null }],
+    ["billing correction", "POST", `/api/admin/orders/${fx.paidOrder}/correct-billing`, { billing: { city: "Pimpri" } }],
     ["release withdraw", "POST", `/api/admin/releases/${fx.release}/withdraw`, {}],
     ["order review", "POST", `/api/admin/orders/${fx.reviewOrder ?? fx.paidOrder}/review`, {}],
     ["bulk license suspend", "POST", "/api/admin/licenses/bulk", { action: "suspend", ids: [L] }],
@@ -655,6 +695,13 @@ async function reasonTargets(fx) {
     faq: await one(`SELECT id, published FROM "Faq" WHERE id = $1`, [fx.faq]),
     plan: await one(`SELECT id, archived FROM "Plan" WHERE id = $1`, [fx.plan.id]),
     product: await one(`SELECT id, status FROM "Product" WHERE id = $1`, [fx.product]),
+    "customer user": await one(`SELECT id, name, email, "emailVerifiedAt", "securityEpoch" FROM "User" WHERE id = $1`, [fx.customer.userId]),
+    "reason-check customer": await one(`SELECT count(*)::int AS n FROM "User" WHERE email = $1`, [`reason-${TAG}@example.com`]),
+    "paid order": await one(
+      `SELECT o.status, o."totalPaise", o.billing, i.number AS invoice FROM "Order" o LEFT JOIN "Invoice" i ON i."orderId" = o.id WHERE o.id = $1`,
+      [fx.paidOrder],
+    ),
+    "reason-check orders": await one(`SELECT count(*)::int AS n FROM "Order" WHERE "staffRequestId" = $1`, [fx.orderInput.requestId]),
   };
 }
 
@@ -955,6 +1002,8 @@ async function supportJourney(fx) {
     const rows = await all(`SELECT action, reason FROM "AuditLog" WHERE "targetId" = $1 AND "actorId" = $2 ORDER BY "createdAt"`, [L, fx.staff.support]);
     const fresh = rows.slice(-2);
     check(fresh.length === 2 && fresh.every((r) => (r.reason ?? "").includes(TAG)), "one audit row with the reason for each action", JSON.stringify(fresh));
+
+    await customerRecordsJourney(page, fx);
   } catch (error) {
     check(false, "support journey completed", errText(error));
     await shot(page, "support-error");
@@ -962,6 +1011,69 @@ async function supportJourney(fx) {
     await close(customer, "support journey (customer)");
     await close(s, "support journey");
   }
+}
+
+/**
+ * Admin records (customers): Sneha creates a customer in the "New customer" drawer, copies the one-time set-password
+ * link (the clipboard is stubbed), opens the customer, marks the email verified with a reason and edits the mobile.
+ * The link is never in an audit row; the customer has no password and is marked as created by Sneha.
+ */
+async function customerRecordsJourney(page, fx) {
+  const email = `check-${TAG}@example.com`;
+  remember("emails", email);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (text) => void (window.__axsCopied = text) },
+    });
+  });
+  await go(page, "/admin/customers?new=1");
+  const drawer = drawerOf(page);
+  await drawer.getByLabel("Full name").waitFor({ timeout: 30_000 });
+  await drawer.getByLabel("Full name").fill(`Check ${TAG}`);
+  await drawer.getByLabel("Email", { exact: true }).fill(email);
+  await drawer.getByLabel("Mobile").fill("9820012345");
+  await drawer.getByLabel("Business or legal name").fill(`Check Traders ${TAG}`);
+  await drawer.getByLabel("Reason (saved to the audit log)").fill(`Admin console check ${TAG}: phone order`);
+  await drawer.getByRole("button", { name: "Create customer", exact: true }).click();
+  const linkField = drawer.getByLabel("Set-password link (shown once)");
+  await linkField.waitFor({ timeout: 30_000 });
+  const link = await linkField.inputValue();
+  check(/\/reset\?token=[^&]+$/.test(link), "Support creates a customer and sees the one-time set-password link");
+  await drawer.getByRole("button", { name: "Copy link", exact: true }).click();
+  check(await waitForToast(page, "Link copied"), "Copy link copies the set-password link", await toasts(page));
+  check((await page.evaluate(() => window.__axsCopied)) === link, "the copied text is the link");
+  const row = await one(
+    `SELECT u.id, u."passwordHash" IS NULL AS "noPassword", u."createdByStaffId", m."accountId" FROM "User" u
+       JOIN "AccountMember" m ON m."userId" = u.id WHERE u.email = $1 AND m.role = 'OWNER'`,
+    [email],
+  );
+  if (!row) return check(false, "the new customer is stored");
+  remember("customerUserIds", row.id);
+  remember("customerAccountIds", row.accountId);
+  remember("accountIds", row.accountId);
+  check(row.noPassword && row.createdByStaffId === fx.staff.support, "the customer has no password and is marked as created by Support");
+  const leaked = await one(`SELECT count(*)::int AS n FROM "AuditLog" WHERE "targetId" = $1 AND (coalesce(detail, '') LIKE '%token=%' OR coalesce(reason, '') LIKE '%token=%')`, [row.accountId]);
+  check(leaked?.n === 0, "no audit row carries the link");
+
+  await drawer.getByRole("button", { name: "Open customer", exact: true }).first().click();
+  await page.waitForURL((u) => new URL(u).searchParams.get("id") === row.accountId, { timeout: 30_000 });
+  const customer = drawerOf(page);
+  const verify = customer.getByRole("button", { name: "Mark email as verified", exact: true });
+  await verify.waitFor({ timeout: 30_000 });
+  await verify.click();
+  await confirmWith(page, { reason: `Admin console check ${TAG}: confirmed on a call`, confirm: "Mark verified" });
+  check(
+    await waitFor(async () => (await one(`SELECT "emailVerifiedAt" FROM "User" WHERE id = $1`, [row.id]))?.emailVerifiedAt != null),
+    "Support marks the email verified with a reason",
+  );
+  await customer.getByLabel("Mobile").fill("9820054321");
+  await customer.getByLabel("Reason (saved to the audit log)").fill(`Admin console check ${TAG}: new number`);
+  await customer.getByRole("button", { name: "Save changes", exact: true }).click();
+  check(await waitForToast(page, "Customer updated"), "Support edits the mobile number", await toasts(page));
+  check(await waitFor(async () => (await one(`SELECT phone FROM "User" WHERE id = $1`, [row.id]))?.phone === "9820054321"), "the new mobile number is stored");
+  const actions = (await all(`SELECT action FROM "AuditLog" WHERE "targetId" = $1 AND "actorId" = $2 ORDER BY "createdAt"`, [row.accountId, fx.staff.support])).map((r) => r.action);
+  check(JSON.stringify(actions) === JSON.stringify(["Created customer", "Marked email as verified", "Updated customer"]), "one audit row per customer action", JSON.stringify(actions));
 }
 
 // ---------- finance ----------
@@ -1031,6 +1143,8 @@ async function financeJourney(fx) {
     check(refund?.creditNoteNo ? drawerText.includes(refund.creditNoteNo) : false, "the order drawer lists the credit note");
     await go(customer.page, `/account/licenses/${encodeURIComponent(licenseId)}`);
     check((await customer.page.locator("main").innerText()).includes("Revoked"), "Priya's portal shows the license as Revoked");
+
+    await orderRecordsJourney(page, fx);
   } catch (error) {
     check(false, "finance journey completed", errText(error));
     await shot(page, "finance-error");
@@ -1038,6 +1152,92 @@ async function financeJourney(fx) {
     await close(customer, "finance journey (customer)");
     await close(s, "finance journey");
   }
+}
+
+/**
+ * Admin records (orders): Karan creates an order with a payment link in "New order" (the link opens signed out on
+ * "Ready for payment", and no license exists yet), records an offline payment for another order (paid, invoiced and
+ * licensed at once, one "Recorded offline payment" audit row) and corrects its billing in the drawer (credit note and
+ * new invoice, listed under "Invoice corrections"; the credit-note PDF downloads).
+ */
+async function orderRecordsJourney(page, fx) {
+  await go(page, "/admin/orders?new=1");
+  const drawer = drawerOf(page);
+  const search = drawer.getByLabel("Customer", { exact: true });
+  await search.waitFor({ timeout: 30_000 });
+  await search.fill(fx.customer.legalName);
+  // The result list stays after choosing (keyboard friendly); the chosen customer stays checked.
+  const choice = drawer.getByRole("radio", { name: fx.customer.legalName }).first();
+  await choice.check({ timeout: 30_000 });
+  await drawer.getByText(`Selected: ${fx.customer.legalName}`).waitFor({ timeout: 30_000 });
+  await drawer.getByRole("combobox", { name: "Plan" }).first().selectOption(fx.buyPlan.id);
+  const billing = ORDER_BILLING(fx.customer.legalName);
+  await drawer.getByLabel("Full name").fill(billing.name);
+  await drawer.getByLabel("Mobile").fill(billing.phone);
+  await drawer.getByLabel("Address").fill(billing.address);
+  await drawer.getByLabel("City").fill(billing.city);
+  await drawer.getByLabel("State").selectOption(billing.state);
+  await drawer.getByLabel("PIN code").fill(billing.pin);
+  await drawer.getByLabel("Reason (saved to the audit log)").fill(`Admin console check ${TAG}: phone order`);
+  await drawer.getByText("Total", { exact: true }).waitFor({ timeout: 30_000 });
+  await drawer.getByRole("button", { name: "Create order", exact: true }).click();
+  const linkField = drawer.getByLabel("Payment link", { exact: true });
+  await linkField.waitFor({ timeout: 30_000 });
+  const link = await linkField.inputValue();
+  const linkOrder = /\/orders\/(AX-\d+)\?t=/.exec(link)?.[1] ?? null;
+  check(Boolean(linkOrder), "Finance creates a payment-link order in \"New order\" and sees its link", link.replace(/t=.*/, "t=…"));
+  if (!linkOrder) return;
+  remember("orderIds", linkOrder);
+  check(/[?&]t=p1[.]/.test(link), "the payment link is pay-only (it never shows the license key)");
+  const row = await one(`SELECT status, "createdByStaffId", (SELECT count(*)::int FROM "Payment" p WHERE p."orderId" = o.id) AS payments FROM "Order" o WHERE id = $1`, [linkOrder]);
+  check(row?.status === "AWAITING_PAYMENT" && row?.payments === 0 && row?.createdByStaffId === fx.staff.finance, "the order is unpaid, has no payment attempt and names Finance as its creator");
+  const visitor = await open({ width: 1280 });
+  try {
+    await go(visitor.page, new URL(link).pathname + new URL(link).search);
+    check((await visitor.page.locator("main").innerText()).includes("Ready for payment"), "the payment link opens on \"Ready for payment\" (signed out)");
+  } finally {
+    await close(visitor, "payment link");
+  }
+  check((await one(`SELECT count(*)::int AS n FROM "License" WHERE "orderId" = $1`, [linkOrder]))?.n === 0, "no license before the payment");
+
+  // Offline payment through the API (the drawer's confirmation runs the same request), then a billing correction in the UI.
+  const quote = await api(page, "POST", "/api/admin/orders/quote", { accountId: fx.customer.accountId, items: fx.orderInput.items, billingState: "Maharashtra" });
+  const offline = await api(page, "POST", "/api/admin/orders/offline", {
+    ...fx.orderInput,
+    requestId: randomUUID(),
+    billing: ORDER_BILLING(fx.customer.legalName),
+    method: "bank_transfer",
+    reference: `UTR${TAG}`.slice(0, 32),
+    receivedOn: istDate(0),
+    amountPaise: quote.body?.quote?.totalPaise ?? 0,
+    reason: `Admin console check ${TAG}: paid by bank transfer`,
+  });
+  const paidId = offline.body?.orderId ?? null;
+  check(offline.status === 201 && offline.body?.status === "paid", "Finance records an offline payment: the order is paid and invoiced at once", `${offline.status} ${offline.body?.error?.code ?? ""}`);
+  if (!paidId) return;
+  remember("orderIds", paidId);
+  for (const l of await all(`SELECT id FROM "License" WHERE "orderId" = $1`, [paidId])) remember("licenseIds", l.id);
+  check(offline.body.licensesIssued === 1, "the offline payment issued the license");
+  const audits = (await all(`SELECT action FROM "AuditLog" WHERE "targetId" = $1 ORDER BY "createdAt"`, [paidId])).map((r) => r.action);
+  check(JSON.stringify(audits) === JSON.stringify(["Recorded offline payment"]), "one \"Recorded offline payment\" audit row", JSON.stringify(audits));
+
+  await go(page, `/admin/orders?id=${encodeURIComponent(paidId)}`);
+  const orderDrawer = drawerOf(page);
+  const correct = orderDrawer.getByRole("button", { name: "Correct billing", exact: true });
+  await correct.waitFor({ timeout: 30_000 });
+  await correct.click();
+  const dialog = page.getByRole("dialog", { name: new RegExp(`Correct billing details for ${paidId}`) });
+  await dialog.getByLabel("City").fill("Pimpri");
+  await dialog.getByLabel("Reason (saved to the audit log)").fill(`Admin console check ${TAG}: city was wrong`);
+  await dialog.getByRole("button", { name: "Issue corrected invoice", exact: true }).click();
+  check(await waitForToast(page, "Credit note"), "Finance corrects the billing (\"Credit note … and invoice … issued\")", await toasts(page));
+  const correction = await waitFor(() => one(`SELECT id, "creditNoteNo", "newInvoiceNo" FROM "InvoiceCorrection" WHERE "orderId" = $1`, [paidId]));
+  check(Boolean(correction), "the correction is stored with a credit note and a new invoice");
+  if (!correction) return;
+  await drawerOf(page).getByText("Invoice corrections").waitFor({ timeout: 30_000 });
+  check((await drawerOf(page).innerText()).includes(correction.creditNoteNo), "the drawer lists the correction under \"Invoice corrections\"");
+  const pdf = await page.request.get(`${BASE}/api/admin/orders/${encodeURIComponent(paidId)}/credit-notes/${correction.id}`);
+  check(pdf.status() === 200 && (pdf.headers()["content-type"] ?? "").includes("application/pdf"), "the credit-note PDF downloads", pdf.status());
 }
 
 // ---------- owner ----------
@@ -1207,6 +1407,7 @@ async function cleanUp(fx) {
     await db.query(`DELETE FROM "LicenseEvent" WHERE "licenseId" = ANY($1)`, [L]);
     await db.query(`DELETE FROM "OrderItem" WHERE "orderId" = ANY($1)`, [O]);
     await db.query(`DELETE FROM "Refund" WHERE "paymentId" IN (SELECT id FROM "Payment" WHERE "orderId" = ANY($1))`, [O]);
+    await db.query(`DELETE FROM "InvoiceCorrection" WHERE "orderId" = ANY($1)`, [O]);
     for (const i of await all(`SELECT "pdfKey" FROM "Invoice" WHERE "orderId" = ANY($1)`, [O])) files.push(i.pdfKey);
     await db.query(`DELETE FROM "Invoice" WHERE "orderId" = ANY($1)`, [O]);
     await db.query(`DELETE FROM "WebhookDelivery" WHERE "orderId" = ANY($1)`, [O]);
@@ -1226,6 +1427,15 @@ async function cleanUp(fx) {
     await db.query(`DELETE FROM "Coupon" WHERE code = ANY($1) AND NOT EXISTS (SELECT 1 FROM "Order" o WHERE o."couponCode" = "Coupon".code)`, [created.couponCodes]);
     // The invited staff member (sessions and tokens cascade).
     await db.query(`DELETE FROM "User" WHERE id = ANY($1) AND kind = 'STAFF'`, [created.staffUserIds]);
+    // Customers created in Admin > Customers: memberships, tokens, activity, then the account and the user.
+    const CA = created.customerAccountIds;
+    const CU = created.customerUserIds;
+    await db.query(`DELETE FROM "AccountMember" WHERE "accountId" = ANY($1) OR "userId" = ANY($2)`, [CA, CU]);
+    await db.query(`DELETE FROM "AuthToken" WHERE "userId" = ANY($1)`, [CU]);
+    await db.query(`DELETE FROM "AccountActivity" WHERE "accountId" = ANY($1)`, [CA]);
+    await db.query(`DELETE FROM "Session" WHERE "userId" = ANY($1)`, [CU]);
+    await db.query(`DELETE FROM "BusinessAccount" WHERE id = ANY($1) AND NOT EXISTS (SELECT 1 FROM "Order" o WHERE o."accountId" = "BusinessAccount".id)`, [CA]);
+    await db.query(`DELETE FROM "User" WHERE id = ANY($1) AND kind = 'CUSTOMER' AND "createdByStaffId" IS NOT NULL`, [CU]);
     await db.query("COMMIT");
   } catch (error) {
     await db.query("ROLLBACK");

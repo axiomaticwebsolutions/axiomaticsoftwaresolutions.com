@@ -223,7 +223,7 @@ export function orderLinesLabel(items: readonly { quantity: number; plan: { name
   return items.map((i) => `${i.plan.product.shortName} \u00B7 ${i.plan.name}${i.quantity > 1 ? ` \u00D7 ${i.quantity}` : ""}`).join(", ");
 }
 
-/** The customer drawer, or null for an unknown account. */
+/** The customer drawer, or null for an unknown account. Never returns password hashes (only whether one is set). */
 export async function getAdminCustomerDetail(db: Db, id: string, now: Date): Promise<AdminCustomerDetail | null> {
   const account = await db.businessAccount.findUnique({
     where: { id },
@@ -239,14 +239,14 @@ export async function getAdminCustomerDetail(db: Db, id: string, now: Date): Pro
       select: {
         role: true,
         status: true,
-        user: { select: { id: true, name: true, email: true, phone: true, emailVerifiedAt: true, passwordHash: true } },
+        user: { select: { id: true, kind: true, name: true, email: true, phone: true, emailVerifiedAt: true, passwordHash: true, createdByStaffId: true } },
       },
     }),
     db.license.findMany({
       where: { accountId: id },
       orderBy: [{ issuedAt: "desc" }, { id: "desc" }],
       take: CUSTOMER_DETAIL_LICENSES,
-      select: { id: true, status: true, expiresAt: true, product: { select: { name: true } }, plan: { select: { name: true } } },
+      select: { id: true, status: true, expiresAt: true, productId: true, product: { select: { name: true } }, plan: { select: { name: true, type: true } } },
     }),
     db.license.count({ where: { accountId: id } }),
     db.order.findMany({
@@ -279,6 +279,8 @@ export async function getAdminCustomerDetail(db: Db, id: string, now: Date): Pro
     status: m.status,
     verified: m.user.emailVerifiedAt !== null,
     hasPassword: m.user.passwordHash !== null,
+    createdByStaff: m.user.createdByStaffId !== null,
+    canSetPassword: m.status === "ACTIVE" && m.user.kind === "CUSTOMER" && m.user.passwordHash === null,
   }));
   // The owner is the first active OWNER membership (the same rule as the list's lateral join).
   const owner = memberRows.find((m) => m.role === "OWNER" && m.status === "ACTIVE") ?? null;
@@ -298,8 +300,10 @@ export async function getAdminCustomerDetail(db: Db, id: string, now: Date): Pro
     lastOrderAt: row?.lastOrderAt ?? null,
     licenses: licenses.map((l) => ({
       id: l.id,
+      productId: l.productId,
       productName: l.product.name,
       planName: l.plan.name,
+      planType: l.plan.type,
       status: deriveLicenseStatus(l, now),
       expiresAt: l.expiresAt?.toISOString() ?? null,
     })),

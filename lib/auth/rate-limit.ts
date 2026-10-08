@@ -350,4 +350,19 @@ export const RATE_LIMITS = {
   integrationPassword: (userId: string) => rule(`integration-password:user:${hashedId(userId)}`, 5, 15 * MINUTE),
   /** Integration test buttons (each reaches Razorpay, the SMTP server or the bucket): 10 / 10 min per Owner; never cleared. */
   integrationTest: (userId: string) => rule(`integration-test:user:${hashedId(userId)}`, 10, 10 * MINUTE),
+  /** Admin > Customers "New customer": 30 / hour per staff member. */
+  adminCustomerCreate: (staffId: string) => rule(`admin-customer-create:user:${hashedId(staffId)}`, 30, HOUR),
+  /** Customer edits, "Mark email as verified" and set-password links: 60 / 10 min per staff member. */
+  adminCustomerWrite: (staffId: string) => rule(`admin-customer-write:user:${hashedId(staffId)}`, 60, 10 * MINUTE),
+  /**
+   * Set-password links for one customer: 5 / hour (attempt after the target checks; a refused try is not counted).
+   * Separate from forgotEmail, which anyone can fill through /forgot and would stop staff from helping the customer.
+   */
+  adminSetPasswordLink: (userId: string) => rule(`admin-set-password:user:${hashedId(userId)}`, 5, HOUR),
+  /** Admin > Orders live quote while staff build an order: 120 / 10 min per staff member. */
+  adminOrderQuote: (staffId: string) => rule(`admin-order-quote:user:${hashedId(staffId)}`, 120, 10 * MINUTE),
+  /** Admin > Orders "New order" (payment link or offline payment): 30 / hour per staff member. */
+  adminOrderCreate: (staffId: string) => rule(`admin-order-create:user:${hashedId(staffId)}`, 30, HOUR),
+  /** Order edits, cancels, payment links and billing corrections: 60 / 10 min per staff member. */
+  adminOrderWrite: (staffId: string) => rule(`admin-order-write:user:${hashedId(staffId)}`, 60, 10 * MINUTE),
 } as const;
