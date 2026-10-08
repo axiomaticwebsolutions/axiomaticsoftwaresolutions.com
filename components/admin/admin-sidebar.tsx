@@ -134,7 +134,8 @@ export function AdminSidebar({ onNavigate, closeButton }: AdminSidebarProps) {
           </span>
           <span className="min-w-0 leading-[1.2]">
             <span className="block truncate text-[13px] font-bold text-ink">{staff.name}</span>
-            <span className="block truncate text-[11.5px] font-semibold text-ink-3">{role} · My profile</span>
+            {/* ink-2, not ink-3: it also sits on the lavender fill while My profile is open (4.5:1 needed). */}
+            <span className="block truncate text-[11.5px] font-semibold text-ink-2">{role} · My profile</span>
           </span>
         </Link>
         <Link
