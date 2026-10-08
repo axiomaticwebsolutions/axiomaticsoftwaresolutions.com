@@ -1777,3 +1777,73 @@ built-in LogoMark + wordmark and `app/icon.svg`.
 - **Home hero, design C (split with product tiles).** The right half shows the first four published products
   (`HeroProductTiles`) as pastel tiles with their icon, name, "From" price of the starting plan with its GST note, and
   "View details". With no published products it falls back to the illustration.
+
+## Invoice PDF attached to the order email (owner request, 2026-10-08)
+
+Owner request: "attach the invoice PDF to the order email". The `order_confirmation` email now carries the order's
+current tax invoice as a PDF attachment, named like the download (`Invoice-AXS-26-27-1181.pdf`). That is every email
+of this template: at payment (every path through `fulfilPaidOrder()`: the Razorpay webhook, reconciliation, Admin
+offline payments and admin-created orders paid offline) and from Admin "Resend invoice" (single and bulk). No other
+template carries attachments; refund and credit-note emails are out of scope, but the design takes them as new kinds.
+
+- **Same document as the routes.** `lib/invoice/document.ts` `orderInvoicePdf()` (loader + renderer + uploaded logo +
+  file name) is now the one producer: `GET /api/orders/:id/invoice.pdf`, `GET /api/admin/orders/:id/invoice.pdf` and
+  the attachment all call it, so the email gets exactly what the routes would serve at send time. After a billing
+  correction that is the replacement invoice with its "This invoice replaces …" note (a resend after a correction
+  attaches the new invoice; the email's `invoice_number` variable is also the current number).
+- **A reference, not bytes.** `OutboxEmail.attachments` (nullable JSONB, migration
+  `20261008180009_outbox_email_attachments`, additive) holds typed references such as
+  `[{"kind":"invoice","orderId":"AX-10312"}]`. Why not the PDF: rendering is CPU work (a few hundred ms) that must not
+  run inside the payment transaction while it holds the order, coupon and counter locks; the outbox stays small (one
+  PDF per paid order would grow it by tens of kB per row); the 30-day redaction of sent emails blanks bodies but would
+  have kept billing details inside stored PDFs; and the invoice is rendered from the database at send time, so it is
+  the current one. Kinds are a closed allowlist per template (`lib/email/attachment-refs.ts`
+  `TEMPLATE_ATTACHMENT_KINDS`: `order_confirmation` -> `invoice`); a reference is exactly `{ kind, orderId }` with a
+  short id of letters, digits, `-` and `_`. `enqueueEmail(tx, { ..., attachments })` validates on write (a violation
+  throws in development and tests; production logs `email_enqueue_attachments_dropped` and still queues the email
+  without them) and the dispatcher validates again on read (unknown kinds, extra fields, garbled JSON, kinds the
+  template may not carry: ignored, logged `email_attachment_skipped` reason `invalid_reference`). Callers can never
+  pass paths, URLs or bytes.
+- **Rendered at dispatch.** `claimDueEmails()` returns the column; `dispatchPendingEmails()` renders after the claim,
+  outside any transaction (`lib/email/attachments.ts`, `@react-pdf/renderer` loaded on demand), and hands the file
+  to the transport. Rows without references never touch it.
+- **Failure policy (the email is never blocked by the PDF; it carries the order link to the license key).** Reasons
+  that a retry would not change send the email at once without the PDF and log `email_attachment_skipped` with the
+  outbox id, template, kind, reason and attempt (never addresses, subjects, bodies or bytes): no invoice (order not
+  PAID / PARTIALLY_REFUNDED / REFUNDED), unknown order, recipient not the order's email, PDF over 5 MB. Conditions
+  that may pass get exactly one retry through the normal outbox backoff: a loader or renderer exception or a render
+  over 15 s (a database blip, a busy CPU), a render that would start while a timed-out render is still running in the
+  process (`render_busy`), and a render that would start after the run's rendering budget is spent (`run_budget`; the
+  next run has a fresh budget). On the row's first attempt the dispatcher records it like a failed send (attempt
+  counted, PENDING again one minute later, lastError `AttachmentRenderError attachment_<reason>`, log
+  `email_attachment_retry`); from the second attempt on the email goes without the PDF (`email_attachment_skipped`).
+  The row's final attempt (5 of 5) never renders and always goes without the PDF (reason `final_attempt`), so neither
+  a relay that refuses the message because of the attachment (552/554) nor a render that takes the process down
+  (each crash costs an attempt through the lease) can use up the attempts and leave the customer without the email.
+  Chosen as the simplest safe rule: a render problem delays the email by at most one backoff step (one minute), and
+  nothing about the PDF can make it fail. A timed-out render cannot be cancelled; it finishes in the background and
+  is dropped.
+- **Cost.** At most one render per claimed row that has a reference, so a run renders at most its limit (25 for the
+  after-commit kick, 50 per cron batch, six batches per cron call), in the process that dispatches (the web server
+  after a payment, or the cron call). A run starts no render once its renders took 3 minutes in total
+  (`ATTACHMENT_RUN_BUDGET_MS`; render time only, so slow SMTP or SES sends never cost an order its PDF; later rows are
+  deferred as above), so attachments add at most about 3 minutes plus one 15 s timeout to a run, inside the 10-minute
+  outbox lease. While a timed-out render is still running (counted for at most 2 minutes, `ABANDONED_RENDER_HOLD_MS`,
+  so a render that never settles cannot switch the attachment off), no new render starts anywhere in the process:
+  abandoned renders cannot pile up on the thread that serves web requests. A render stuck in synchronous work blocks
+  the event loop itself; no timer can interrupt that (a worker thread could; not used).
+- **MIME.** `OutgoingEmail.attachments` (`{ filename, contentType: "application/pdf", content: Buffer }`) is mapped in
+  `lib/email/transports/mail-options.ts` to nodemailer attachments, so SMTP and Amazon SES send the same MIME:
+  multipart/mixed with the multipart/alternative text + HTML part first and the PDF as
+  `Content-Disposition: attachment`. Headers are unchanged (Auto-Submitted, X-Axs-Template; no List-* headers). The
+  console transport keeps the file in the dev mailbox and logs file names and sizes only (`email_console_attachments`).
+- **Dev mailbox.** `/dev/mailbox` lists attachment names and sizes and links each file to
+  `GET /api/dev/mailbox/:id/attachments/:index` (development only like every `/dev` page and `/api/dev` route: 404 in
+  production through the middleware and the handler; the production smoke test probes it). Nothing new is reachable
+  in production.
+- **Admin > Notification templates.** The order confirmation drawer shows "Attachment: The order's tax invoice is
+  attached as a PDF automatically when the email is sent. Previews and test emails don't include it." The note is
+  code-defined (`templateAttachmentNote`); previews and template test sends have no attachment, and no template text
+  changed (the seeded copy, "your tax invoice is ready on the order page", stays true).
+- **Deploy.** No server or operator step beyond the normal deploy: `deploy/deploy.sh` runs `prisma migrate deploy`,
+  which adds the nullable column. Emails queued before the deploy have no reference and go out without the PDF.

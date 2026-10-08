@@ -578,6 +578,7 @@ async function checkDevRoutesHidden() {
     ["GET", "/dev/mailbox"],
     ["GET", "/dev/mock-checkout"],
     ["GET", "/api/dev/storage/smoke-test.txt"],
+    ["GET", "/api/dev/mailbox/console-smoke/attachments/0"],
     ["POST", "/api/dev/mock-checkout"],
   ];
   for (const [method, path] of probes) {

@@ -7,7 +7,8 @@
  * Order PAID (paidAt), licenses (lib/licensing/fulfil.ts: keys sealed as HMAC + AES-GCM + last 4, terms snapshots,
  * OrderItem.fulfilledAt as the idempotency marker), the tax invoice number (allocated late from the per-FY counter, with
  * the seller snapshot), the coupon redemption, account activity, member notifications and the outbox emails
- * (order_confirmation and one license_issued per new license; never a full key).
+ * (order_confirmation with a reference to the tax invoice, rendered and attached as a PDF when the email is sent, and
+ * one license_issued per new license; never a full key).
  * The caller writes its own audit row and kicks the email dispatcher after the commit.
  */
 import "server-only";
@@ -184,6 +185,8 @@ export async function announcePaidOrder(
       invoice_number: invoiceNumber,
     },
     dedupeKey: `order_confirmation:${order.id}`,
+    // A reference only: the PDF is rendered at send time, never inside this payment transaction (lib/email/attachments.ts).
+    attachments: [{ kind: "invoice", orderId: order.id }],
   });
   for (const license of issued) {
     await enqueueEmail(tx, {

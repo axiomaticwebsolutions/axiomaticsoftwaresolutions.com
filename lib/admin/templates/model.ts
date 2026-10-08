@@ -9,6 +9,7 @@
  */
 import type { ListQuerySpec } from "@/lib/admin/list-query";
 import type { EmailLogo } from "@/lib/branding/model";
+import { attachmentKindsFor, type EmailAttachmentKind } from "@/lib/email/attachment-refs";
 import {
   EMAIL_TEMPLATE_DEFAULTS,
   EMAIL_TEMPLATE_IDS,
@@ -71,11 +72,26 @@ export type TemplateDto = {
   required: string[];
   /** Auth and invitation emails (codes, reset and invitation links) are sent directly, never through the outbox. */
   auth: boolean;
+  /**
+   * What the app attaches when the email is sent (order_confirmation: the tax invoice PDF), or null. Code-defined
+   * (lib/email/attachment-refs.ts), independent of the copy; previews and test sends carry no attachment.
+   */
+  attachmentNote: string | null;
   defaultSubject: string | null;
   defaultBody: string | null;
 };
 
 export type TemplateRowInput = { name: string; subject: string; body: string; active: boolean; updatedAt: Date } | null;
+
+const ATTACHMENT_KIND_NOTES: Readonly<Record<EmailAttachmentKind, string>> = {
+  invoice: "The order\u2019s tax invoice is attached as a PDF automatically when the email is sent. Previews and test emails don\u2019t include it.",
+};
+
+/** The attachment note of a template (Admin > Notification templates), or null when it has no attachments. */
+export function templateAttachmentNote(id: string): string | null {
+  const kinds = attachmentKindsFor(id);
+  return kinds.length > 0 ? kinds.map((k) => ATTACHMENT_KIND_NOTES[k]).join(" ") : null;
+}
 
 /** The DTO of a template from its row (or null) and the code default (or null for a row without one). */
 export function templateDto(id: string, row: TemplateRowInput): TemplateDto {
@@ -93,6 +109,7 @@ export function templateDto(id: string, row: TemplateRowInput): TemplateDto {
     vars: def ? [...def.vars] : [],
     required: def ? [...def.required] : [],
     auth: isDirectEmailTemplateId(id),
+    attachmentNote: templateAttachmentNote(id),
     defaultSubject: def?.subject ?? null,
     defaultBody: def?.body ?? null,
   };

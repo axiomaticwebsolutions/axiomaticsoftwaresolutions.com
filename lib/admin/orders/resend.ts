@@ -1,6 +1,8 @@
 /**
  * Resend invoice (orders.resend_invoice, every staff role): queues the "order_confirmation" email (order number,
- * invoice number, total and a fresh order link; never keys) with a new dedupe key, and audits "Resent invoice" per
+ * invoice number, total and a fresh order link; never keys) with a new dedupe key and the order’s current tax invoice
+ * attached as a PDF (a reference rendered when the email is sent, so after a billing correction it is the replacement
+ * invoice; lib/email/attachments.ts), and audits "Resent invoice" per
  * order in the same transaction. Orders without an invoice are skipped, and so is an order whose confirmation is
  * still waiting in the outbox (a double click sends one email). Used by POST /api/admin/orders/:id/resend-invoice and
  * the bulk POST /api/admin/orders/resend-invoices.
@@ -75,6 +77,7 @@ export async function resendInvoices(input: ResendInvoicesInput): Promise<Resend
           invoice_number: invoiceNumber,
         },
         dedupeKey: `order_confirmation:${id}:resend:${now.getTime().toString(36)}${randomBytes(4).toString("hex")}`,
+        attachments: [{ kind: "invoice", orderId: id }],
       });
       await audit(tx, input.actor, {
         action: "Resent invoice",

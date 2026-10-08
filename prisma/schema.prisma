@@ -733,6 +733,9 @@ model OutboxEmail {
   sendAfter  DateTime    @default(now())
   createdAt  DateTime    @default(now())
   sentAt     DateTime?
+  /// Attachments rendered at send time, as typed references only: [{"kind":"invoice","orderId":"AX-10312"}]
+  /// (lib/email/attachment-refs.ts allowlist; never bytes, paths or URLs). Null = no attachments.
+  attachments Json?
 
   @@index([status, sendAfter])
 }

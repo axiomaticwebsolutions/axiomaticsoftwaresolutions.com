@@ -116,6 +116,7 @@ export function TemplateDrawer({ open, onOpenChange, template, preview, onChange
               { label: "Trigger", value: template.trigger },
               { label: "Variables", value: template.vars.join(", ") || "None", wide: true },
               ...(template.auth ? [{ label: "Delivery", value: TEMPLATE_COPY.authNote, wide: true }] : []),
+              ...(template.attachmentNote ? [{ label: "Attachment", value: template.attachmentNote, wide: true }] : []),
             ]
           : undefined
       }

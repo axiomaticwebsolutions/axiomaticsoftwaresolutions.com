@@ -181,7 +181,8 @@ const MASKED_RECIPIENT_SQL = Prisma.raw(`CASE
  * SENT outbox emails whose `sentAt` is more than 30 days ago lose their content: `html`, `text` and `subject` become ""
  * (bodies hold order links whose tokens last 30 days, names and addresses; subjects can hold names, e.g. lead_new)
  * and `to` is masked like the logs ("pr***@shop.in"). Kept: id, templateId, dedupeKey (renewal reminders and order
- * emails must never be sent twice), status, attempts, lastError (already redacted) and the timestamps. `html = ''`
+ * emails must never be sent twice), status, attempts, lastError (already redacted), attachments (typed references
+ * holding only the order id, which the dedupe key already has; never file bytes) and the timestamps. `html = ''`
  * marks a redacted row. PENDING, SENDING and FAILED rows are not touched (SENT rows always carry sentAt).
  */
 export async function redactSentEmailsBatch(client: Db, cutoffs: MaintenanceCutoffs, limit: number): Promise<number> {

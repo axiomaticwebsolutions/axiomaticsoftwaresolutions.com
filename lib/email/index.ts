@@ -2,9 +2,10 @@
  * Email module (server-only). Contract (docs/decisions.md > Phase 3 > Email):
  * - sendAuthEmail({ to, templateId, vars }): auth and invitation emails (codes and links), rendered and sent now, never
  *   stored, never throws.
- * - enqueueEmail(tx, { to, templateId, vars, dedupeKey?, sendAfter? }): business emails via the outbox, inside the
- *   caller's transaction; then kickEmailDispatch() after commit. dispatchPendingEmails() is also run by
- *   /api/cron/emails.
+ * - enqueueEmail(tx, { to, templateId, vars, dedupeKey?, sendAfter?, attachments? }): business emails via the outbox,
+ *   inside the caller's transaction; then kickEmailDispatch() after commit. dispatchPendingEmails() is also run by
+ *   /api/cron/emails. `attachments` are typed references rendered at send time (order_confirmation: the invoice PDF;
+ *   lib/email/attachment-refs.ts, lib/email/attachments.ts).
  * Templates: NotificationTemplate row when active, else the code defaults (lib/email/defaults.ts), `{{var}}`
  * placeholders, branded layout (lib/email/layout.ts). Transports: console (dev, /dev/mailbox), SMTP or Amazon SES (API).
  */
@@ -41,4 +42,5 @@ export {
   type EmailTemplateDefault,
   type EmailBlock,
 } from "./defaults";
-export { setEmailTransport, getEmailTransport, type EmailTransport, type OutgoingEmail } from "./transport";
+export { setEmailTransport, getEmailTransport, type EmailTransport, type OutgoingAttachment, type OutgoingEmail } from "./transport";
+export type { EmailAttachmentKind, EmailAttachmentRef } from "./attachment-refs";

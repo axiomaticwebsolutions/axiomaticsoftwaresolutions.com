@@ -15,7 +15,7 @@ import { EMAIL_TEMPLATE_DEFAULTS, isEmailTemplateId, missingRequiredVars, type E
 import type { EmailFooter } from "./layout";
 import { renderEmail, type EmailVars, type RenderedEmail, type UnknownVarMode } from "./render";
 
-export type EmailTemplateErrorReason = "unknown_template" | "missing_vars" | "invalid_recipient" | "auth_template";
+export type EmailTemplateErrorReason = "unknown_template" | "missing_vars" | "invalid_recipient" | "auth_template" | "invalid_attachments";
 
 /** A programming error in how an email was requested (thrown in development and tests, logged in production). */
 export class EmailTemplateError extends Error {

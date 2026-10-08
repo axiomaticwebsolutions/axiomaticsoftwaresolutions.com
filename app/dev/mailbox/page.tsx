@@ -7,6 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { formatBytes } from "@/lib/branding/model";
 import { formatDateTimeIST } from "@/lib/dates";
 import { db } from "@/lib/db";
 import { DEV_MAILBOX_LIMIT, listDevMail, type DevMail } from "@/lib/email/dev-mailbox";
@@ -47,6 +48,29 @@ function sentLabel(mail: DevMail): string {
   return formatDateTimeIST(new Date(mail.sentAt));
 }
 
+/** Download link of attachment `index` (GET /api/dev/mailbox/:id/attachments/:index, development only). */
+function attachmentHref(mail: DevMail, index: number): string {
+  return `/api/dev/mailbox/${encodeURIComponent(mail.id)}/attachments/${index}`;
+}
+
+function AttachmentList({ mail }: { mail: DevMail }) {
+  const files = mail.attachments ?? [];
+  if (files.length === 0) return null;
+  return (
+    <ul className="m-0 grid list-none gap-1.5 p-0">
+      {files.map((file, index) => (
+        <li key={`${file.filename}-${index}`} className="flex min-w-0 flex-wrap items-center gap-2">
+          <Icon name="attach_file" size={18} className="text-muted-icon" />
+          <a href={attachmentHref(mail, index)} download={file.filename} className="break-all font-semibold">
+            {file.filename}
+          </a>
+          <span className="text-ink-2">{formatBytes(file.size)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function MessageList({ messages, selectedId }: { messages: DevMail[]; selectedId: string | undefined }) {
   return (
     <nav aria-label="Messages" className="min-w-0">
@@ -70,6 +94,13 @@ function MessageList({ messages, selectedId }: { messages: DevMail[]; selectedId
                     {mail.templateId}
                   </Badge>
                   {sentLabel(mail)}
+                  {mail.attachments && mail.attachments.length > 0 ? (
+                    <span className="inline-flex items-center gap-0.5">
+                      <Icon name="attach_file" size={16} className="text-muted-icon" />
+                      <span className="sr-only">Attachments: </span>
+                      {mail.attachments.length}
+                    </span>
+                  ) : null}
                 </span>
               </Link>
             </li>
@@ -94,6 +125,14 @@ function MessageView({ mail }: { mail: DevMail }) {
           <dd className="font-mono text-[13px]">{mail.templateId}</dd>
           <dt className="font-bold text-ink-2">Sent</dt>
           <dd>{sentLabel(mail)} IST</dd>
+          {mail.attachments && mail.attachments.length > 0 ? (
+            <>
+              <dt className="font-bold text-ink-2">Attachments</dt>
+              <dd className="min-w-0">
+                <AttachmentList mail={mail} />
+              </dd>
+            </>
+          ) : null}
         </dl>
       </Card>
       <iframe

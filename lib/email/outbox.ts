@@ -5,10 +5,15 @@
  *   transaction, so the email exists exactly when the business change commits. `dedupeKey` is unique and duplicates
  *   are ignored (INSERT ... ON CONFLICT DO NOTHING; no error, so the caller's transaction is never aborted).
  *   Auth and invitation emails (codes, reset and invitation links) are refused: they are sent directly, never stored.
+ *   Attachments are stored as typed references only (OutboxEmail.attachments, e.g. [{ kind: "invoice", orderId }];
+ *   lib/email/attachment-refs.ts allowlist per template, validated here and again when read back), never as bytes.
  * - dispatchPendingEmails() claims due rows with one atomic statement (a MATERIALIZED CTE selecting them FOR UPDATE SKIP
  *   LOCKED, then UPDATE ... RETURNING), so concurrent dispatchers never get the same row. A claim sets SENDING, counts the attempt and leases
  *   the row for OUTBOX_LEASE_MS (a dispatcher that dies mid-send leaves the row to be retried after the lease).
  *   Success -> SENT; failure -> PENDING with exponential backoff, or FAILED after OUTBOX_MAX_ATTEMPTS attempts.
+ *   Attachments are rendered after the claim, outside any transaction (lib/email/attachments.ts: the invoice PDF of
+ *   order_confirmation); a file that cannot be rendered never blocks the email (retried once, then sent without it),
+ *   and a row's final attempt always goes without attachments.
  *   The transport is resolved before claiming; when email is not configured (EmailNotConfiguredError) the due rows are
  *   still claimed and each fails through the same path (the attempt counts, backoff applies, FAILED at the end), with
  *   lastError "EmailNotConfiguredError email_not_configured: Email delivery is not configured.".
@@ -21,6 +26,8 @@ import { db, type Tx } from "@/lib/db";
 import { isProduction } from "@/lib/env";
 import { log, redact } from "@/lib/log";
 import { composeEmail, EmailTemplateError, normalizeRecipient, type ComposedEmail } from "./compose";
+import { parseAttachmentRefs, type EmailAttachmentRef } from "./attachment-refs";
+import { attachmentRunContext, resolveAttachments } from "./attachments";
 import { isDirectEmailTemplateId } from "./defaults";
 import {
   getEmailTransport,
@@ -48,6 +55,12 @@ export type EnqueueEmailInput = {
   dedupeKey?: string;
   /** Earliest send time (default: now). */
   sendAfter?: Date;
+  /**
+   * Files rendered when the email is sent, as typed references (never bytes, paths or URLs). Only kinds allowed for
+   * the template (lib/email/attachment-refs.ts TEMPLATE_ATTACHMENT_KINDS): today order_confirmation with
+   * [{ kind: "invoice", orderId }].
+   */
+  attachments?: readonly EmailAttachmentRef[];
 };
 
 /** Delay before retrying after the `attempts`-th failed attempt: 1, 2, 4, 8 ... minutes, capped at an hour. */
@@ -70,6 +83,17 @@ export async function enqueueEmail(tx: Tx, input: EnqueueEmailInput): Promise<vo
   }
   const to = normalizeRecipient(input.to);
   if (!to) return reject(new EmailTemplateError("invalid_recipient", templateId, "The recipient is not a single email address."));
+
+  // Attachment references: refused in development and tests; in production the email still goes, without them.
+  const parsed = parseAttachmentRefs(templateId, input.attachments ?? null);
+  if (parsed.problems.length > 0) {
+    const problems = [...new Set(parsed.problems.map((p) => p.problem))];
+    if (!isProduction()) {
+      throw new EmailTemplateError("invalid_attachments", templateId, `Attachments refused: ${problems.join(", ")}.`);
+    }
+    log.error("email_enqueue_attachments_dropped", { template: templateId, problems });
+  }
+  const attachments = parsed.refs.length > 0 ? parsed.refs.map((r) => ({ ...r })) : undefined;
 
   let composed: ComposedEmail;
   try {
@@ -97,13 +121,14 @@ export async function enqueueEmail(tx: Tx, input: EnqueueEmailInput): Promise<vo
         dedupeKey: input.dedupeKey ?? null,
         sendAfter: input.sendAfter ?? now,
         createdAt: now,
+        ...(attachments ? { attachments } : {}),
       },
     ],
     skipDuplicates: true,
   });
 }
 
-type ClaimedEmail = {
+export type ClaimedEmail = {
   id: string;
   to: string;
   subject: string;
@@ -111,6 +136,8 @@ type ClaimedEmail = {
   text: string;
   templateId: string;
   attempts: number;
+  /** Stored attachment references (JSON or null); validated again by resolveAttachments(). */
+  attachments: unknown;
 };
 
 /**
@@ -136,7 +163,7 @@ export async function claimDueEmails(limit: number, now: Date): Promise<ClaimedE
     SET "status" = 'SENDING'::"EmailStatus", "attempts" = o."attempts" + 1, "sendAfter" = ${leaseUntil}::timestamp(3)
     FROM picked
     WHERE o."id" = picked."id"
-    RETURNING o."id", o."to", o."subject", o."html", o."text", o."templateId", o."attempts"`;
+    RETURNING o."id", o."to", o."subject", o."html", o."text", o."templateId", o."attempts", o."attachments"`;
   return rows.map((r) => ({ ...r, attempts: Number(r.attempts) }));
 }
 
@@ -164,6 +191,8 @@ export type DispatchOptions = {
   now?: Date;
   /** Transport override (tests); default getEmailTransport(). */
   transport?: EmailTransport;
+  /** Attachment rendering limits (tests): per-file timeout and the run's rendering budget (lib/email/attachments.ts). */
+  attachments?: { timeoutMs?: number; runBudgetMs?: number };
 };
 
 /** Sends due outbox emails once. Returns how many were sent and how many attempts failed. */
@@ -187,18 +216,29 @@ export async function dispatchPendingEmails(opts: DispatchOptions = {}): Promise
   if (claimed.length === 0) return { sent: 0, failed: 0 };
   if (!transport) log.warn("email_dispatch_not_configured", { count: claimed.length, error: sendErrorSummary(unavailable) });
 
+  // Attachments render after the claim, outside any transaction, within one rendering budget per run (render time
+  // only, sends excluded); the final attempt goes without them (lib/email/attachments.ts).
+  const attachmentRun = attachmentRunContext(OUTBOX_MAX_ATTEMPTS, {
+    budgetMs: opts.attachments?.runBudgetMs,
+    timeoutMs: opts.attachments?.timeoutMs,
+  });
   let sent = 0;
   let failed = 0;
   for (const row of claimed) {
     let result: EmailSendResult;
+    let attachmentCount = 0;
     try {
       if (!transport) throw unavailable;
+      // Throws AttachmentRenderError only to defer once (first attempt); otherwise a file that fails is left out.
+      const attachments = await resolveAttachments(row, attachmentRun);
+      attachmentCount = attachments.length;
       result = await transport.send({
         to: row.to,
         subject: row.subject,
         html: row.html,
         text: row.text,
         templateId: row.templateId,
+        ...(attachments.length > 0 ? { attachments } : {}),
       });
     } catch (error) {
       failed += 1;
@@ -238,6 +278,7 @@ export async function dispatchPendingEmails(opts: DispatchOptions = {}): Promise
       to: maskEmail(row.to),
       messageId: result.messageId,
       attempt: row.attempts,
+      ...(attachmentCount > 0 ? { attachments: attachmentCount } : {}),
       ...mailboxHint(transport),
     });
   }

@@ -328,6 +328,41 @@ treated as hostile:
 - **Audit.** "Uploaded / Replaced / Removed branding image" rows name the slot, MIME type, byte size and the first 12
   hex characters of the SHA-256; the bytes are never logged or audited.
 
+## Email attachments (order confirmation invoice PDF, 2026-10-08)
+
+The `order_confirmation` email carries the order's current tax invoice as a PDF (decisions.md "Invoice PDF attached
+to the order email"). Controls:
+
+- **Only to the person the invoice routes already serve.** The PDF is attached only when the outbox row's recipient
+  equals the order's email (`lib/email/attachments.ts` checks it at send time; otherwise reason `recipient_mismatch`
+  and the email goes without it). Both producers address the order's email: `fulfilPaidOrder()` and Admin "Resend
+  invoice" enqueue to `order.email`, never to an address from the request. That is the person
+  `GET /api/orders/:id/invoice.pdf` already serves: the same email carries the full order link, a token bound to the
+  order id and that email (`lib/orders/token.ts`), which opens the same invoice; account members with `invoices.view`
+  and the placer reach it through their session. A billing correction cannot change the order's email, so a correction
+  never redirects an invoice. The attachment therefore reveals nothing the email's link does not.
+- **References, never bytes, paths or URLs.** The outbox row stores `[{ "kind": "invoice", "orderId": "…" }]` only:
+  a closed allowlist of kinds per template (`lib/email/attachment-refs.ts`), exact shape, a short id of safe
+  characters. It is validated when queued and again when read back; anything else is ignored and logged. The file is
+  rendered from the database by the same helper as the invoice routes (`lib/invoice/document.ts`), so no caller can
+  make the app attach a file from disk, a URL or another order. nodemailer gets the bytes as a Buffer (never `path` or
+  `href`), with a fixed content type and a generated file name.
+- **No PDF at rest in the outbox.** Nothing personal is stored beyond the order id (already in the dedupe key); the
+  30-day redaction of sent emails keeps the reference. The dev mailbox keeps attachments in memory in development
+  only; its download route (`/api/dev/mailbox/:id/attachments/:index`) is a 404 in production like every `/api/dev`
+  route (middleware and handler; `scripts/smoke-prod.mjs` probes it with the other development routes).
+- **Logs.** `email_attachment_skipped`, `email_attachment_retry` and the console transport's
+  `email_console_attachments` carry the outbox id, template, kind, reason code, attempt, error name/code, file names
+  and sizes; never addresses, subjects, bodies, renderer messages or PDF bytes.
+- **Availability and cost.** The PDF never blocks the email: a render error, a 15 s timeout, a busy renderer or a
+  spent run budget is retried once through the outbox backoff, then the email goes without it; files over 5 MB are
+  left out; the final attempt always goes without it, so a relay that refuses the attachment cannot fail the email.
+  Rendering is CPU work in the dispatching process, bounded by the dispatch limit (25 per kick, 50 per cron batch), a
+  3-minute budget of render time per run (sends excluded), which keeps a run inside the outbox lease, and a
+  process-wide guard: while a timed-out render is still running (counted for at most 2 minutes), no new render
+  starts. A render stuck in synchronous work would block the event loop; no timer can interrupt it (only a worker
+  thread could; not used).
+
 ## Other controls (Phase 7 review)
 
 - **Development routes.** `/api/dev/*` answers 404 for every method in production (`middleware.ts`); `/dev/*` pages

@@ -10,6 +10,17 @@ import { isProduction } from "@/lib/env";
 import { resolveEmail } from "@/lib/integrations/resolver";
 import type { EmailConfig } from "@/lib/integrations/types";
 
+/**
+ * A file sent with an email. Only rendered by the outbox dispatcher from a typed reference (lib/email/attachments.ts),
+ * never from caller-supplied paths, URLs or bytes. PDF only today.
+ */
+export type OutgoingAttachment = {
+  /** Safe file name (letters, digits, "-" and ".pdf"), e.g. "Invoice-AXS-26-27-1181.pdf". */
+  filename: string;
+  contentType: "application/pdf";
+  content: Buffer;
+};
+
 export type OutgoingEmail = {
   to: string;
   subject: string;
@@ -17,6 +28,8 @@ export type OutgoingEmail = {
   text: string;
   /** For logs and the X-Axs-Template header; never the content. */
   templateId: string;
+  /** Files sent with the message (multipart/mixed around the HTML + text alternative). */
+  attachments?: readonly OutgoingAttachment[];
 };
 
 export type EmailSendResult = { messageId: string };

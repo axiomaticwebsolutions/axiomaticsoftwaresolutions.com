@@ -233,7 +233,7 @@ Catalog writes revalidate the storefront cache.
 | `GET /api/admin/orders`, `GET .../:id`, `GET .../:id/invoice.pdf` | `orders.view` | Search by order id, invoice number, email, business, GSTIN or payment id; date presets in IST |
 | `POST /api/admin/orders/:id/refund` | `refunds.issue` | `{ reason, confirmId, amountPaise?, paymentId? }`: provider refund first, then Refund (PENDING) + credit note, license revocation or term reversal and the audit row in one transaction. `paymentId` of a duplicate captured payment refunds that payment alone. 409 `already_refunded` / `not_refundable` / `provider_key_changed` (taken in the other test/live mode or with another Razorpay account), 422 `confirm_mismatch`, 502 `provider_refund_failed`, 503 `payments_unavailable` |
 | `POST /api/admin/orders/:id/review` | `refunds.issue` | `{ reason }`: closes a REVIEW; 409 `not_in_review` / `refund_first` / `refund_pending` |
-| `POST /api/admin/orders/:id/resend-invoice`, `POST .../resend-invoices` | `orders.resend_invoice` | Queues the confirmation email with the invoice again; 409 `invoice_unavailable` / `already_queued` |
+| `POST /api/admin/orders/:id/resend-invoice`, `POST .../resend-invoices` | `orders.resend_invoice` | Queues the confirmation email again, with the order's current tax invoice attached as a PDF when it is sent; 409 `invoice_unavailable` / `already_queued` |
 | `POST /api/admin/webhooks/:id/replay` | `payments.replay` | Re-runs a stored, signature-valid event through the idempotent handler; 409 `not_replayable` / `ambiguous_event` |
 | `GET /api/admin/orders/export.csv` | `reports.export` | Accountant CSV (at most 10,000 rows, or the selected ids) |
 | `POST /api/admin/orders/quote` | `orders.create` (+ `orders.edit` with `orderId`) | `{ accountId \| orderId, items, couponCode?, billingState? }` -> `{ quote }`: the "New order" / "Edit order" live quote, priced exactly like `POST /api/checkout/quote` for the account's Owner. Read only, no audit row. 404, 422, 429 (120 per 10 min) |
@@ -425,6 +425,7 @@ customer's yearly self-service limit.
 | `POST /api/dev/mock-checkout` | Outcomes of the mock payment page (`/dev/mock-checkout`): success, pending, failed, canceled; sends signed webhooks to the real webhook route (only while the effective payments configuration is the env mock: `PAYMENT_PROVIDER=mock` or unset in development, nothing saved in Admin) |
 | `POST /api/dev/mock-checkout/bank` | The bank's final answer for a pending mock payment |
 | `GET` / `PUT /api/dev/storage/<key>?exp=&sig=` | The local storage driver's signed download and upload URLs (only while the effective storage is the env local disk) |
+| `GET /api/dev/mailbox/:id/attachments/:index` | Downloads attachment `index` (0-based) of a dev mailbox message, e.g. the order email's invoice PDF (`attachment`, `no-store`, `nosniff`); 404 for unknown messages and indexes |
 
 Development pages (no API): `/dev/ui` (component gallery), `/dev/mailbox` (emails of the console transport, with codes
-and links), `/dev/mock-checkout`.
+and links, and attachment names and sizes with a download link), `/dev/mock-checkout`.
