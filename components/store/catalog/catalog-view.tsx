@@ -5,7 +5,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { Icon } from "@/components/icons/icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect } from "@/components/ui/native-select";
+import { ChoiceSelect } from "@/components/ui/choice-select";
 import { Sheet, SheetClose, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/sonner";
 import { useCompare } from "@/lib/compare/use-compare";
@@ -235,24 +235,17 @@ export function CatalogView({ items, categories, initialQuery, ratePct }: Catalo
           <label htmlFor={sortId} className="text-[14.5px] font-bold">
             Sort
           </label>
-          <NativeSelect
+          <ChoiceSelect
             id={sortId}
             name="sort"
             size="lg"
             value={query.sort}
-            onChange={(event) => {
-              const sort = event.target.value;
+            onValueChange={(sort) => {
               if (isCatalogSort(sort)) setQuery((prev) => ({ ...prev, sort }));
             }}
-            wrapperClassName="w-auto"
+            options={CATALOG_SORTS}
             className="w-auto pl-3.5 text-[14.5px] font-semibold"
-          >
-            {CATALOG_SORTS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </NativeSelect>
+          />
         </div>
       </form>
 

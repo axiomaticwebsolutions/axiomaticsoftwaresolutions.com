@@ -54,7 +54,7 @@ export function MobileAdminNav({ className }: { className?: string }) {
           event.preventDefault();
           closeRef.current?.focus();
         }}
-        className="w-[min(270px,86vw)] max-w-none overflow-hidden border-r-0 bg-admin-sidebar leading-[normal] admin:hidden"
+        className="w-[min(270px,86vw)] max-w-none overflow-hidden border-r-0 bg-surface leading-[normal] admin:hidden"
       >
         <SheetTitle className="sr-only">Admin navigation</SheetTitle>
         <AdminSidebar
@@ -65,7 +65,7 @@ export function MobileAdminNav({ className }: { className?: string }) {
                 ref={closeRef}
                 type="button"
                 aria-label="Close menu"
-                className="grid size-[34px] shrink-0 cursor-pointer place-items-center rounded-9 border border-white/15 bg-transparent text-white transition-colors hover:bg-white/7"
+                className="grid size-[34px] shrink-0 cursor-pointer place-items-center rounded-9 border border-line-alt bg-surface text-ink transition-colors hover:border-line-input hover:bg-bg"
               >
                 <Icon name="close" size={20} />
               </button>

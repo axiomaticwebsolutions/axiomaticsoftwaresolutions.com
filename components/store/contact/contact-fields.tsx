@@ -6,7 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Field } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label, OptionalTag } from "@/components/ui/label";
-import { NativeSelect } from "@/components/ui/native-select";
+import { ChoiceSelect } from "@/components/ui/choice-select";
 import { Textarea } from "@/components/ui/textarea";
 import { CONTACT_COPY, CONTACT_FIELDS, type ContactMode } from "@/content/contact";
 import { PHONE_INPUT_MAX } from "@/lib/validation/contact";
@@ -117,20 +117,20 @@ export function ContactFields({ mode, values, errors, products, dateMin, dateMax
           />
         </Field>,
         <Field key="product" id={contactFieldId("product")} label={CONTACT_FIELDS.product} error={errors.product} className="leading-[normal]">
-          <NativeSelect
-            name="product"
-            value={values.product}
-            onChange={(event) => onChange("product", event.target.value)}
-            className={CONTROL}
-          >
-            <option value="">{CONTACT_FIELDS.productPlaceholder}</option>
-            {products.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-            <option value={NOT_SURE_PRODUCT}>{CONTACT_FIELDS.productNotSure}</option>
-          </NativeSelect>
+          {(control) => (
+            <ChoiceSelect
+              {...control}
+              name="product"
+              value={values.product}
+              onValueChange={(value) => onChange("product", value)}
+              placeholder={CONTACT_FIELDS.productPlaceholder}
+              options={[
+                ...products.map((p) => ({ value: p.id, label: p.name })),
+                { value: NOT_SURE_PRODUCT, label: CONTACT_FIELDS.productNotSure },
+              ]}
+              className={CONTROL}
+            />
+          )}
         </Field>,
         <Field
           key="counters"
@@ -139,19 +139,17 @@ export function ContactFields({ mode, values, errors, products, dateMin, dateMax
           error={errors.counters}
           className="leading-[normal]"
         >
-          <NativeSelect
-            name="counters"
-            value={values.counters}
-            onChange={(event) => onChange("counters", oneOf<"" | LeadCounterBand>(["", ...LEAD_COUNTER_BANDS], event.target.value, ""))}
-            className={CONTROL}
-          >
-            <option value="">{CONTACT_FIELDS.countersPlaceholder}</option>
-            {LEAD_COUNTER_BANDS.map((band) => (
-              <option key={band} value={band}>
-                {LEAD_COUNTER_LABELS[band]}
-              </option>
-            ))}
-          </NativeSelect>
+          {(control) => (
+            <ChoiceSelect
+              {...control}
+              name="counters"
+              value={values.counters}
+              onValueChange={(value) => onChange("counters", oneOf<"" | LeadCounterBand>(["", ...LEAD_COUNTER_BANDS], value, ""))}
+              placeholder={CONTACT_FIELDS.countersPlaceholder}
+              options={LEAD_COUNTER_BANDS.map((band) => ({ value: band, label: LEAD_COUNTER_LABELS[band] }))}
+              className={CONTROL}
+            />
+          )}
         </Field>,
         <Field
           key="preferredDate"
@@ -177,18 +175,16 @@ export function ContactFields({ mode, values, errors, products, dateMin, dateMax
           error={errors.preferredSlot}
           className="leading-[normal]"
         >
-          <NativeSelect
-            name="preferredSlot"
-            value={values.preferredSlot}
-            onChange={(event) => onChange("preferredSlot", oneOf(LEAD_SLOTS, event.target.value, "morning"))}
-            className={CONTROL}
-          >
-            {LEAD_SLOTS.map((slot) => (
-              <option key={slot} value={slot}>
-                {LEAD_SLOT_LABELS[slot]}
-              </option>
-            ))}
-          </NativeSelect>
+          {(control) => (
+            <ChoiceSelect
+              {...control}
+              name="preferredSlot"
+              value={values.preferredSlot}
+              onValueChange={(value) => onChange("preferredSlot", oneOf(LEAD_SLOTS, value, "morning"))}
+              options={LEAD_SLOTS.map((slot) => ({ value: slot, label: LEAD_SLOT_LABELS[slot] }))}
+              className={CONTROL}
+            />
+          )}
         </Field>,
         <Field
           key="message"
@@ -230,18 +226,16 @@ export function ContactFields({ mode, values, errors, products, dateMin, dateMax
           />
         </Field>,
         <Field key="topic" id={contactFieldId("topic")} label={CONTACT_FIELDS.topic} error={errors.topic} className="leading-[normal]">
-          <NativeSelect
-            name="topic"
-            value={values.topic}
-            onChange={(event) => onChange("topic", oneOf(LEAD_TOPICS, event.target.value, "sales"))}
-            className={CONTROL}
-          >
-            {LEAD_TOPICS.map((topic) => (
-              <option key={topic} value={topic}>
-                {LEAD_TOPIC_LABELS[topic]}
-              </option>
-            ))}
-          </NativeSelect>
+          {(control) => (
+            <ChoiceSelect
+              {...control}
+              name="topic"
+              value={values.topic}
+              onValueChange={(value) => onChange("topic", oneOf(LEAD_TOPICS, value, "sales"))}
+              options={LEAD_TOPICS.map((topic) => ({ value: topic, label: LEAD_TOPIC_LABELS[topic] }))}
+              className={CONTROL}
+            />
+          )}
         </Field>,
         <Field
           key="message"

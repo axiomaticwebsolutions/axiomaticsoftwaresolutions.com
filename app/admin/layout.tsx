@@ -63,8 +63,8 @@ export default async function AdminLayout({ children }: Readonly<{ children: Rea
       <div className="min-h-dvh bg-bg-admin leading-[normal]">
         <SkipLink />
         <div className="grid min-h-dvh grid-cols-[minmax(0,1fr)] admin:grid-cols-[232px_minmax(0,1fr)]">
-          {/* The column carries the sidebar colour for the full page height; the menu itself stays in view (sticky). */}
-          <div className="hidden bg-admin-sidebar admin:block">
+          {/* The column carries the sidebar surface for the full page height; the menu itself stays in view (sticky). */}
+          <div className="hidden border-r border-line bg-surface admin:block">
             <aside aria-label="Admin navigation" className="sticky top-0 flex h-dvh flex-col">
               <AdminSidebar />
             </aside>

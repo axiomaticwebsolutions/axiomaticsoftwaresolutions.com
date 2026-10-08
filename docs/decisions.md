@@ -1270,3 +1270,20 @@ build decisions, "Shell and foundation").
   `generateStaticParams` and reject unknown slugs with `notFound()`, like `software/[slug]`. Next.js does not write those
   404s to the page cache (checked: unknown `/software/<slug>` requests leave no cache files). Guard:
   `tests/unit/no-fallback-false-pages.test.ts`. Check after any Next.js upgrade before allowing it again.
+
+## UI polish: styled dropdowns, one-row footer, light admin sidebar (2026-10-08, owner requests)
+
+- Dropdowns: short storefront lists (Request a demo / Contact: software, billing counters, preferred time, topic;
+  Software page sort; Compare product pickers) use `components/ui/choice-select.tsx`, a thin wrapper over the Radix
+  listbox in `components/ui/select.tsx`, so the open list matches the UI instead of the browser's own menu. It takes
+  plain options and a string value ("" = nothing chosen, the placeholder shows). Long lists (Indian states at checkout
+  and billing) and the portal/admin forms keep NativeSelect: the OS picker is faster there, especially on phones.
+- Footer: from 1024px the brand block and the Software, Company, Resources and Legal columns share one row
+  (`lg:grid-cols-[minmax(240px,1.4fr)_repeat(4,minmax(0,1fr))]`); narrower screens wrap as before.
+- Admin sidebar: light (white surface, right border) instead of the prototype's dark navy. Each nav group has its own
+  pastel from the tone palette (Dashboard and Content lavender, Catalog and Insights blue, Sales sage, Licensing peach,
+  Support pink, Administration slate) on a 24px icon tile; the open module's row takes its group's pastel with a white
+  icon tile; hover uses the tone's soft shade. Text pairs are tone fg on tone bg (5:1 or more), group labels ink-3 on
+  white (4.8:1), focus uses the primary ring. Links are 30px so the menu fits a 900px-high window; shorter windows get
+  the thin `.scrollbar-subtle` scrollbar. The mobile drawer uses the same light sidebar. Checked: scripts/check-a11y.mjs
+  (store, admin, focus, reflow) 422 checks, 0 failed; scripts/check-storefront.mjs 77 checks, 0 failures.

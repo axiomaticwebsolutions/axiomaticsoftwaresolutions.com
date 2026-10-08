@@ -107,8 +107,9 @@ export function SiteFooter({ products, business, now = new Date() }: SiteFooterP
   return (
     // While the catalog's fixed compare tray is shown, extra room at the bottom lets the last links scroll above it.
     <footer className="border-t border-line bg-surface pb-[var(--compare-tray-h,0px)] text-ink">
-      <Container className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,170px),1fr))] gap-9 pb-8 pt-16">
-        <div className="col-span-2 min-w-[min(100%,280px)]">
+      {/* One row from 1024px: the brand block, then Software, Company, Resources and Legal. Narrower screens wrap. */}
+      <Container className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,170px),1fr))] gap-9 pb-8 pt-16 lg:grid-cols-[minmax(240px,1.4fr)_repeat(4,minmax(0,1fr))] lg:gap-8">
+        <div className="col-span-2 min-w-[min(100%,280px)] lg:col-span-1 lg:min-w-0">
           <div className="flex">
             <Logo className="gap-[11px]" />
           </div>

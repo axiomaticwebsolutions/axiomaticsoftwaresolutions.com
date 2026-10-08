@@ -108,27 +108,27 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* Thin scrollbar for dark surfaces (the admin sidebar): no arrow buttons, a faint thumb that brightens on hover.
+  /* Thin scrollbar for the admin sidebar: no arrow buttons, a faint ink thumb that darkens on hover.
      Chromium and Safari use the ::-webkit-scrollbar rules; Firefox the standard properties. */
-  .scrollbar-dark::-webkit-scrollbar {
+  .scrollbar-subtle::-webkit-scrollbar {
     width: 8px;
   }
-  .scrollbar-dark::-webkit-scrollbar-track {
+  .scrollbar-subtle::-webkit-scrollbar-track {
     background: transparent;
   }
-  .scrollbar-dark::-webkit-scrollbar-thumb {
+  .scrollbar-subtle::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
     border-radius: 9999px;
-    background-color: rgb(255 255 255 / 0.16);
+    background-color: rgb(23 32 51 / 0.14);
     background-clip: padding-box;
   }
-  .scrollbar-dark:hover::-webkit-scrollbar-thumb {
-    background-color: rgb(255 255 255 / 0.3);
+  .scrollbar-subtle:hover::-webkit-scrollbar-thumb {
+    background-color: rgb(23 32 51 / 0.3);
   }
   @supports not selector(::-webkit-scrollbar) {
-    .scrollbar-dark {
+    .scrollbar-subtle {
       scrollbar-width: thin;
-      scrollbar-color: rgb(255 255 255 / 0.24) transparent;
+      scrollbar-color: rgb(23 32 51 / 0.22) transparent;
     }
   }
 }

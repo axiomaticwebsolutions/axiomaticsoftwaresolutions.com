@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/icons/icon";
 import { TONE_TILE_CLASSES, toIconName } from "@/components/store/active-nav";
-import { NativeSelect } from "@/components/ui/native-select";
+import { ChoiceSelect } from "@/components/ui/choice-select";
 import { parseCompareParam } from "@/lib/compare/store";
 import { useCompare } from "@/lib/compare/use-compare";
 import { formatINR } from "@/lib/money";
@@ -77,7 +77,7 @@ export function CompareView({ products, initialSlots }: CompareViewProps) {
   }
   const { ids: savedIds, ready, replace } = useCompare();
   const syncedFor = useRef<string | null>(null);
-  const selectRefs = useRef<(HTMLSelectElement | null)[]>([]);
+  const selectRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const focusSlot = useRef<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [overflowing, setOverflowing] = useState<boolean | null>(null);
@@ -160,21 +160,16 @@ export function CompareView({ products, initialSlots }: CompareViewProps) {
             className="grid min-w-0 gap-1.5 text-[13px] font-extrabold uppercase tracking-[0.06em] text-ink-2"
           >
             <span className="whitespace-nowrap">Product {index + 1}</span>
-            <NativeSelect
+            <ChoiceSelect
               ref={(el) => {
                 selectRefs.current[index] = el;
               }}
               value={value}
-              onChange={(event) => onSelect(index, event.target.value)}
+              onValueChange={(next) => onSelect(index, next)}
+              placeholder="Choose a product"
+              options={products.map((p) => ({ value: p.id, label: p.shortName, disabled: p.id !== value && slots.includes(p.id) }))}
               className="h-12 rounded-13 pl-3 text-[15px] font-bold normal-case tracking-normal"
-            >
-              <option value="">Choose a product</option>
-              {products.map((p) => (
-                <option key={p.id} value={p.id} disabled={p.id !== value && slots.includes(p.id)}>
-                  {p.shortName}
-                </option>
-              ))}
-            </NativeSelect>
+            />
           </label>
         ))}
       </div>
