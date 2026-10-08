@@ -31,7 +31,7 @@ async function loadState(): Promise<AdminState | null> {
 
 /**
  * Admin console shell (decisions.md Phase 6): active staff only (lib/admin/context.ts redirects everyone else).
- * 232px dark sticky sidebar from 1040px (a drawer below), 56px top bar, <main> up to 1360px, toasts bottom-right.
+ * 256px light sticky sidebar from 1040px (a drawer below), 56px top bar, <main> up to 1760px, toasts bottom-right.
  * Text uses `line-height: normal` like the prototype, which sets none.
  */
 export default async function AdminLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -60,11 +60,11 @@ export default async function AdminLayout({ children }: Readonly<{ children: Rea
 
   return (
     <AdminProvider value={toAdminContextData(state.context)}>
-      <div className="min-h-dvh bg-bg-admin leading-[normal]">
+      <div data-admin-shell="" className="min-h-dvh bg-bg-admin leading-[normal]">
         <SkipLink />
-        <div className="grid min-h-dvh grid-cols-[minmax(0,1fr)] admin:grid-cols-[232px_minmax(0,1fr)]">
+        <div className="grid min-h-dvh grid-cols-[minmax(0,1fr)] admin:grid-cols-[256px_minmax(0,1fr)]">
           {/* The column carries the sidebar surface for the full page height; the menu itself stays in view (sticky). */}
-          <div className="hidden border-r border-line bg-surface admin:block">
+          <div className="hidden border-r border-line-alt bg-surface admin:block">
             <aside aria-label="Admin navigation" className="sticky top-0 flex h-dvh flex-col">
               <AdminSidebar />
             </aside>
