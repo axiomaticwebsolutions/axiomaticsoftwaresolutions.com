@@ -12,6 +12,7 @@ import { formatDateIST, formatDateTimeIST } from "@/lib/dates";
 import {
   fieldLabel,
   INTEGRATION_TITLES,
+  type EmailProvider,
   type EmailSecurity,
   type IntegrationKind,
   type PaymentMode,
@@ -29,7 +30,22 @@ export type PrefilledFrom = "admin" | "env" | "defaults";
 export type SecretHint = { set: boolean; last4: string | null; updatedAt: string | null; updatedBy: string | null };
 
 export type PaymentsFormValues = { keyId: string };
-export type EmailFormValues = { host: string; port: number; security: EmailSecurity; username: string; fromName: string; fromAddress: string };
+/**
+ * The email form carries the fields of both providers (the Owner can switch); only the chosen provider's fields are
+ * sent and saved. `region` defaults to ap-south-1, `configurationSet` "" means none.
+ */
+export type EmailFormValues = {
+  provider: EmailProvider;
+  host: string;
+  port: number;
+  security: EmailSecurity;
+  username: string;
+  region: string;
+  accessKeyId: string;
+  configurationSet: string;
+  fromName: string;
+  fromAddress: string;
+};
 export type StorageFormValues = {
   preset: StoragePreset;
   endpoint: string;
@@ -51,7 +67,7 @@ export type IntegrationForm =
       /** The newest razorpay WebhookDelivery with a valid signature (ISO), or null. */
       lastSignedWebhookAt: string | null;
     }
-  | { kind: "email"; prefilledFrom: PrefilledFrom; values: EmailFormValues; secrets: { password: SecretHint } }
+  | { kind: "email"; prefilledFrom: PrefilledFrom; values: EmailFormValues; secrets: { password: SecretHint; secretAccessKey: SecretHint } }
   | { kind: "storage"; prefilledFrom: PrefilledFrom; values: StorageFormValues; secrets: { secretAccessKey: SecretHint } };
 
 export type IntegrationState = {
@@ -63,7 +79,10 @@ export type IntegrationState = {
   source: IntegrationSourceId;
   /** The mock provider, the console transport or the local disk (env only, never in production). */
   development: boolean;
-  /** "Razorpay" | "Mock provider" | "SMTP" | "Console (dev mailbox)" | "S3-compatible bucket" | "Local disk" | "Not set" */
+  /**
+   * "Razorpay" | "Mock provider" | "SMTP" | "Amazon SES (API)" | "Console (dev mailbox)" | "S3-compatible bucket" |
+   * "Local disk" | "Not set"
+   */
   provider: string;
   /** Payments only: the key's mode. */
   mode: PaymentMode | null;
@@ -105,7 +124,7 @@ export type IntegrationRemoveResponse = { integration: IntegrationState };
 
 export const INTEGRATION_CARD_META: Readonly<Record<IntegrationKind, { description: string; icon: IconName }>> = {
   payments: { description: "Razorpay keys for checkout, refunds and payment webhooks.", icon: "credit_card" },
-  email: { description: "The SMTP server that sends order, account and support email.", icon: "outgoing_mail" },
+  email: { description: "SMTP or Amazon SES: sends order, account and support email.", icon: "outgoing_mail" },
   storage: { description: "Private bucket for installers and attachments; signed links only.", icon: "cloud" },
 };
 
@@ -142,6 +161,10 @@ export const INTEGRATIONS_COPY = {
   lastWebhook: (at: string) => `Last signed webhook: ${formatDateTimeIST(new Date(at))}.`,
   presetFilled: (label: string) => `Filled in for ${label}. Check the values.`,
   storageHelp: "This page reloads after a change. Reload other open tabs before uploading.",
+  sesHelp:
+    "Verify the From domain in Amazon SES (Easy DKIM). Until AWS grants production access, SES only delivers to verified addresses.",
+  /** Under the email Provider select and in the save dialog when the save deletes the other provider’s saved secret. */
+  providerSwitch: (labels: readonly string[]) => `Saving removes the saved ${joinLabels(labels.map(lowerFirst))}.`,
   secret: {
     set: (last4: string | null) => (last4 ? `Set (ends ${last4})` : "Set"),
     changed: (by: string | null, at: string | null) => {
@@ -153,7 +176,12 @@ export const INTEGRATIONS_COPY = {
     clear: "Clear",
     cancel: "Cancel",
     keep: "Leave empty to keep the saved value.",
-    reenter: "The server changed, so the saved value can’t be kept.",
+    /** Under a saved secret that must be entered again (lib/integrations/model.ts DESTINATION_FIELDS changed). */
+    reenter: {
+      payments: "The saved value can’t be kept.",
+      email: "The provider, server or region changed, so the saved value can’t be kept.",
+      storage: "The endpoint changed, so the saved value can’t be kept.",
+    } satisfies Record<IntegrationKind, string>,
     inServerFile: "In the server file. Enter it here to save these settings in Admin.",
     unusedWithoutUsername: "Not used without a username.",
   },

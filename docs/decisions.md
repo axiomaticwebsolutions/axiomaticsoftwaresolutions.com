@@ -1315,7 +1315,8 @@ What moved into Admin > Settings > Integrations:
 - **Payment provider** (Razorpay): Key ID, Key secret, Webhook secret. Test or live mode follows the key id prefix
   (`rzp_test_` / `rzp_live_`). The webhook URL is shown read-only.
 - **Email delivery** (SMTP): host, port, security (STARTTLS or TLS), username (empty = no sign-in), password, From name
-  and From address.
+  and From address. Amazon SES (API) was added as a second provider the same day (entry "Amazon SES as a second email
+  provider" below).
 - **Installer storage** (S3-compatible): provider preset (AWS S3, Cloudflare R2, DigitalOcean Spaces, Other) that
   prefills endpoint, region and path style; endpoint, region, bucket, access key ID, secret access key, path-style URLs.
 - **Rate limits** stay in the env file (`REDIS_URL`), shown read-only: a wrong value would block every sign-in.
@@ -1615,3 +1616,83 @@ A security, money and UI review of the admin records build. Each fix is in the c
   says what is missing and clears a failed quote (no stale total or amount hint); quote issues describe the Plan select;
   re-share and email copy no longer assume a staff-prepared order; the printable invoice card shows "This invoice
   replaces …".
+
+## Amazon SES as a second email provider (owner decision, 2026-10-08)
+
+Owner request: "for email add support of aws ses api". Design notes: `docs/admin-integrations-design.md` section 25.
+
+- **Provider choice.** The Email delivery card has a Provider select: "SMTP" or "Amazon SES (API)". Only the chosen
+  provider's fields show and are sent. SES fields: AWS region (a select of the SES regions in
+  `lib/integrations/model.ts` `SES_REGIONS`, default `ap-south-1` Mumbai, validated against that list), access key ID
+  (plain, capital letters and digits, shown like the storage access key ID), secret access key (encrypted,
+  write-only, "Set (ends xxxx)", Replace / Clear), optional configuration set, From name and From address (the SMTP
+  rules).
+- **Storage.** The existing `IntegrationConfig` / `IntegrationSecret` rows: `settings.provider` is `"smtp"` or
+  `"ses"` (rows saved before have none and read as SMTP); the SES secret is the email kind's `secretAccessKey` field,
+  bound to `email:secretAccessKey` by the AES-GCM associated data. No migration (the field column is free text).
+- **Sending.** `@aws-sdk/client-sesv2` 3.1146.0 (the `@aws-sdk/client-s3` version) through nodemailer's SES transport,
+  so nodemailer builds the same MIME message as for SMTP (`lib/email/transports/mail-options.ts`: From, HTML and text,
+  headers, any attachment) and SESv2 SendEmail gets it as `Content.Raw`, with the configuration set when one is
+  saved. The client gets region and keys only, never an endpoint: AWS's own endpoint for a listed region, so there is
+  no SSRF surface (the SMTP guard stays). The server environment cannot move it either (review fix):
+  `ignoreConfiguredEndpointUrls` makes the SDK skip `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_SESV2` and `endpoint_url`
+  in `~/.aws/config` (without it, an `AWS_ENDPOINT_URL` exported for R2 tools would have sent every email there), and
+  FIPS / dual-stack are pinned off; `tests/unit/email-ses-endpoint.test.ts` checks the resolved host with the real SDK.
+  10 s connect and 30 s request timeouts, the SDK's 3 attempts.
+- **Every email path** (outbox, direct auth and invitation emails, template test sends) uses the effective provider;
+  the 30 s resolver cache and the transport rebuild on a configuration change (old client closed a minute later)
+  apply to SES too.
+- **Send test email** works for SES (to the signed-in Owner) and maps AWS errors to fixed sentences without echoing
+  keys or AWS text: keys rejected, sender / domain / sandbox recipient not verified, missing `ses:SendEmail` /
+  `ses:SendRawEmail`, throttling, sending paused, configuration set not found, network. Audited like the other tests
+  ("Send test email: failed (missing permission).").
+- **Re-entry rule.** Changing the provider or the SES region needs the secret entered again (like a new SMTP server),
+  so a saved secret is never sent to a new place silently. A save that switches provider deletes the other provider's
+  saved secret (audit "Removed: Password."); entering it in an SES body is refused. The card says so before Save
+  (review fix): "Saving removes the saved password." (or "secret access key") under Provider and in the password
+  dialog, because some providers show a credential only once. After an env-file provider, the switched-to provider's
+  secret no longer claims to be "In the server file".
+- **Env fallback parity.** `EMAIL_TRANSPORT=ses` with `SES_REGION`, `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY`,
+  optional `SES_CONFIGURATION_SET`, plus `EMAIL_FROM`. Same production rules as smtp: placeholders refused, console
+  refused in production; the preflight prints "email: server file ses (ap-south-1)"; `.env.example`,
+  `deploy/.env.production.example` and the docs list the variables. No endpoint variable. `lib/env.ts` only reads
+  `SES_REGION` as text, like `STORAGE_REGION`; `lib/integrations/env-source.ts` judges it (any case, listed regions
+  only), so `SES_REGION=AP-SOUTH-1` works and a wrong or stray region makes the fallback "not configured" instead of
+  stopping the server (review fix).
+- **Go-live.** Verify the sending domain in SES with Easy DKIM, request production access (the sandbox only delivers to
+  verified addresses), and use an IAM user allowed only `ses:SendEmail` and `ses:SendRawEmail` on the sending
+  domain's identity in that region (plus the configuration set's ARN when one is saved, and the verified test
+  recipient while still in the sandbox): a leaked key then cannot send as another identity or from another region
+  (review fix: the first docs limited the actions only). The policy is in `docs/go-live-checklist.md`.
+
+## Integration forms: no password-manager autofill (2026-10-08, seen live; reverses a review choice)
+
+Seen live: the browser's password manager filled the Owner's saved Admin email into "Key ID" / "Access key ID" and the
+saved password into "Key secret" / "Secret access key". The review fix of the same day (design section 24) had set
+the secret inputs to `autocomplete="off"`, which Chrome ignores on password inputs.
+
+- Secret inputs: `autocomplete="new-password"` (Chrome never fills a saved password there) plus `data-1p-ignore`,
+  `data-lpignore="true"`, `data-bwignore`, `data-form-type="other"`. This reverses the earlier review choice of
+  `autocomplete="off"`. The ignore attributes stop 1Password, LastPass, Bitwarden and Dashlane from filling, saving
+  or generating. They do not cover the risk that choice addressed for Chrome's own password manager, which ignores
+  them (and `autocomplete="off"` for saving) and treats `new-password` as a sign-up field: Chrome may still offer
+  "Suggest strong password" on a secret input, or "Save password?" after a save with the Key ID or access key ID as the
+  username, which would copy that secret into the browser. Accepted as the Owner decided (stopping the live mis-fill
+  matters more); the Owner declines with "No thanks" (not "Never", which is per site and would also stop saving the
+  Admin sign-in), and a secret that was ever saved there is deleted from Chrome and rotated
+  (`docs/go-live-checklist.md`).
+- Identifier inputs (Key ID, access key IDs, SMTP username, bucket) and every other integration input and select
+  (the read-only webhook URL too): `autocomplete="off"` plus the same ignore attributes, and an id and `name` that do
+  not look like a sign-in field (no "user", "login" or "email": e.g. the SMTP username is `smtp-auth-id`;
+  `integration-form-model.ts` `domKey`).
+- Each integration card's `<form>` is `autocomplete="off"`.
+- `tests/e2e/admin-integrations.spec.ts` and `tests/unit/integration-form-model.test.ts` assert the attributes.
+
+## Settings cards: one height per row (owner request, 2026-10-08)
+
+On Admin > Settings every row of the settings grid (business / tax / license, sample notice, the Integrations row of
+Payment provider / Installer storage / Email delivery, and the Rate limits row) shares one height: the grids stretch
+their items, `SettingsCard` is a flex column whose body takes the extra height with its content packed at the top,
+and the footer (the Save / test bar) sits at the bottom, so the footers line up across a row. Precedent:
+`components/admin/overview/panel.tsx`. At 360 px the cards stack in one column with no horizontal scroll. The e2e spec
+checks the rows at 1280 and 1920 px.

@@ -295,25 +295,38 @@ Catalog writes revalidate the storefront cache.
 | `GET /api/admin/staff/export.csv` | `staff.manage` | |
 
 **Integrations** (Admin > Settings > Integrations; `docs/admin-integrations-design.md`). `:kind` is `payments`,
-`email` or `storage`; `:field` is `keySecret` or `webhookSecret` (payments), `password` (email) or `secretAccessKey`
-(storage). Anything else is 404 before the body is read. Save, clear and remove re-check the Owner's password
+`email` or `storage`; `:field` is `keySecret` or `webhookSecret` (payments), `password` (SMTP) or `secretAccessKey`
+(Amazon SES) for email, `secretAccessKey` (storage). Anything else is 404 before the body is read. Save, clear and
+remove re-check the Owner's password
 (`currentPassword`; 5 tries per 15 minutes, counted before checking: 422 `incorrect_password` with
 `fieldErrors.currentPassword`, then 429). Every save that changes something, every clear of a saved secret, every
 remove and every test writes an audit row naming the fields by label (a save with no changes, `changed: []`, and a
-clear of an unset secret, `cleared: false`, write none). A save that changes the SMTP host, port or security, or the
-storage endpoint, must enter every saved secret of that integration again (422 naming each field, "Enter it again:
-..."), so a kept secret is never sent to a new server. No route ever returns a secret.
+clear of an unset secret, `cleared: false`, write none). A save that changes the email provider, the SMTP host, port or
+security, the SES region, or the storage endpoint, must enter every saved secret the new settings use again (422
+naming each field, "Enter it again: ..."), so a kept secret is never sent to a new place. A save that switches the
+email provider deletes the other provider's saved secret (audit "Removed: Password."); sending that secret in the
+body is refused. No route ever returns a secret.
 
 Save bodies (strict; an empty or missing secret keeps the stored one; `revision` is the one the form loaded, null when
 nothing is saved yet, 409 `integration_changed` when it moved on):
 
 ```
 payments: { currentPassword, revision, keyId, keySecret?, webhookSecret? }          keyId: rzp_test_... or rzp_live_...
-email:    { currentPassword, revision, host, port, security: "starttls" | "tls", username ("" = no sign-in),
-            password?, fromName, fromAddress }
+email:    SMTP (provider "smtp"; a body without provider is SMTP, as before 2026-10-08):
+          { currentPassword, revision, provider?: "smtp", host, port, security: "starttls" | "tls",
+            username ("" = no sign-in), password?, fromName, fromAddress }
+          Amazon SES API (provider "ses"; no endpoint: the AWS endpoint follows the region):
+          { currentPassword, revision, provider: "ses", region (SES region, e.g. "ap-south-1"),
+            accessKeyId (AKIA..., capital letters and digits), secretAccessKey?, configurationSet? ("" or missing = none),
+            fromName, fromAddress }
 storage:  { currentPassword, revision, preset: "aws" | "r2" | "spaces" | "other", endpoint ("" = AWS default),
             region, bucket, accessKeyId, secretAccessKey?, forcePathStyle }
 ```
+
+Each email body is strict for its provider: an SMTP body with `region`, or an SES body with `host`, `password` or an
+`endpoint`, is 422 ("Unknown field."); any other `provider` is 422 on `provider` ("Choose SMTP or Amazon SES."). The
+SES region must be one of `SES_REGIONS` in `lib/integrations/model.ts` ("Choose a region where Amazon SES is
+available."); the From name and address follow the SMTP rules.
 
 422 `validation_failed` names the field: a required secret neither stored nor entered ("Enter the key secret."), and in
 production an SMTP host or storage endpoint that is or resolves to a private, loopback or link-local address, a name
@@ -322,14 +335,21 @@ that does not exist, or an endpoint that is not https.
 Responses: PUT `{ integration, changed }` (`changed` = field keys; empty when nothing differed), DELETE
 `{ integration }`, DELETE secret `{ integration, cleared }`, POST test
 `{ kind, source: "admin" | "env", ok, testedAt, steps: [{ id, label, status: "ok" | "failed" | "skipped" | "info", message }] }`
-(a failed test is still 200 with `ok: false`; messages never echo a key or host).
+(a failed test is still 200 with `ok: false`; messages never echo a key or host). Email through Amazon SES maps AWS
+errors to fixed sentences: keys rejected (`InvalidClientTokenId`, `SignatureDoesNotMatch`,
+`UnrecognizedClientException`), sender, domain or sandbox recipient not verified (`MessageRejected`), missing
+`ses:SendEmail` / `ses:SendRawEmail` (`AccessDenied`), throttling, sending paused, configuration set not found, and
+network errors.
 
 `GET /api/admin/settings` -> `integrations: { canManage, items: IntegrationState[], redis }`, where an
 `IntegrationState` is `{ id, title, description, icon, source: "admin" | "env" | "none", development, provider,
 mode: "test" | "live" | null, problem, saved: { revision, updatedAt, updatedBy } | null, envNames, form }`. `form` is
 null without `integrations.manage`; otherwise `{ kind, prefilledFrom: "admin" | "env" | "defaults", values, secrets }`
-with the non-secret values (payments also `webhookUrl` and `lastSignedWebhookAt`) and, per secret,
-`{ set, last4, updatedAt, updatedBy }` (`last4` only for secrets of 16+ characters). `redis` is read-only:
+with the non-secret values (payments also `webhookUrl` and `lastSignedWebhookAt`; email carries both providers'
+fields, `{ provider: "smtp" | "ses", host, port, security, username, region, accessKeyId, configurationSet, fromName,
+fromAddress }`, and both secrets, `{ password, secretAccessKey }`) and, per secret,
+`{ set, last4, updatedAt, updatedBy }` (`last4` only for secrets of 16+ characters). The email `provider` label is
+"SMTP", "Amazon SES (API)" or "Console (dev mailbox)". `redis` is read-only:
 `{ status: "configured" | "missing" | "development", provider, note, envNames: ["REDIS_URL"] }`.
 
 ## Payment webhooks

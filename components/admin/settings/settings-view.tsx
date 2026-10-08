@@ -3,9 +3,10 @@ import { IntegrationsPanel } from "./integrations-panel";
 import { SettingsForm, type SettingsFact } from "./settings-form";
 
 /**
- * Settings grid (prototype: cards auto-fit at 420px minimum, 14px gaps, aligned to the top): Business details, Tax &
- * invoicing, License policy and Sample notice as forms, then the Integrations section (forms for the Owner, status
- * only otherwise, plus the read-only rate-limits card). Server component; each form is a client island.
+ * Settings grid (prototype: cards auto-fit at 420px minimum, 14px gaps): Business details, Tax & invoicing, License
+ * policy and Sample notice as forms, then the Integrations section (forms for the Owner, status only otherwise, plus
+ * the read-only rate-limits card). Cards in a row share one height (items-stretch; SettingsCard keeps its footer at
+ * the bottom), so the Save bars line up (owner request 2026-10-08). Server component; each form is a client island.
  */
 export function SettingsView({ data }: { data: AdminSettingsData }) {
   const values = { business: data.business, tax: data.tax, licensing: data.licensing, "sample-notice": data.sampleNotice } as const;
@@ -22,7 +23,7 @@ export function SettingsView({ data }: { data: AdminSettingsData }) {
     ],
   };
   return (
-    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,420px),1fr))] items-start gap-3.5">
+    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,420px),1fr))] items-stretch gap-3.5">
       {SETTINGS_SECTIONS.map((def) => (
         <SettingsForm key={def.id} section={settingsSection(def.id)} value={values[def.id]} facts={facts[def.id]} />
       ))}

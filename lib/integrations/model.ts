@@ -40,7 +40,18 @@ export const INTEGRATION_TITLES: Readonly<Record<IntegrationKind, string>> = {
 /** The env variable NAMES each integration falls back to (never their values). */
 export const INTEGRATION_ENV_NAMES = {
   payments: ["PAYMENT_PROVIDER", "PAYMENT_KEY_ID", "PAYMENT_KEY_SECRET", "PAYMENT_WEBHOOK_SECRET"],
-  email: ["EMAIL_TRANSPORT", "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD"],
+  email: [
+    "EMAIL_TRANSPORT",
+    "EMAIL_FROM",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USER",
+    "SMTP_PASSWORD",
+    "SES_REGION",
+    "SES_ACCESS_KEY_ID",
+    "SES_SECRET_ACCESS_KEY",
+    "SES_CONFIGURATION_SET",
+  ],
   storage: [
     "STORAGE_DRIVER",
     "STORAGE_ENDPOINT",
@@ -55,9 +66,10 @@ export const INTEGRATION_ENV_NAMES = {
 
 // ---------- Fields and secrets ----------
 
+/** Every secret a kind can hold. Email: `password` (SMTP) or `secretAccessKey` (Amazon SES), by provider. */
 export const SECRET_FIELDS = {
   payments: ["keySecret", "webhookSecret"],
-  email: ["password"],
+  email: ["password", "secretAccessKey"],
   storage: ["secretAccessKey"],
 } as const satisfies Record<IntegrationKind, readonly string[]>;
 export type SecretFieldOf<K extends IntegrationKind> = (typeof SECRET_FIELDS)[K][number];
@@ -77,11 +89,16 @@ export const SECRET_LAST4_MIN_LENGTH = 16;
 export const FIELD_LABELS = {
   payments: { keyId: "Key ID", keySecret: "Key secret", webhookSecret: "Webhook secret" },
   email: {
+    provider: "Provider",
     host: "SMTP host",
     port: "Port",
     security: "Security",
     username: "Username",
     password: "Password",
+    region: "AWS region",
+    accessKeyId: "Access key ID",
+    secretAccessKey: "Secret access key",
+    configurationSet: "Configuration set",
     fromName: "From name",
     fromAddress: "From address",
   },
@@ -132,7 +149,57 @@ export function razorpayMode(keyId: string): PaymentMode | null {
   return m ? (m[1] as PaymentMode) : null;
 }
 
-// ---------- Email (SMTP) ----------
+// ---------- Email (SMTP or Amazon SES) ----------
+
+/** How email leaves: an SMTP server, or the Amazon SES API (SESv2 SendEmail with the raw MIME message). */
+export const EMAIL_PROVIDERS = ["smtp", "ses"] as const;
+export type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
+export const EMAIL_PROVIDER_LABELS: Readonly<Record<EmailProvider, string>> = { smtp: "SMTP", ses: "Amazon SES (API)" };
+
+/**
+ * AWS regions where Amazon SES sends email (commercial partitions; GovCloud and China need separate accounts). The
+ * SESv2 client only ever talks to AWS's own endpoint for one of these regions (no custom endpoint), so a saved region
+ * cannot point the secret anywhere else. Add a region here when AWS launches SES there.
+ */
+export const SES_REGIONS = [
+  { id: "ap-south-1", name: "Asia Pacific (Mumbai)" },
+  { id: "ap-south-2", name: "Asia Pacific (Hyderabad)" },
+  { id: "ap-southeast-1", name: "Asia Pacific (Singapore)" },
+  { id: "ap-southeast-2", name: "Asia Pacific (Sydney)" },
+  { id: "ap-southeast-3", name: "Asia Pacific (Jakarta)" },
+  { id: "ap-northeast-1", name: "Asia Pacific (Tokyo)" },
+  { id: "ap-northeast-2", name: "Asia Pacific (Seoul)" },
+  { id: "ap-northeast-3", name: "Asia Pacific (Osaka)" },
+  { id: "us-east-1", name: "US East (N. Virginia)" },
+  { id: "us-east-2", name: "US East (Ohio)" },
+  { id: "us-west-1", name: "US West (N. California)" },
+  { id: "us-west-2", name: "US West (Oregon)" },
+  { id: "ca-central-1", name: "Canada (Central)" },
+  { id: "sa-east-1", name: "South America (São Paulo)" },
+  { id: "eu-central-1", name: "Europe (Frankfurt)" },
+  { id: "eu-central-2", name: "Europe (Zurich)" },
+  { id: "eu-west-1", name: "Europe (Ireland)" },
+  { id: "eu-west-2", name: "Europe (London)" },
+  { id: "eu-west-3", name: "Europe (Paris)" },
+  { id: "eu-north-1", name: "Europe (Stockholm)" },
+  { id: "eu-south-1", name: "Europe (Milan)" },
+  { id: "il-central-1", name: "Israel (Tel Aviv)" },
+  { id: "me-south-1", name: "Middle East (Bahrain)" },
+  { id: "af-south-1", name: "Africa (Cape Town)" },
+] as const;
+export type SesRegion = (typeof SES_REGIONS)[number]["id"];
+export const SES_REGION_IDS = SES_REGIONS.map((r) => r.id) as [SesRegion, ...SesRegion[]];
+/** Mumbai: the closest SES region to the business (owner decision 2026-10-08). */
+export const DEFAULT_SES_REGION: SesRegion = "ap-south-1";
+
+export function isSesRegion(value: unknown): value is SesRegion {
+  return typeof value === "string" && (SES_REGION_IDS as readonly string[]).includes(value);
+}
+
+/** AWS access key IDs: 16 to 128 capital letters and digits ("AKIA" + 16 for an IAM user's long-term key). */
+export const AWS_ACCESS_KEY_ID_RE = /^[A-Z0-9]{16,128}$/;
+/** SES configuration set names: letters, digits, hyphens and underscores, up to 64. */
+export const SES_CONFIGURATION_SET_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export const EMAIL_SECURITY = ["starttls", "tls"] as const;
 export type EmailSecurity = (typeof EMAIL_SECURITY)[number];
@@ -266,7 +333,19 @@ export const paymentsSettingsSchema = z.strictObject({
   keyId: z.string().regex(RAZORPAY_KEY_ID_RE),
 });
 
-export const emailSettingsSchema = z.strictObject({
+/**
+ * Email rows saved before Amazon SES was added (2026-10-08) have no `provider`: they are SMTP. Applied to persisted
+ * settings and to save bodies (a body without `provider` is an SMTP body).
+ */
+function withEmailProvider(value: unknown): unknown {
+  if (value !== null && typeof value === "object" && !Array.isArray(value) && !("provider" in value)) return { provider: "smtp", ...value };
+  return value;
+}
+
+const PROVIDER_MESSAGE = "Choose SMTP or Amazon SES.";
+
+export const smtpSettingsSchema = z.strictObject({
+  provider: z.literal("smtp"),
   host: hostSchema,
   port: portSchema,
   security: z.enum(EMAIL_SECURITY),
@@ -280,6 +359,24 @@ export const emailSettingsSchema = z.strictObject({
   fromName: fromNameSchema,
   fromAddress: fromAddressSchema,
 });
+
+export const sesSettingsSchema = z.strictObject({
+  provider: z.literal("ses"),
+  region: z.enum(SES_REGION_IDS),
+  accessKeyId: z
+    .string()
+    .regex(AWS_ACCESS_KEY_ID_RE)
+    .refine((v) => !isPlaceholder(v)),
+  /** null: no configuration set (SES account defaults). */
+  configurationSet: z.string().regex(SES_CONFIGURATION_SET_RE).nullable(),
+  fromName: fromNameSchema,
+  fromAddress: fromAddressSchema,
+});
+
+export const emailSettingsSchema = z.preprocess(
+  withEmailProvider,
+  z.discriminatedUnion("provider", [smtpSettingsSchema, sesSettingsSchema], { error: PROVIDER_MESSAGE }),
+);
 
 export const storageSettingsSchema = z.strictObject({
   preset: z.enum(STORAGE_PRESETS),
@@ -298,29 +395,37 @@ export const INTEGRATION_SETTINGS_SCHEMAS = {
 } as const;
 
 export type PaymentsSettings = z.output<typeof paymentsSettingsSchema>;
-export type EmailSettings = z.output<typeof emailSettingsSchema>;
+export type SmtpEmailSettings = z.output<typeof smtpSettingsSchema>;
+export type SesEmailSettings = z.output<typeof sesSettingsSchema>;
+export type EmailSettings = SmtpEmailSettings | SesEmailSettings;
 export type StorageSettings = z.output<typeof storageSettingsSchema>;
 export type PersistedSettings = { payments: PaymentsSettings; email: EmailSettings; storage: StorageSettings };
 
 /**
- * The fields that decide where a stored secret is sent: email the SMTP server (host, port, security), storage the
- * endpoint (SigV4 never sends the secret itself, but an endpoint the Owner does not control still sees signatures).
- * Payments have none: the Razorpay API address is fixed. When one of them changes, every secret saved for the kind
- * must be entered again in the same save, so a stored secret can never be pointed at another server and read out
- * there (lib/integrations/store.ts writeIntegration; the forms ask for it first).
+ * The fields that decide where a stored secret is sent: email the provider and then the SMTP server (host, port,
+ * security) or the SES region (the AWS endpoint follows it), storage the endpoint (SigV4 never sends the secret
+ * itself, but an endpoint the Owner does not control still sees signatures). Payments have none: the Razorpay API
+ * address is fixed. When one of them changes, every secret the new settings use must be entered again in the same
+ * save, so a stored secret can never be pointed at another server and read out there
+ * (lib/integrations/store.ts writeIntegration; the forms ask for it first).
  */
 export const DESTINATION_FIELDS = {
   payments: [],
-  email: ["host", "port", "security"],
+  email: ["provider", "host", "port", "security", "region"],
   storage: ["endpoint"],
 } as const satisfies Record<IntegrationKind, readonly string[]>;
 
 /** The message on each stored secret that must be entered again because the server changed. */
 export const SECRET_REENTRY_MESSAGES: Readonly<Record<IntegrationKind, string>> = {
   payments: "Enter it again.",
-  email: "Enter it again: the SMTP server changed.",
+  email: "Enter it again: the email provider, server or region changed.",
   storage: "Enter it again: the endpoint changed.",
 };
+
+/** The email provider of settings or a form draft (no provider = SMTP, like rows saved before SES). */
+export function emailProviderOf(values: Readonly<Record<string, unknown>> | null | undefined): EmailProvider {
+  return values?.provider === "ses" ? "ses" : "smtp";
+}
 
 function destinationValue(field: string, value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -328,6 +433,7 @@ function destinationValue(field: string, value: unknown): string {
   if (field === "host") return normalizeHost(raw);
   if (field === "endpoint") return raw === "" ? "" : (normalizeEndpoint(raw) ?? raw);
   if (field === "port") return raw === "" ? "" : String(Number(raw));
+  if (field === "region") return raw.toLowerCase();
   return raw;
 }
 
@@ -336,15 +442,34 @@ function destinationValue(field: string, value: unknown): string {
  * host case, endpoint origin, port as a number). Works on persisted settings and on form drafts alike.
  */
 export function destinationChanged(kind: IntegrationKind, previous: Readonly<Record<string, unknown>>, next: Readonly<Record<string, unknown>>): boolean {
+  if (kind === "email") {
+    // Only the fields of the provider in use count (an SMTP draft still carries the SES defaults, and the reverse).
+    const before = emailProviderOf(previous);
+    const after = emailProviderOf(next);
+    if (before !== after) return true;
+    const fields = after === "ses" ? ["region"] : ["host", "port", "security"];
+    return fields.some((field) => destinationValue(field, previous[field]) !== destinationValue(field, next[field]));
+  }
   const fields: readonly string[] = DESTINATION_FIELDS[kind];
   return fields.some((field) => destinationValue(field, previous[field]) !== destinationValue(field, next[field]));
 }
 
-/** The secrets a saved configuration needs (email: the password only when a username is set). */
+/**
+ * The secrets settings can use: payments both, storage the secret access key, email the SMTP password or the SES
+ * secret access key by provider. A stored secret outside this list is removed by the save that switches provider.
+ */
+export function applicableSecrets<K extends IntegrationKind>(kind: K, settings: Readonly<Record<string, unknown>>): SecretFieldOf<K>[] {
+  if (kind === "email") return [emailProviderOf(settings) === "ses" ? "secretAccessKey" : "password"] as SecretFieldOf<K>[];
+  return [...SECRET_FIELDS[kind]] as SecretFieldOf<K>[];
+}
+
+/** The secrets a saved configuration needs (SMTP: the password only when a username is set; SES: the secret key). */
 export function requiredSecrets<K extends IntegrationKind>(kind: K, settings: PersistedSettings[K]): SecretField[] {
   if (kind === "payments") return ["keySecret", "webhookSecret"];
   if (kind === "storage") return ["secretAccessKey"];
-  return (settings as EmailSettings).username === null ? [] : ["password"];
+  const email = settings as EmailSettings;
+  if (email.provider === "ses") return ["secretAccessKey"];
+  return email.username === null ? [] : ["password"];
 }
 
 // ---------- Save bodies (PUT /api/admin/settings/integrations/:kind) ----------
@@ -384,9 +509,14 @@ export const paymentsSaveSchema = z.strictObject({
 
 const PORT_MESSAGE = "Enter a port from 1 to 65535.";
 
-export const emailSaveSchema = z.strictObject({
+const fromNameInput = trimmed(100, "Enter the sender name.").refine(isMailboxName, "Use letters, digits and spaces only (no < or >).");
+const fromAddressInput = trimmed(254, "Enter the From address.").refine(isMailboxAddress, "Enter an email address such as no-reply@example.com.");
+
+/** The SMTP body of PUT .../email (`provider` may be left out: a body without one is SMTP). */
+export const smtpSaveSchema = z.strictObject({
   currentPassword: currentPasswordSchema,
   revision: revisionSchema,
+  provider: z.literal("smtp"),
   host: trimmed(253, "Enter the SMTP host.")
     .transform(normalizeHost)
     .refine(isHostLike, "Enter a host name such as smtp.example.com."),
@@ -399,9 +529,45 @@ export const emailSaveSchema = z.strictObject({
     .refine((v) => !CONTROL_RE.test(v), "Remove line breaks and other control characters.")
     .transform((v) => (v === "" ? null : v)),
   password: secretInput("password"),
-  fromName: trimmed(100, "Enter the sender name.").refine(isMailboxName, "Use letters, digits and spaces only (no < or >)."),
-  fromAddress: trimmed(254, "Enter the From address.").refine(isMailboxAddress, "Enter an email address such as no-reply@example.com."),
+  fromName: fromNameInput,
+  fromAddress: fromAddressInput,
 });
+
+const SES_ACCESS_KEY_MESSAGE = "Enter the access key ID: capital letters and digits, usually starting with AKIA.";
+const CONFIGURATION_SET_MESSAGE = "Use letters, digits, hyphens and underscores only (up to 64), or leave it empty.";
+
+/** The Amazon SES body of PUT .../email. No endpoint: the AWS endpoint follows the region. */
+export const sesSaveSchema = z.strictObject({
+  currentPassword: currentPasswordSchema,
+  revision: revisionSchema,
+  provider: z.literal("ses"),
+  region: z
+    .string("Choose the AWS region.")
+    .trim()
+    .toLowerCase()
+    .pipe(z.enum(SES_REGION_IDS, "Choose a region where Amazon SES is available.")),
+  accessKeyId: z
+    .string(SES_ACCESS_KEY_MESSAGE)
+    .trim()
+    .regex(AWS_ACCESS_KEY_ID_RE, SES_ACCESS_KEY_MESSAGE)
+    .refine((v) => !isPlaceholder(v), "Enter the real access key ID."),
+  secretAccessKey: secretInput("secretAccessKey"),
+  configurationSet: z
+    .string(CONFIGURATION_SET_MESSAGE)
+    .trim()
+    .max(64, CONFIGURATION_SET_MESSAGE)
+    .refine((v) => v === "" || SES_CONFIGURATION_SET_RE.test(v), CONFIGURATION_SET_MESSAGE)
+    .optional()
+    .transform((v) => (v === undefined || v === "" ? null : v)),
+  fromName: fromNameInput,
+  fromAddress: fromAddressInput,
+});
+
+/** PUT .../email: the SMTP or the SES body, chosen by `provider` (missing = SMTP; anything else 422 on provider). */
+export const emailSaveSchema = z.preprocess(
+  withEmailProvider,
+  z.discriminatedUnion("provider", [smtpSaveSchema, sesSaveSchema], { error: PROVIDER_MESSAGE }),
+);
 
 const ENDPOINT_MESSAGE = "Enter an https:// address without a path, such as https://s3.ap-south-1.amazonaws.com.";
 
@@ -470,14 +636,25 @@ export function splitSaveBody<K extends IntegrationKind>(kind: K, body: Integrat
   }
   if (kind === "email") {
     const e = body as IntegrationSaveBody<"email">;
-    const settings: EmailSettings = {
-      host: e.host,
-      port: e.port,
-      security: e.security,
-      username: e.username,
-      fromName: e.fromName,
-      fromAddress: e.fromAddress,
-    };
+    const settings: EmailSettings =
+      e.provider === "ses"
+        ? {
+            provider: "ses",
+            region: e.region,
+            accessKeyId: e.accessKeyId,
+            configurationSet: e.configurationSet,
+            fromName: e.fromName,
+            fromAddress: e.fromAddress,
+          }
+        : {
+            provider: "smtp",
+            host: e.host,
+            port: e.port,
+            security: e.security,
+            username: e.username,
+            fromName: e.fromName,
+            fromAddress: e.fromAddress,
+          };
     return { settings: settings as PersistedSettings[K], secrets };
   }
   const s = body as IntegrationSaveBody<"storage">;

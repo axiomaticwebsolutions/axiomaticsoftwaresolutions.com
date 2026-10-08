@@ -127,6 +127,54 @@ export function emailFailureMessage(error: unknown): string {
   return "Couldn’t send the test email.";
 }
 
+const AWS_KEY_ERRORS = [
+  "InvalidClientTokenId",
+  "SignatureDoesNotMatch",
+  "UnrecognizedClientException",
+  "InvalidSignatureException",
+  "IncompleteSignature",
+  "MissingAuthenticationTokenException",
+];
+const AWS_THROTTLE_ERRORS = ["TooManyRequestsException", "ThrottlingException", "Throttling", "LimitExceededException"];
+const NETWORK_ERRORS = [
+  "ENOTFOUND",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EPIPE",
+  "TimeoutError",
+  "RequestTimeout",
+  "NetworkingError",
+  "ProbeTimeoutError",
+];
+
+/**
+ * The probe's message for an Amazon SES (AWS SDK) error, by exception name, code and HTTP status: never the AWS error
+ * text (it can name the identity or the account) and never a key. nodemailer tags SDK errors with code ESES, so the
+ * name decides first.
+ */
+export function sesFailureMessage(error: unknown): string {
+  const e = error as { name?: unknown; code?: unknown; Code?: unknown; $metadata?: { httpStatusCode?: unknown } } | null;
+  const name = typeof e?.name === "string" ? e.name : "";
+  const code = typeof e?.code === "string" ? e.code : typeof e?.Code === "string" ? e.Code : "";
+  const status = typeof e?.$metadata?.httpStatusCode === "number" ? e.$metadata.httpStatusCode : 0;
+  const is = (list: readonly string[]) => list.includes(name) || list.includes(code);
+  if (is(AWS_KEY_ERRORS)) return "AWS rejected the access key ID or secret access key.";
+  if (is(["MessageRejected", "MailFromDomainNotVerifiedException"])) {
+    return "Amazon SES refused the message: verify the From address or its domain in SES (in the SES sandbox, verify the recipient too).";
+  }
+  if (is(["AccessDenied", "AccessDeniedException"])) return "This access key isn’t allowed to send email. Allow ses:SendEmail and ses:SendRawEmail.";
+  if (is(AWS_THROTTLE_ERRORS)) return "Amazon SES is throttling sends (rate or daily quota). Try again later.";
+  if (is(["SendingPausedException", "AccountSuspendedException"])) return "Sending is paused for this AWS account or configuration set. Check the SES console.";
+  if (is(["NotFoundException"])) return "Amazon SES couldn’t find the configuration set in this region.";
+  if (is(NETWORK_ERRORS)) return "Couldn’t reach Amazon SES. Try again in a minute.";
+  if (status === 403) return "AWS rejected the access key ID or secret access key.";
+  return "Couldn’t send the test email.";
+}
+
 /** "Send test email": one message to the Owner's own address through a one-off transport. */
 export async function probeEmail(resolved: Configured<EmailConfig>, opts: EmailProbeOptions): Promise<ProbeResult> {
   const now = opts.now ?? new Date();
@@ -144,7 +192,8 @@ export async function probeEmail(resolved: Configured<EmailConfig>, opts: EmailP
         ? { id: "send", label, status: "ok", message: "Sent to the dev mailbox (/dev/mailbox)." }
         : { id: "send", label, status: "ok", message: `Sent to ${opts.to}. Check that inbox (and spam).` };
   } catch (error) {
-    step = { id: "send", label, status: "failed", message: emailFailureMessage(error) };
+    const message = resolved.config.transport === "ses" ? sesFailureMessage(error) : emailFailureMessage(error);
+    step = { id: "send", label, status: "failed", message };
   } finally {
     try {
       transport?.close?.();

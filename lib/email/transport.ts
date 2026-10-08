@@ -1,9 +1,9 @@
 /**
  * The email transport of the effective email configuration (lib/integrations/resolver.ts: Admin > Settings >
- * Integrations, else the env fallback): "smtp" (nodemailer, pooled) or "console" (development only; keeps the message
- * for /dev/mailbox). The process-wide transport is rebuilt when the configuration changes (the old pool is closed a
- * minute later, so sends in flight finish). Not configured -> EmailNotConfiguredError. Tests replace it with
- * setEmailTransport().
+ * Integrations, else the env fallback): "smtp" (nodemailer, pooled), "ses" (Amazon SES API through nodemailer's SES
+ * transport and the SESv2 client) or "console" (development only; keeps the message for /dev/mailbox). The
+ * process-wide transport is rebuilt when the configuration changes (the old pool or client is closed a minute later,
+ * so sends in flight finish). Not configured -> EmailNotConfiguredError. Tests replace it with setEmailTransport().
  */
 import "server-only";
 import { isProduction } from "@/lib/env";
@@ -24,7 +24,7 @@ export type EmailSendResult = { messageId: string };
 export interface EmailTransport {
   readonly name: string;
   send(message: OutgoingEmail): Promise<EmailSendResult>;
-  /** Releases pooled connections (SMTP). */
+  /** Releases pooled connections (SMTP) or the client's sockets (SES). */
   close?(): void;
 }
 
@@ -53,6 +53,10 @@ export async function createEmailTransport(config: EmailConfig, opts: { pool?: b
   if (config.transport === "smtp") {
     const { createSmtpTransport, smtpOptions } = await import("./transports/smtp");
     return createSmtpTransport(smtpOptions(config, { production: isProduction(), pool: opts.pool ?? true }), config.from);
+  }
+  if (config.transport === "ses") {
+    const { createSesTransport } = await import("./transports/ses");
+    return createSesTransport(config);
   }
   const { createConsoleTransport } = await import("./transports/console");
   return createConsoleTransport();
@@ -94,14 +98,18 @@ export function maskEmail(address: string): string {
   return `${address.slice(0, Math.min(2, at))}***${address.slice(at)}`;
 }
 
-/** Name and codes of a send error, never its message (SMTP replies can echo addresses). */
+/**
+ * Name and codes of a send error, never its message (SMTP replies and SES errors can echo addresses). AWS errors carry
+ * their exception name (MessageRejected, ...) and the HTTP status of the API call.
+ */
 export function sendErrorSummary(error: unknown): Record<string, string | number> {
   if (!(error instanceof Error)) return { name: typeof error };
   const out: Record<string, string | number> = { name: error.name };
-  const { code, responseCode, command } = error as { code?: unknown; responseCode?: unknown; command?: unknown };
+  const { code, responseCode, command, $metadata } = error as { code?: unknown; responseCode?: unknown; command?: unknown; $metadata?: { httpStatusCode?: unknown } };
   // "errorCode": the logger redacts any field named like "code".
   if (typeof code === "string" || typeof code === "number") out.errorCode = code;
   if (typeof responseCode === "number") out.smtpStatus = responseCode;
   if (typeof command === "string") out.smtpCommand = command.split(" ")[0] ?? command;
+  if (typeof $metadata?.httpStatusCode === "number") out.httpStatus = $metadata.httpStatusCode;
   return out;
 }

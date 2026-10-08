@@ -33,7 +33,7 @@ async function outboxCounts(): Promise<OutboxCounts | null> {
   }
 }
 
-/** The effective email transport (Admin-saved SMTP or the env fallback; lib/integrations/resolver.ts). */
+/** The effective email transport (Admin-saved SMTP / Amazon SES or the env fallback; lib/integrations/resolver.ts). */
 async function transportName(): Promise<string | null> {
   try {
     const email = await resolveEmail();
@@ -164,10 +164,12 @@ export default async function DevMailboxPage({
         </div>
       </header>
 
-      {transport === "smtp" ? (
+      {transport === "smtp" || transport === "ses" ? (
         <Alert tone="info" role="note">
-          <AlertTitle>Emails are going out through SMTP</AlertTitle>
-          <AlertDescription>An SMTP configuration is active, so new messages are delivered and not kept here.</AlertDescription>
+          <AlertTitle>Emails are going out through {transport === "ses" ? "Amazon SES" : "SMTP"}</AlertTitle>
+          <AlertDescription>
+            {transport === "ses" ? "An Amazon SES" : "An SMTP"} configuration is active, so new messages are delivered and not kept here.
+          </AlertDescription>
         </Alert>
       ) : null}
 

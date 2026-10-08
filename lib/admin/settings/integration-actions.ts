@@ -135,7 +135,10 @@ async function hostFieldErrors(
   let field: "host" | "endpoint";
   let host: string;
   if (kind === "email") {
-    host = (settings as EmailSettings).host;
+    const email = settings as EmailSettings;
+    // Amazon SES has no host to check: the AWS endpoint follows the region (model.ts SES_REGIONS).
+    if (email.provider !== "smtp") return {};
+    host = email.host;
     const problem = hostProblem(host, { production: opts.production });
     if (problem) return { host: problem.message };
     field = "host";
@@ -184,16 +187,17 @@ export async function saveIntegration<K extends IntegrationKind>(
   const revision = (body as { revision: number | null }).revision;
   const written = await client.$transaction(async (tx) => {
     const result = await writeIntegration(tx, { kind, settings, secrets, actorId: by.staff.id, expectedRevision: revision, ikm });
-    if (result.changed.length > 0) {
+    if (result.changed.length > 0 || result.removed.length > 0) {
       const labels = labelsOf(kind, result.changed);
-      const detail = result.created ? `Saved: ${labels}${replacesEnv ? " (replaces the server file)" : ""}.` : `Changed: ${labels}.`;
+      let detail = result.created ? `Saved: ${labels}${replacesEnv ? " (replaces the server file)" : ""}.` : `Changed: ${labels}.`;
+      if (result.removed.length > 0) detail += ` Removed: ${labelsOf(kind, result.removed)}.`;
       await audit(tx, by.actor, { action: INTEGRATION_AUDIT_ACTIONS.saved, ...auditTarget(kind), detail });
     }
     return result;
   });
-  if (written.changed.length > 0) {
+  if (written.changed.length > 0 || written.removed.length > 0) {
     invalidateIntegrations();
-    log.info("integration_saved", { kind, fields: written.changed, by: by.staff.id });
+    log.info("integration_saved", { kind, fields: written.changed, removed: written.removed, by: by.staff.id });
   }
   return { integration: await loadIntegrationState(client, kind, opts.env ?? getEnv()), changed: written.changed };
 }
@@ -252,12 +256,20 @@ export async function removeIntegration(
 
 // ---------- Test buttons ----------
 
+/** Audit reasons of a failed "Send test email", by the start of the probe's fixed message (SMTP, then Amazon SES). */
 const EMAIL_FAILURE_REASONS: readonly (readonly [string, string])[] = [
   ["The server rejected", "sign-in rejected"],
   ["Couldn’t connect", "couldn’t connect"],
   ["The secure connection", "secure connection failed"],
   ["Blocked", "private network address"],
   ["The server refused", "message refused"],
+  ["AWS rejected", "keys rejected"],
+  ["Amazon SES refused", "sender or recipient not verified"],
+  ["This access key isn’t allowed", "missing permission"],
+  ["Amazon SES is throttling", "throttled"],
+  ["Sending is paused", "sending paused"],
+  ["Amazon SES couldn’t find", "configuration set not found"],
+  ["Couldn’t reach Amazon SES", "couldn’t connect"],
 ];
 
 /**

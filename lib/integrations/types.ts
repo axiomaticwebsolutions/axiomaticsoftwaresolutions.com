@@ -17,6 +17,16 @@ export type EmailConfig =
       auth: { user: string; pass: string } | null;
       from: { name: string; address: string };
     }
+  | {
+      /** Amazon SES API (SESv2 SendEmail, raw MIME). The endpoint is AWS's own for `region`; there is no custom one. */
+      transport: "ses";
+      region: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      /** SES configuration set for event publishing; null = none. */
+      configurationSet: string | null;
+      from: { name: string; address: string };
+    }
   | { transport: "console"; from: { name: string; address: string } };
 
 export type StorageConfig =

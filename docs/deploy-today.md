@@ -3,8 +3,9 @@
 > **The live server** (axiomaticsoftwaresolutions.com, aaPanel VPS shared with other apps) differs from this guide in several places: app user, port, database name, Redis, proxy and backup folder. For that server use [`server-runbook.md`](server-runbook.md); its commands already include the differences.
 
 This guide puts the site on `https://<domain>` on your own Linux VPS, managed with aaPanel, with **Razorpay in TEST
-mode**, real email (SMTP) and real private file storage (an S3-compatible bucket). Nobody can pay real money yet and
-the site keeps its "sample" labels. What must change before live sales is in [`go-live-checklist.md`](go-live-checklist.md).
+mode**, real email (SMTP or the Amazon SES API) and real private file storage (an S3-compatible bucket). Nobody can
+pay real money yet and the site keeps its "sample" labels. What must change before live sales is in
+[`go-live-checklist.md`](go-live-checklist.md).
 
 Everything runs natively: Node.js 24 + PM2, PostgreSQL and Redis come from the aaPanel App Store. There is no Docker.
 Plan about 3 hours; most of it is waiting (DNS, your email provider verifying the domain, the first build).
@@ -24,7 +25,7 @@ Browser / desktop apps --https--> aaPanel Nginx :443 (Let's Encrypt) --http--> 1
 aaPanel Cron (as the app user) --http--> 127.0.0.1:3000/api/cron/emails (every minute), /reconcile (every 10 minutes), /renewals and /maintenance (daily)
 aaPanel Cron (as the app user) --> pg_dump every night --> /www/backup/axiomatic (kept 14 days)
 Razorpay --https--> https://<domain>/api/webhooks/payments/razorpay
-Files: your private S3-compatible bucket (browsers upload and download straight to and from it). Email: your SMTP provider.
+Files: your private S3-compatible bucket (browsers upload and download straight to and from it). Email: your SMTP provider, or Amazon SES through its API.
 ```
 
 Only Nginx faces the internet. The app listens on `127.0.0.1:3000`; PostgreSQL and Redis listen on `127.0.0.1` only.
@@ -90,12 +91,13 @@ Only Nginx faces the internet. The app listens on `127.0.0.1:3000`; PostgreSQL a
 - **Keep the aaPanel panel private:** aaPanel > Settings: keep the random security entrance, turn on panel SSL and
   two-factor authentication, and set "Authorized IP" if your home or office IP is fixed.
 
-### 0.4 Email (SMTP provider)
-The app sends verification and sign-in codes, password resets, order, license and invoice emails by SMTP. Two-step
-sign-in (an emailed code) is optional and starts **off** for the first Owner, so you can get into Admin with the
-password even before SMTP works; you turn it on once email works (step 11, item 3). Customers still need email to
-verify their address, so set SMTP up today. Pick one provider and verify your domain with it (it gives you DNS records
-to add: SPF and DKIM). Use port **587** (STARTTLS, which the app requires in production) or 465 (TLS).
+### 0.4 Email (SMTP provider, or Amazon SES API)
+The app sends verification and sign-in codes, password resets, order, license and invoice emails through SMTP or the
+Amazon SES API. Two-step sign-in (an emailed code) is optional and starts **off** for the first Owner, so you can get
+into Admin with the password even before email works; you turn it on once email works (step 11, item 3). Customers
+still need email to verify their address, so set email up today. Pick one provider and verify your domain with it (it
+gives you DNS records to add: SPF and DKIM). For SMTP use port **587** (STARTTLS, which the app requires in
+production) or 465 (TLS).
 
 | Provider | SMTP host | Port | Username | Password |
 |---|---|---|---|---|
@@ -111,9 +113,37 @@ to add: SPF and DKIM). Use port **587** (STARTTLS, which the app requires in pro
   the 3 CNAME records. SMTP settings > Create SMTP credentials (these are not your AWS access keys). A new account is
   in the **sandbox** and only sends to verified addresses: verify your own address(es) for today and request
   production access for real customers.
+- **Amazon SES through its API (no SMTP)**, Admin's Provider "Amazon SES (API)": the same domain identity with Easy
+  DKIM and the same sandbox rule, then IAM > Users > Create user (no console access) with an inline policy allowing
+  only `ses:SendEmail` and `ses:SendRawEmail` on your domain's identity in that region (replace `<account-id>`, your
+  12-digit AWS account ID, and `<domain>`):
+
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["ses:SendEmail", "ses:SendRawEmail"],
+        "Resource": ["arn:aws:ses:ap-south-1:<account-id>:identity/<domain>"]
+      }
+    ]
+  }
+  ```
+
+  While the account is in the sandbox, SES also checks the verified recipient: add
+  `arn:aws:ses:ap-south-1:<account-id>:identity/<your verified address>` to `Resource` for the test and remove it
+  after production access. If you use a configuration set, add
+  `arn:aws:ses:ap-south-1:<account-id>:configuration-set/<name>` too. Then Security credentials > Create access key
+  (use case "Application running outside AWS"). In Admin you enter the AWS region (`ap-south-1`, Mumbai), the access
+  key ID, the secret access key, an optional configuration set, the From name and the From address. There is no host
+  or port: the app talks to AWS's HTTPS endpoint for the region (outbound port 443), so the SMTP port check below does
+  not apply.
 - The sender (From address) must use the verified domain, e.g. `Axiomatic Software <no-reply@<domain>>`.
-- Keep the host, port, username, password and From address in your password manager. You enter them in **Admin >
-  Settings > Integrations > Email delivery** after the first sign-in (step 9), not in the server file.
+- Keep the SMTP or SES details (host, port, username and password, or region, access key ID and secret access key)
+  and the From address in your password manager. You enter them in **Admin > Settings > Integrations > Email
+  delivery** after the first sign-in (step 9), not in the server file. If Chrome then offers to save or suggest a
+  password on those forms, choose "No thanks" (docs/go-live-checklist.md).
 - Check that the server can reach the SMTP port (many hosts block port 25; 587 is usually open):
 
   ```bash
@@ -641,9 +671,11 @@ the same time; no restart is needed.
      - **Installer storage:** pick the provider (it fills in endpoint, region and path style; check them against step
        0.5, item 4), then bucket, access key ID and secret access key > Save > **Test bucket**: upload, read and delete
        must each say OK.
-     - **Email delivery:** SMTP host, port 587 with STARTTLS (or 465 with TLS), username, password, From name and From
-       address on your verified domain (step 0.4) > Save > **Send test email** goes to your own address; check it
-       arrived (and the spam folder).
+     - **Email delivery:** Provider **SMTP**: SMTP host, port 587 with STARTTLS (or 465 with TLS), username, password;
+       or Provider **Amazon SES (API)**: AWS region (`ap-south-1`), access key ID, secret access key, configuration set
+       (optional). Then From name and From address on your verified domain (step 0.4) > Save > **Send test email**
+       goes to your own address; check it arrived (and the spam folder). In the SES sandbox your own address must be
+       a verified identity too.
      - **Rate limits** is read-only (Redis, set in the server file).
      A card that says "Not configured" names what is missing. Nothing needs a restart or a deploy.
 4. **Admin > Releases:** the bootstrap created one **draft** release per product, without files. For each product
@@ -759,8 +791,8 @@ Use a private browser window and an email address that is **not** the Owner's (f
 
 **Changed Razorpay, email or storage?** Save it in Admin > Settings > Integrations: it applies at once, no restart or
 deploy (other PM2 processes follow within 30 seconds; after a storage change the Settings page reloads itself, other
-open browser tabs need a reload). Changing the SMTP server or the storage endpoint asks for the saved password or
-secret key again.
+open browser tabs need a reload). Changing the email provider, the SMTP server, the SES region or the storage
+endpoint asks for the saved password or secret key again.
 **Changed only a setting** in `shared/.env.production`? Restart instead of deploying:
 `sudo -iu axiomatic bash /www/wwwroot/axiomatic/current/deploy/restart.sh` (that includes the `STORAGE_*` fallback:
 the bucket origin in the Content-Security-Policy is set at runtime). A change to `APP_URL` or `SECURITY_HSTS_STRICT`
@@ -769,7 +801,7 @@ needs a deploy (item 3 above; the same code is fine): the build bakes them into 
 **Removing the release-day stand-ins** (`rzp_test_pending`, `smtp-pending.invalid`, `https://r2-pending.invalid` and
 the other "pending" values): until real values are saved, those integrations show "Not configured" and the site says
 payments are not available yet. Save the real values in Admin > Settings > Integrations (step 9; they win at once),
-then delete every `PAYMENT_*`, `STORAGE_*` (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*` and `SMTP_*` line from
+then delete every `PAYMENT_*`, `STORAGE_*` (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*`, `SMTP_*` and `SES_*` line from
 `shared/.env.production` and run `restart.sh`. The cards then say "Saved in Admin"; if the Admin settings are removed
 later, nothing falls back to stand-ins.
 

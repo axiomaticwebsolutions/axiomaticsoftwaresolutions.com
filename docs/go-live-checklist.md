@@ -60,7 +60,7 @@ Tick an item only after you have done the check, not because the setting "should
 - [ ] **Test mode is on.** Admin > Settings > Integrations > Payment provider shows "Saved in Admin" and the **Test
   mode** badge (the Key ID starts with `rzp_test_`), and Admin shows the "Test mode" pill in the top bar.
 - [ ] **No release-day stand-ins left.** Once Razorpay, email and storage are saved in Admin, the server file has no
-  integration lines: `grep -cE '^(PAYMENT|STORAGE|EMAIL|SMTP)_' /www/wwwroot/axiomatic/shared/.env.production` prints
+  integration lines: `grep -cE '^(PAYMENT|STORAGE|EMAIL|SMTP|SES)_' /www/wwwroot/axiomatic/shared/.env.production` prints
   `0` (`DOWNLOAD_LINK_TTL_SECONDS` stays and does not match). Otherwise delete those lines and run `restart.sh`
   (deploy/README.md "Restart, env changes and secret rotation").
 - [ ] **Public address and proxy count.** `grep -E '^(APP_URL|TRUSTED_PROXY_HOPS)=' /www/wwwroot/axiomatic/shared/.env.production`
@@ -142,6 +142,42 @@ Tick an item only after you have done the check, not because the setting "should
   starts off, so Admin is reachable before SMTP works; decisions.md 2026-10-08).
 - [ ] **Email works.** "Forgot password" on /sign-in (or a test purchase) sends an email that arrives within a minute.
   Until it does, leave two-step sign-in off: its codes are emailed.
+- [ ] **If email goes through Amazon SES (API)** (Admin > Settings > Integrations > Email delivery > Provider "Amazon
+  SES (API)", region `ap-south-1` unless the identity lives elsewhere; decisions.md 2026-10-08):
+  - The sending domain is a verified identity in SES in that region, with **Easy DKIM** (the three CNAME records
+    published and "Successful"), and the From address uses that domain (SPF and DMARC as for any provider).
+  - **Production access** is granted (SES console > Account dashboard). In the sandbox SES only delivers to verified
+    addresses: SES refuses email to any other customer, and those outbox emails are retried and then end as FAILED
+    ("Send test email" to an unverified address shows "Amazon SES refused the message").
+  - The access key belongs to an **IAM user with no console access whose only policy is this inline one**: the two
+    send actions, on the sending domain's identity in that region only (replace `<account-id>` and `<domain>`):
+
+    ```json
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["ses:SendEmail", "ses:SendRawEmail"],
+          "Resource": ["arn:aws:ses:ap-south-1:<account-id>:identity/<domain>"]
+        }
+      ]
+    }
+    ```
+
+    A leaked key can then only send as that domain, from that region. If a configuration set is saved in Admin, add
+    `arn:aws:ses:ap-south-1:<account-id>:configuration-set/<name>` to `Resource`, or every send fails with "This
+    access key isn’t allowed to send email". While the account is still in the sandbox, SES also checks the verified
+    recipient: add `arn:aws:ses:ap-south-1:<account-id>:identity/<your test address>` for the test and remove it once
+    production access is granted. The secret access key lives only in Admin (or the server file fallback), never in a
+    chat or ticket.
+  - "Send test email" passes. Its failures name the cause without the key: keys rejected, sender or recipient not
+    verified (or still in the sandbox), missing permission, throttling.
+- [ ] **No integration secret saved in the browser.** Chrome's own password manager ignores the opt-out attributes of
+  the integration forms: it may offer "Suggest strong password" on a secret input or "Save password?" after a save.
+  Choose **No thanks** (not "Never": that is per site and would also stop Chrome saving the Admin sign-in). If a Key
+  secret, webhook secret, password or secret access key was ever saved, delete it in Chrome (Settings > Passwords /
+  Google Password Manager), rotate it at the provider and save the new one in Admin.
 - [ ] **A payment-link order works end to end** (once email works). Admin > Orders > New order (Owner or Finance,
   "Send a payment link", with a reason) for a test customer: the "Your order … is ready to pay" email arrives, the link
   opens the order page reading "Ready for payment", the customer ticks the terms and pays (mock or Razorpay test mode),

@@ -173,10 +173,46 @@ describe("integration views (Admin > Settings > Integrations)", () => {
       webhookUrl: "https://shop.axiomatic.example/api/webhooks/payments/razorpay",
       lastSignedWebhookAt: null,
     });
-    expect(byId(data.items, "email").form?.values).toEqual({ host: "smtp.example.net", port: 587, security: "starttls", username: "mailer", fromName: "Axiomatic", fromAddress: "no-reply@axiomatic.example" });
+    // Both providers' fields: the SES ones start from their defaults (Mumbai, nothing else).
+    expect(byId(data.items, "email").form?.values).toEqual({
+      provider: "smtp",
+      host: "smtp.example.net",
+      port: 587,
+      security: "starttls",
+      username: "mailer",
+      region: "ap-south-1",
+      accessKeyId: "",
+      configurationSet: "",
+      fromName: "Axiomatic",
+      fromAddress: "no-reply@axiomatic.example",
+    });
     expect(byId(data.items, "storage").form?.values).toEqual({ preset: "aws", endpoint: "", region: "ap-south-1", bucket: "axiomatic-installers", accessKeyId: "AKIA-EXAMPLE", forcePathStyle: false });
     const text = JSON.stringify(data);
     for (const secret of ENV_SECRETS) expect(text.includes(secret), secret).toBe(false);
+  });
+
+  it("Amazon SES from the server file: provider label, the SES variable names and the SES form values", async () => {
+    const ses = {
+      ...live,
+      EMAIL_TRANSPORT: "ses",
+      SES_REGION: "eu-west-1",
+      SES_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
+      SES_SECRET_ACCESS_KEY: "ses-secret-access-key-01",
+      SES_CONFIGURATION_SET: "axs-events",
+    };
+    const status = byId((await views(ses, { canManage: false })).items, "email");
+    expect([status.source, status.provider, status.form]).toEqual(["env", "Amazon SES (API)", null]);
+    expect(status.envNames).toEqual(["EMAIL_TRANSPORT", "EMAIL_FROM", "SES_REGION", "SES_ACCESS_KEY_ID", "SES_SECRET_ACCESS_KEY", "SES_CONFIGURATION_SET"]);
+    expect(JSON.stringify(status)).not.toMatch(/AKIAIOSFODNN7EXAMPLE|ses-secret-access-key|eu-west-1/);
+    const owner = byId((await views(ses, { canManage: true })).items, "email");
+    expect(owner.form?.values).toMatchObject({ provider: "ses", region: "eu-west-1", accessKeyId: "AKIAIOSFODNN7EXAMPLE", configurationSet: "axs-events", fromName: "Axiomatic" });
+    expect(owner.form?.secrets).toEqual({
+      password: { set: false, last4: null, updatedAt: null, updatedBy: null },
+      secretAccessKey: { set: false, last4: null, updatedAt: null, updatedBy: null },
+    });
+    expect(JSON.stringify(owner)).not.toContain("ses-secret-access-key");
+    // SMTP keeps listing the SMTP names.
+    expect(byId((await views(live, { canManage: false })).items, "email").envNames).toEqual(["EMAIL_TRANSPORT", "EMAIL_FROM", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD"]);
   });
 
   it("shows the release-day stand-ins as not configured and leaves them out of the form", async () => {
@@ -245,7 +281,10 @@ describe("integration views (Admin > Settings > Integrations)", () => {
       },
     });
     const email = byId(data.items, "email");
-    expect(email.form?.secrets).toEqual({ password: { set: true, last4: null, updatedAt: AT.toISOString(), updatedBy: "Asha Rao" } });
+    expect(email.form?.secrets).toEqual({
+      password: { set: true, last4: null, updatedAt: AT.toISOString(), updatedBy: "Asha Rao" },
+      secretAccessKey: { set: false, last4: null, updatedAt: null, updatedBy: null },
+    });
     expect(email.form?.values).toMatchObject({ host: "smtp.mailer.example", port: 465, security: "tls" });
     // Storage has no row: the env file still decides there.
     expect(byId(data.items, "storage").source).toBe("env");

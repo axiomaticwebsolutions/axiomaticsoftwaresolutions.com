@@ -293,6 +293,32 @@ describe("integration fallbacks (no conditional requirements)", () => {
     expect(() => parseEnv(validEnv({ EMAIL_TRANSPORT: "smtp", SMTP_HOST: "" }))).not.toThrow();
   });
 
+  it("accepts the Amazon SES fallback (EMAIL_TRANSPORT=ses) and refuses its placeholders, also in production", () => {
+    const ses = {
+      EMAIL_TRANSPORT: "ses",
+      SES_REGION: "ap-south-1",
+      SES_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
+      SES_SECRET_ACCESS_KEY: "ses-secret-access-key-01",
+      SES_CONFIGURATION_SET: "axs-events",
+    };
+    const env = parseEnv(productionEnv(ses));
+    expect([env.EMAIL_TRANSPORT, env.SES_REGION, env.SES_CONFIGURATION_SET]).toEqual(["ses", "ap-south-1", "axs-events"]);
+    expect(problemsOf(productionEnv({ ...ses, SES_ACCESS_KEY_ID: "CHANGE-ME", SES_SECRET_ACCESS_KEY: "xxxxxxxxxxxx" })).map((p) => p.split(":")[0])).toEqual([
+      "SES_ACCESS_KEY_ID",
+      "SES_SECRET_ACCESS_KEY",
+    ]);
+    expect(problemsOf(validEnv({ ...ses, SES_CONFIGURATION_SET: "bad set" })).map((p) => p.split(":")[0])).toEqual(["SES_CONFIGURATION_SET"]);
+    // The region is judged by lib/integrations/env-source.ts (any case, SES regions only), never by the server start:
+    // an upper-case region works there, and a stray or unknown one only makes the fallback "not configured".
+    expect(parseEnv(productionEnv({ ...ses, SES_REGION: "AP-SOUTH-1" })).SES_REGION).toBe("AP-SOUTH-1");
+    expect(() => parseEnv(validEnv({ ...ses, SES_REGION: "Mumbai" }))).not.toThrow();
+    expect(() => parseEnv(productionEnv({ EMAIL_TRANSPORT: "smtp", SMTP_HOST: "smtp.example.com", SES_REGION: "mars-1" }))).not.toThrow();
+    expect(problemsOf(validEnv({ EMAIL_TRANSPORT: "sendgrid" }))).toEqual(["EMAIL_TRANSPORT: must be console, smtp or ses"]);
+    expect(problemsOf(productionEnv({ EMAIL_TRANSPORT: "console" }))).toEqual([
+      "EMAIL_TRANSPORT: console is not allowed when NODE_ENV=production (use smtp or ses, or set email in Admin)",
+    ]);
+  });
+
   it("leaves the selectors unset when absent (no default driver)", () => {
     const env = parseEnv(validEnv({ PAYMENT_PROVIDER: undefined, STORAGE_DRIVER: undefined, EMAIL_TRANSPORT: undefined }));
     expect([env.PAYMENT_PROVIDER, env.STORAGE_DRIVER, env.EMAIL_TRANSPORT]).toEqual([undefined, undefined, undefined]);

@@ -5,14 +5,15 @@
  * request or the dispatcher for long. In production every connection goes through the SSRF guard
  * (lib/security/net-guard.ts smtpSocketGuard): the host's addresses are checked and the socket opened to a checked one,
  * while SNI and the certificate check still use the host name.
- * The From is handed to nodemailer as { name, address }, never a concatenated string. Every message is marked
- * Auto-Submitted so autoresponders do not reply to it.
+ * The message itself is built by ./mail-options.ts (shared with the Amazon SES transport): the From as
+ * { name, address }, never a concatenated string, and Auto-Submitted so autoresponders do not reply to it.
  */
 import "server-only";
 import { createTransport } from "nodemailer";
 import type { EmailConfig } from "@/lib/integrations/types";
 import { smtpSocketGuard } from "@/lib/security/net-guard";
 import type { EmailTransport } from "../transport";
+import { mailOptions } from "./mail-options";
 
 type TransportOptions = NonNullable<Parameters<typeof createTransport>[0]>;
 export type SmtpConfig = Extract<EmailConfig, { transport: "smtp" }>;
@@ -40,14 +41,7 @@ export function createSmtpTransport(options: TransportOptions, from: { name: str
   return {
     name: "smtp",
     async send(message) {
-      const info = (await mailer.sendMail({
-        from: { name: from.name, address: from.address },
-        to: message.to,
-        subject: message.subject,
-        html: message.html,
-        text: message.text,
-        headers: { "Auto-Submitted": "auto-generated", "X-Axs-Template": message.templateId },
-      })) as { messageId?: unknown };
+      const info = (await mailer.sendMail(mailOptions(message, from))) as { messageId?: unknown };
       return { messageId: typeof info.messageId === "string" ? info.messageId : "" };
     },
     close() {

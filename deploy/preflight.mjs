@@ -6,13 +6,14 @@
  * - Loads the env files exactly like `next start` does (@next/env) and refuses any file other than .env.production
  *   (.env, .env.local and .env.production.local would silently override shared/.env.production).
  * - Refuses every value that still contains CHANGE-ME (the placeholders of deploy/.env.production.example; lib/env.ts
- *   only catches placeholders in secrets, not in APP_URL, SMTP_HOST or BOOTSTRAP_OWNER_EMAIL).
+ *   only catches placeholders in secrets, not in APP_URL, SMTP_HOST, SES_REGION or BOOTSTRAP_OWNER_EMAIL).
  * - Validates the result with lib/env.ts parseEnv() under the production rules (https APP_URL, REDIS_URL,
  *   TRUSTED_PROXY_HOPS >= 1, CATALOG_SOURCE=db, no mock / local / console driver, ...).
  * - Payments, email and storage are normally saved in Admin > Settings > Integrations, so none of their variables is
- *   required. One line per integration says what the env fallback holds (lib/integrations/env-source.ts); values that
- *   cannot work (the release-day stand-ins, an .invalid host, a malformed Key ID, values without their
- *   PAYMENT_PROVIDER / EMAIL_TRANSPORT / STORAGE_DRIVER line) are a WARNING, not a failure: the app starts and shows
+ *   required. One line per integration says what the env fallback holds (lib/integrations/env-source.ts; email:
+ *   smtp, or ses with its region); values that cannot work (the release-day stand-ins, an .invalid host, a malformed
+ *   Key ID, an SES region without SES, values without their PAYMENT_PROVIDER / EMAIL_TRANSPORT / STORAGE_DRIVER
+ *   line) are a WARNING, not a failure: the app starts and shows
  *   the integration as "Not configured" until it is saved in Admin. CHANGE-ME values still fail (see above).
  * - --first-run: BOOTSTRAP_OWNER_EMAIL and BOOTSTRAP_OWNER_PASSWORD must be set (the bootstrap checks the rest).
  * - --db: connects with DATABASE_URL; needs PostgreSQL 14+ and a UTF8 database (collation C recommended); lists the
@@ -90,7 +91,13 @@ if (env) {
     for (const kind of ["payments", "email", "storage"]) {
       const { selector, result } = verdicts[kind];
       if (result.ok) {
-        const what = kind === "payments" ? `${result.config.provider} (${result.config.mode} mode)` : kind === "email" ? result.config.transport : result.config.driver;
+        const email = kind === "email" ? result.config : null;
+        const what =
+          kind === "payments"
+            ? `${result.config.provider} (${result.config.mode} mode)`
+            : email
+              ? `${email.transport}${email.transport === "ses" ? ` (${email.region})` : ""}`
+              : result.config.driver;
         info(`${kind}: server file ${what} (used while nothing is saved in Admin)`);
       } else if (result.reason === "missing") {
         info(`${kind}: not in the server file (set it in Admin > Settings > Integrations)`);

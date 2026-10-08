@@ -24,11 +24,12 @@ import { hashPassword } from "@/lib/auth/password";
 import { clear, RATE_LIMITS } from "@/lib/auth/rate-limit";
 import { db } from "@/lib/db";
 import type { OutgoingEmail } from "@/lib/email/transport";
+import { createSesTransport } from "@/lib/email/transports/ses";
 import { getEnv, getLicenseKeySecrets } from "@/lib/env";
 import { openIntegrationSecret } from "@/lib/integrations/crypto";
 import { emailSaveSchema, INTEGRATION_KINDS, storageSaveSchema, toDbKind } from "@/lib/integrations/model";
-import { invalidateIntegrations, resolvePayments, resolveStorage, setIntegrationEnvForTests } from "@/lib/integrations/resolver";
-import type { ProbeResult } from "@/lib/integrations/types";
+import { invalidateIntegrations, resolveEmail, resolvePayments, resolveStorage, setIntegrationEnvForTests } from "@/lib/integrations/resolver";
+import type { EmailConfig, ProbeResult } from "@/lib/integrations/types";
 import { setLogSink } from "@/lib/log";
 import { LocalStorageDriver } from "@/lib/storage/local";
 import { callRoute, makeAdminCallers, makeStaff, startSession, type TestSession } from "../support/admin-fixtures";
@@ -43,7 +44,9 @@ const KEY_SECRET_2 = "route-key-secret-0002";
 const WEBHOOK_SECRET = "route-webhook-secret-0001";
 const SMTP_PASSWORD = "route-smtp-password-01";
 const STORAGE_SECRET = "route-storage-secret-0001";
-const KNOWN_SECRETS = [KEY_SECRET, KEY_SECRET_2, WEBHOOK_SECRET, SMTP_PASSWORD, STORAGE_SECRET, PASSWORD];
+const SES_SECRET = "route-ses-secret-access-key-0001";
+const SES_SECRET_2 = "route-ses-secret-access-key-0002";
+const KNOWN_SECRETS = [KEY_SECRET, KEY_SECRET_2, WEBHOOK_SECRET, SMTP_PASSWORD, STORAGE_SECRET, SES_SECRET, SES_SECRET_2, PASSWORD];
 
 /** A complete env fallback for every integration (development rules), with its own secrets. */
 const ENV = {
@@ -132,6 +135,18 @@ const emailBody = (over: Json = {}) => ({
   security: "starttls",
   username: "mailer",
   password: SMTP_PASSWORD,
+  fromName: "Axiomatic",
+  fromAddress: "no-reply@axiomatic.example",
+  ...over,
+});
+const sesBody = (over: Json = {}) => ({
+  currentPassword: PASSWORD,
+  revision: null,
+  provider: "ses",
+  region: "ap-south-1",
+  accessKeyId: "AKIAROUTETEST0000001",
+  secretAccessKey: SES_SECRET,
+  configurationSet: "",
   fromName: "Axiomatic",
   fromAddress: "no-reply@axiomatic.example",
   ...over,
@@ -312,7 +327,7 @@ describe("PUT /api/admin/settings/integrations/:kind", () => {
     const sealed = await db.integrationSecret.findUniqueOrThrow({ where: { kind_field: { kind: "EMAIL", field: "password" } } });
     for (const change of [{ host: "smtp.attacker.example" }, { port: 2525 }, { security: "tls", port: 465 }]) {
       const moved = await read(await put("email", emailBody({ revision: 1, password: undefined, ...change })));
-      expect([moved.status, fieldErrorsOf(moved.body)]).toEqual([422, { password: ["Enter it again: the SMTP server changed."] }]);
+      expect([moved.status, fieldErrorsOf(moved.body)]).toEqual([422, { password: ["Enter it again: the email provider, server or region changed."] }]);
     }
     // Leaving it empty while only the sender changes still keeps it.
     const kept = await read<{ changed: string[] }>(await put("email", emailBody({ revision: 1, password: undefined, fromName: "Axiomatic Software" })));
@@ -328,6 +343,128 @@ describe("PUT /api/admin/settings/integrations/:kind", () => {
     expect([endpoint.status, fieldErrorsOf(endpoint.body)]).toEqual([422, { secretAccessKey: ["Enter it again: the endpoint changed."] }]);
     const bucket = await read<{ changed: string[] }>(await put("storage", storageBody({ revision: 1, secretAccessKey: undefined, bucket: "axs-route-test-2" })));
     expect([bucket.status, bucket.body.changed]).toEqual([200, ["bucket"]]);
+  });
+});
+
+describe("Amazon SES (email provider)", () => {
+  const emailSecrets = async () => (await db.integrationSecret.findMany({ where: { kind: "EMAIL" }, select: { field: true }, orderBy: { field: "asc" } })).map((s) => s.field);
+
+  it("saves an SES configuration as the Owner only: encrypted at rest, hints only, audited by label, used at once", async () => {
+    const callers = await makeAdminCallers();
+    for (const who of [callers.ADMIN, callers.SUPPORT, callers.FINANCE, callers.customer]) {
+      expect((await read(await put("email", sesBody(), who))).status).toBe(403);
+    }
+    expect(await db.integrationConfig.count()).toBe(0);
+    expect(await resolveEmail()).toMatchObject({ source: "env", config: { transport: "smtp" } });
+    const since = await auditMark();
+    const res = await read<{ integration: IntegrationState; changed: string[] }>(await put("email", sesBody({ region: " AP-SOUTH-1 " })));
+    expect(res.status).toBe(200);
+    expect(res.body.changed).toEqual(["region", "accessKeyId", "configurationSet", "fromName", "fromAddress", "secretAccessKey"]);
+    expect(res.body.integration).toMatchObject({ id: "email", source: "admin", provider: "Amazon SES (API)", problem: null, saved: { revision: 1 } });
+    expect(res.body.integration.form).toMatchObject({
+      values: { provider: "ses", region: "ap-south-1", accessKeyId: "AKIAROUTETEST0000001", configurationSet: "" },
+      secrets: { secretAccessKey: { set: true, last4: "0001", updatedBy: "Asha Rao" }, password: { set: false } },
+    });
+    const config = await db.integrationConfig.findUniqueOrThrow({ where: { kind: "EMAIL" }, include: { secrets: true } });
+    expect(config.settings).toEqual({ provider: "ses", region: "ap-south-1", accessKeyId: "AKIAROUTETEST0000001", configurationSet: null, fromName: "Axiomatic", fromAddress: "no-reply@axiomatic.example" });
+    expect(config.secrets.map((s) => [s.field, openIntegrationSecret("email", s.field, s.ciphertext, ikm())])).toEqual([["secretAccessKey", SES_SECRET]]);
+    expect(await resolveEmail()).toMatchObject({ source: "admin", config: { transport: "ses", region: "ap-south-1", secretAccessKey: SES_SECRET, configurationSet: null } });
+    expect((await auditSince(since)).map((r) => [r.action, r.target, r.detail])).toEqual([
+      ["Updated integration settings", "Integrations · Email delivery", "Saved: AWS region, Access key ID, Configuration set, From name, From address, Secret access key (replaces the server file)."],
+    ]);
+    // Invalid SES bodies are refused before the password is checked.
+    const bad = await read(await put("email", sesBody({ region: "ap-south-9", accessKeyId: "nope", configurationSet: "bad set", currentPassword: "wrong" })));
+    expect([bad.status, Object.keys(fieldErrorsOf(bad.body)).sort()]).toEqual([422, ["accessKeyId", "configurationSet", "region"]]);
+  });
+
+  it("switching provider needs the new secret, removes the other one, and a new region needs the secret again", async () => {
+    expect((await read(await put("email", emailBody()))).status).toBe(200);
+    expect(await emailSecrets()).toEqual(["password"]);
+    const since = await auditMark();
+    const noSecret = await read(await put("email", sesBody({ revision: 1, secretAccessKey: undefined })));
+    expect([noSecret.status, fieldErrorsOf(noSecret.body)]).toEqual([422, { secretAccessKey: ["Enter the secret access key."] }]);
+    const switched = await read<{ integration: IntegrationState; changed: string[] }>(await put("email", sesBody({ revision: 1 })));
+    expect([switched.status, switched.body.changed]).toEqual([200, ["provider", "region", "accessKeyId", "secretAccessKey"]]);
+    expect(switched.body.integration.form).toMatchObject({ secrets: { password: { set: false }, secretAccessKey: { set: true } } });
+    // The SMTP password is gone with the switch: it can never be sent to SES or come back unseen.
+    expect(await emailSecrets()).toEqual(["secretAccessKey"]);
+    expect((await read(await put("email", { ...sesBody({ revision: 2 }), password: SMTP_PASSWORD }))).status).toBe(422);
+
+    const moved = await read(await put("email", sesBody({ revision: 2, secretAccessKey: undefined, region: "eu-west-1" })));
+    expect([moved.status, fieldErrorsOf(moved.body)]).toEqual([422, { secretAccessKey: ["Enter it again: the email provider, server or region changed."] }]);
+    const kept = await read<{ changed: string[] }>(
+      await put("email", sesBody({ revision: 2, secretAccessKey: undefined, accessKeyId: "AKIAROUTETEST0000002", configurationSet: "axs-events" })),
+    );
+    expect([kept.status, kept.body.changed]).toEqual([200, ["accessKeyId", "configurationSet"]]);
+    const regionMoved = await read<{ changed: string[] }>(
+      await put("email", sesBody({ revision: 3, accessKeyId: "AKIAROUTETEST0000002", configurationSet: "axs-events", region: "eu-west-1", secretAccessKey: SES_SECRET_2 })),
+    );
+    expect([regionMoved.status, regionMoved.body.changed]).toEqual([200, ["region", "secretAccessKey"]]);
+    expect(await resolveEmail()).toMatchObject({ source: "admin", config: { transport: "ses", region: "eu-west-1", secretAccessKey: SES_SECRET_2, configurationSet: "axs-events" } });
+
+    // Back to SMTP: the password was removed, so it must be entered; the SES key goes.
+    const back = await read(await put("email", emailBody({ revision: 4, password: undefined })));
+    expect([back.status, fieldErrorsOf(back.body)]).toEqual([422, { password: ["Enter the password."] }]);
+    expect((await read(await put("email", emailBody({ revision: 4 })))).status).toBe(200);
+    expect(await emailSecrets()).toEqual(["password"]);
+    expect((await auditSince(since)).map((r) => r.detail)).toEqual([
+      "Changed: Provider, AWS region, Access key ID, Secret access key. Removed: Password.",
+      "Changed: Access key ID, Configuration set.",
+      "Changed: AWS region, Secret access key.",
+      "Changed: Provider, SMTP host, Port, Security, Username, Password. Removed: Secret access key.",
+    ]);
+  });
+
+  it("in production an SES save needs no host lookup (the AWS endpoint follows the region)", async () => {
+    const by: IntegrationCaller = {
+      staff: { id: owner.user.id, name: owner.user.name, email: owner.user.email, role: "OWNER" },
+      actor: actorFromStaff({ id: owner.user.id, staffRole: "OWNER" }),
+    };
+    const lookup = vi.fn(async () => [{ address: "10.0.0.5", family: 4 }]);
+    const saved = await saveIntegration(by, "email", emailSaveSchema.parse(sesBody()), { production: true, lookup });
+    expect([saved.integration.source, saved.integration.provider, lookup.mock.calls.length]).toEqual(["admin", "Amazon SES (API)", 0]);
+  });
+
+  it("Send test email goes through SES with a mocked client to the Owner; AWS errors are mapped and audited", async () => {
+    expect((await read(await put("email", sesBody()))).status).toBe(200);
+    const sent: unknown[] = [];
+    const state: { failure: unknown } = { failure: null };
+    const client = {
+      send: async (command: unknown) => {
+        sent.push((command as { input: unknown }).input);
+        if (state.failure) throw state.failure;
+        return { MessageId: "ses-probe-1" };
+      },
+      destroy: () => undefined,
+    };
+    setIntegrationProbeClientsForTests({ transportFactory: async (config: EmailConfig) => createSesTransport(config as Extract<EmailConfig, { transport: "ses" }>, client) });
+    const since = await auditMark();
+    const results: ProbeResult[] = [];
+    const run = async () => {
+      const res = await read<ProbeResult>(await probe("email"));
+      expect(res.status).toBe(200);
+      results.push(res.body);
+      return res.body;
+    };
+    expect(await run()).toMatchObject({ kind: "email", source: "admin", ok: true, steps: [{ id: "send", status: "ok", message: `Sent to ${owner.user.email}. Check that inbox (and spam).` }] });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ Destination: { ToAddresses: [owner.user.email] } });
+    const awsError = (name: string, status: number, message: string) => Object.assign(new Error(message), { name, $metadata: { httpStatusCode: status } });
+    state.failure = awsError("AccessDeniedException", 403, "User: arn:aws:iam::123456789012:user/axs is not authorized to perform ses:SendRawEmail");
+    expect((await run()).steps[0]?.message).toBe("This access key isn’t allowed to send email. Allow ses:SendEmail and ses:SendRawEmail.");
+    state.failure = awsError("InvalidClientTokenId", 403, "The security token included in the request is invalid.");
+    expect((await run()).steps[0]?.message).toBe("AWS rejected the access key ID or secret access key.");
+    state.failure = awsError("MessageRejected", 400, `Email address is not verified: ${owner.user.email}`);
+    expect((await run()).steps[0]?.message).toContain("Amazon SES refused the message");
+    const rows = (await auditSince(since)).filter((r) => r.action === "Tested integration");
+    expect(rows.map((r) => r.detail)).toEqual([
+      "Send test email: sent.",
+      "Send test email: failed (missing permission).",
+      "Send test email: failed (keys rejected).",
+      "Send test email: failed (sender or recipient not verified).",
+    ]);
+    const text = JSON.stringify([results, rows.map((r) => r.detail)]);
+    for (const value of ["123456789012", "AKIAROUTETEST", "security token", "not verified:"]) expect(text.includes(value), value).toBe(false);
   });
 });
 

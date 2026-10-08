@@ -1,23 +1,30 @@
 /**
  * Pure helpers of the Admin > Settings > Integrations forms (unit-tested; the .tsx components only render them):
  * field definitions, drafts, dirty detection, client checks with the server's own Zod schemas, the PUT body (an empty
- * secret is left out, which keeps the stored one), storage presets, the STARTTLS / TLS port switch, the test button
- * state and the status-only facts. Client-safe.
+ * secret is left out, which keeps the stored one), the email provider (SMTP or Amazon SES: only the chosen provider's
+ * fields show and are sent), storage presets, the STARTTLS / TLS port switch, the test button state and the
+ * status-only facts. Client-safe.
  */
 import type { IntegrationForm, IntegrationState, SecretHint } from "@/lib/admin/settings/integrations-model";
 import { INTEGRATIONS_COPY } from "@/lib/admin/settings/integrations-model";
 import {
+  applicableSecrets,
   DEFAULT_SMTP_PORTS,
   destinationChanged,
+  EMAIL_PROVIDER_LABELS,
+  EMAIL_PROVIDERS,
+  emailProviderOf,
   fieldLabel,
   INTEGRATION_SAVE_SCHEMAS,
   REGION_RE,
   REQUIRED_SECRET_MESSAGES,
   SECRET_FIELDS,
   SECRET_REENTRY_MESSAGES,
+  SES_REGIONS,
   spacesEndpoint,
   STORAGE_PRESET_DEFAULTS,
   STORAGE_PRESETS,
+  type EmailProvider,
   type EmailSecurity,
   type IntegrationKind,
   type SecretField,
@@ -39,6 +46,13 @@ export type IntegrationFieldDef = {
   maxLength?: number;
   inputMode?: "text" | "numeric" | "email" | "url";
   options?: readonly { value: string; label: string }[];
+  /** Email only: the providers that use this field (missing = every provider). Hidden fields are not sent. */
+  providers?: readonly EmailProvider[];
+  /**
+   * The input's DOM id suffix and `name` (default: the key). Identifier inputs get names that do not look like a
+   * sign-in field (no "user", "login" or "email"), so password managers do not fill the Owner's saved login there.
+   */
+  domKey?: string;
 };
 
 const field = (kind: IntegrationKind, key: string, def: Omit<IntegrationFieldDef, "key" | "label">): IntegrationFieldDef => ({
@@ -46,6 +60,19 @@ const field = (kind: IntegrationKind, key: string, def: Omit<IntegrationFieldDef
   label: fieldLabel(kind, key),
   ...def,
 });
+
+/** The DOM id suffix and `name` of a field (see IntegrationFieldDef.domKey). */
+export function fieldDomKey(def: Pick<IntegrationFieldDef, "key" | "domKey">): string {
+  return def.domKey ?? def.key;
+}
+
+export const PROVIDER_OPTIONS: readonly { value: EmailProvider; label: string }[] = EMAIL_PROVIDERS.map((p) => ({
+  value: p,
+  label: EMAIL_PROVIDER_LABELS[p],
+}));
+
+/** "ap-south-1 · Asia Pacific (Mumbai)" */
+export const SES_REGION_OPTIONS: readonly { value: string; label: string }[] = SES_REGIONS.map((r) => ({ value: r.id, label: `${r.id} · ${r.name}` }));
 
 export const SECURITY_OPTIONS: readonly { value: EmailSecurity; label: string }[] = [
   { value: "starttls", label: "STARTTLS (port 587)" },
@@ -60,36 +87,72 @@ export const PRESET_OPTIONS: readonly { value: StoragePreset; label: string }[] 
 /** Form fields per integration, in form order (labels from lib/integrations/model.ts FIELD_LABELS). */
 export const INTEGRATION_FIELDS: Readonly<Record<IntegrationKind, readonly IntegrationFieldDef[]>> = {
   payments: [
-    field("payments", "keyId", { kind: "text", mono: true, wide: true, maxLength: 64, hint: "Starts with rzp_test_ or rzp_live_. Test or live mode follows the key." }),
-    field("payments", "keySecret", { kind: "secret" }),
-    field("payments", "webhookSecret", { kind: "secret", hint: "The secret you set for the webhook in the Razorpay Dashboard." }),
+    field("payments", "keyId", {
+      kind: "text",
+      mono: true,
+      wide: true,
+      maxLength: 64,
+      domKey: "razorpay-key-id",
+      hint: "Starts with rzp_test_ or rzp_live_. Test or live mode follows the key.",
+    }),
+    field("payments", "keySecret", { kind: "secret", domKey: "razorpay-key-secret" }),
+    field("payments", "webhookSecret", { kind: "secret", domKey: "razorpay-webhook-secret", hint: "The secret you set for the webhook in the Razorpay Dashboard." }),
   ],
   email: [
-    field("email", "host", { kind: "text", mono: true, maxLength: 253, inputMode: "url" }),
-    field("email", "port", { kind: "number", maxLength: 5, inputMode: "numeric" }),
-    field("email", "security", { kind: "select", options: SECURITY_OPTIONS }),
-    field("email", "username", { kind: "text", maxLength: 256, hint: "Leave empty if the server needs no sign-in." }),
-    field("email", "password", { kind: "secret" }),
-    field("email", "fromName", { kind: "text", maxLength: 100 }),
-    field("email", "fromAddress", { kind: "email", maxLength: 254, inputMode: "email", hint: "Use an address on a domain your provider has verified (SPF and DKIM)." }),
+    field("email", "provider", { kind: "select", wide: true, options: PROVIDER_OPTIONS, domKey: "mail-provider" }),
+    field("email", "host", { kind: "text", mono: true, maxLength: 253, inputMode: "url", providers: ["smtp"], domKey: "smtp-host" }),
+    field("email", "port", { kind: "number", maxLength: 5, inputMode: "numeric", providers: ["smtp"], domKey: "smtp-port" }),
+    field("email", "security", { kind: "select", options: SECURITY_OPTIONS, providers: ["smtp"], domKey: "smtp-security" }),
+    field("email", "username", { kind: "text", maxLength: 256, providers: ["smtp"], domKey: "smtp-auth-id", hint: "Leave empty if the server needs no sign-in." }),
+    field("email", "password", { kind: "secret", providers: ["smtp"], domKey: "smtp-secret" }),
+    field("email", "region", { kind: "select", wide: true, options: SES_REGION_OPTIONS, providers: ["ses"], domKey: "ses-region" }),
+    field("email", "accessKeyId", {
+      kind: "text",
+      mono: true,
+      maxLength: 128,
+      providers: ["ses"],
+      domKey: "ses-access-key-id",
+      hint: "An IAM user that may only call ses:SendEmail and ses:SendRawEmail.",
+    }),
+    field("email", "secretAccessKey", { kind: "secret", providers: ["ses"], domKey: "ses-secret-access-key" }),
+    field("email", "configurationSet", {
+      kind: "text",
+      mono: true,
+      wide: true,
+      maxLength: 64,
+      providers: ["ses"],
+      domKey: "ses-configuration-set",
+      hint: "Optional. Only if you publish SES events through a configuration set.",
+    }),
+    field("email", "fromName", { kind: "text", maxLength: 100, domKey: "sender-name" }),
+    field("email", "fromAddress", {
+      kind: "email",
+      maxLength: 254,
+      inputMode: "email",
+      domKey: "sender-address",
+      hint: "Use an address on a domain your provider has verified (SPF and DKIM).",
+    }),
   ],
   storage: [
-    field("storage", "preset", { kind: "select", options: PRESET_OPTIONS }),
-    field("storage", "endpoint", { kind: "text", mono: true, wide: true, maxLength: 2048, inputMode: "url", hint: "https only. Leave empty for AWS." }),
-    field("storage", "region", { kind: "text", mono: true, maxLength: 32 }),
-    field("storage", "bucket", { kind: "text", mono: true, maxLength: 63 }),
-    field("storage", "accessKeyId", { kind: "text", mono: true, maxLength: 128 }),
-    field("storage", "secretAccessKey", { kind: "secret" }),
-    field("storage", "forcePathStyle", { kind: "switch", wide: true, hint: "On for Cloudflare R2 and most S3-compatible stores." }),
+    field("storage", "preset", { kind: "select", options: PRESET_OPTIONS, domKey: "storage-preset" }),
+    field("storage", "endpoint", { kind: "text", mono: true, wide: true, maxLength: 2048, inputMode: "url", domKey: "storage-endpoint", hint: "https only. Leave empty for AWS." }),
+    field("storage", "region", { kind: "text", mono: true, maxLength: 32, domKey: "storage-region" }),
+    field("storage", "bucket", { kind: "text", mono: true, maxLength: 63, domKey: "storage-bucket" }),
+    field("storage", "accessKeyId", { kind: "text", mono: true, maxLength: 128, domKey: "storage-access-key-id" }),
+    field("storage", "secretAccessKey", { kind: "secret", domKey: "storage-secret-access-key" }),
+    field("storage", "forcePathStyle", { kind: "switch", wide: true, domKey: "storage-path-style", hint: "On for Cloudflare R2 and most S3-compatible stores." }),
   ],
 };
 
-/** Keys of the non-secret fields per integration. */
-export const VALUE_KEYS: Readonly<Record<IntegrationKind, readonly string[]>> = {
-  payments: INTEGRATION_FIELDS.payments.filter((f) => f.kind !== "secret").map((f) => f.key),
-  email: INTEGRATION_FIELDS.email.filter((f) => f.kind !== "secret").map((f) => f.key),
-  storage: INTEGRATION_FIELDS.storage.filter((f) => f.kind !== "secret").map((f) => f.key),
-};
+/** Whether a field shows for this draft (email: the chosen provider's fields and the sender). */
+export function isFieldVisible(def: Pick<IntegrationFieldDef, "providers">, draft: IntegrationDraft): boolean {
+  return !def.providers || def.providers.includes(emailProviderOf(draft));
+}
+
+/** The fields the draft shows and sends, in form order. */
+export function visibleFields(kind: IntegrationKind, draft: IntegrationDraft): IntegrationFieldDef[] {
+  return INTEGRATION_FIELDS[kind].filter((f) => isFieldVisible(f, draft));
+}
 
 // ---------- Drafts ----------
 
@@ -112,9 +175,9 @@ function sameValue(a: DraftValue | undefined, b: DraftValue | undefined): boolea
   return text(a).trim() === text(b).trim();
 }
 
-/** Changed non-secret fields, then every secret with a new value, in form order. */
+/** Changed non-secret fields, then every secret with a new value, in form order (fields the draft shows only). */
 export function dirtyKeys(kind: IntegrationKind, baseline: IntegrationDraft, draft: IntegrationDraft): string[] {
-  return INTEGRATION_FIELDS[kind]
+  return visibleFields(kind, draft)
     .filter((f) => (f.kind === "secret" ? text(draft[f.key]).trim() !== "" : !sameValue(baseline[f.key], draft[f.key])))
     .map((f) => f.key);
 }
@@ -124,26 +187,28 @@ export function hasChanges(state: Pick<IntegrationState, "saved">, kind: Integra
   return state.saved === null || dirtyKeys(kind, baseline, draft).length > 0;
 }
 
-/** PUT body. An empty secret is left out: the server keeps the stored one. */
+/**
+ * PUT body of the fields the draft shows (email: the chosen provider's and the sender). An empty secret is left out:
+ * the server keeps the stored one.
+ */
 export function bodyFor(kind: IntegrationKind, draft: IntegrationDraft, currentPassword: string, revision: number | null): Record<string, unknown> {
   const body: Record<string, unknown> = { currentPassword, revision };
-  for (const key of VALUE_KEYS[kind]) {
-    const value = draft[key];
-    if (key === "forcePathStyle") body[key] = value === true;
-    else if (key === "port") body[key] = text(value).trim() === "" ? 0 : Number(text(value).trim());
-    else body[key] = text(value);
-  }
-  for (const f of SECRET_FIELDS[kind]) {
-    const value = text(draft[f]);
-    if (value.trim() !== "") body[f] = value;
+  for (const f of visibleFields(kind, draft)) {
+    const value = draft[f.key];
+    if (f.kind === "secret") {
+      if (text(value).trim() !== "") body[f.key] = text(value);
+    } else if (f.key === "forcePathStyle") body[f.key] = value === true;
+    else if (f.key === "port") body[f.key] = text(value).trim() === "" ? 0 : Number(text(value).trim());
+    else body[f.key] = text(value);
   }
   return body;
 }
 
-/** Secrets the draft needs: payments both, storage the secret key, email the password only with a username. */
+/** Secrets the draft needs: payments both, storage and SES the secret key, SMTP the password only with a username. */
 export function requiredSecretFields(kind: IntegrationKind, draft: IntegrationDraft): SecretField[] {
   if (kind === "payments") return ["keySecret", "webhookSecret"];
   if (kind === "storage") return ["secretAccessKey"];
+  if (emailProviderOf(draft) === "ses") return ["secretAccessKey"];
   return text(draft.username).trim() === "" ? [] : ["password"];
 }
 
@@ -152,13 +217,43 @@ export function secretHintOf(form: IntegrationForm, key: string): SecretHint {
 }
 
 /**
- * Saved secrets the draft must enter again: the draft sends them to another server than the saved settings (the SMTP
- * server or the storage endpoint; lib/integrations/model.ts DESTINATION_FIELDS). The server refuses the save otherwise.
+ * Saved secrets the draft must enter again: the draft uses them and sends them somewhere else than the saved settings
+ * (the email provider, SMTP server or SES region, the storage endpoint; lib/integrations/model.ts DESTINATION_FIELDS).
+ * The server refuses the save otherwise.
  */
 export function secretsToReenter(form: IntegrationForm, draft: IntegrationDraft): SecretField[] {
-  const saved = (SECRET_FIELDS[form.kind] as readonly SecretField[]).filter((f) => secretHintOf(form, f).set);
+  const used: readonly string[] = applicableSecrets(form.kind, draft);
+  const saved = (SECRET_FIELDS[form.kind] as readonly SecretField[]).filter((f) => used.includes(f) && secretHintOf(form, f).set);
   if (saved.length === 0 || !destinationChanged(form.kind, toDraft(form), draft)) return [];
   return saved;
+}
+
+/**
+ * Saved secrets that saving this draft deletes: the chosen email provider cannot use them (lib/integrations/store.ts
+ * removes a stored secret the new settings cannot use). Empty for payments and storage, and while the provider stays.
+ */
+export function secretsRemovedBySave(form: IntegrationForm, draft: IntegrationDraft): SecretField[] {
+  const usable: readonly string[] = applicableSecrets(form.kind, draft);
+  return (SECRET_FIELDS[form.kind] as readonly SecretField[]).filter((f) => !usable.includes(f) && secretHintOf(form, f).set);
+}
+
+/** "Saving removes the saved password." under the Provider select and in the save dialog, or null. */
+export function providerSwitchNote(form: IntegrationForm, draft: IntegrationDraft): string | null {
+  const removed = secretsRemovedBySave(form, draft);
+  return removed.length > 0 ? INTEGRATIONS_COPY.providerSwitch(removed.map((f) => fieldLabel(form.kind, f))) : null;
+}
+
+/**
+ * The source a secret input's hint speaks for. An email draft switched away from the provider it loaded with (the
+ * server file's, for an env source) has no secret in the server file for the chosen provider.
+ */
+export function secretHintSource(
+  source: IntegrationState["source"],
+  kind: IntegrationKind,
+  baseline: IntegrationDraft,
+  draft: IntegrationDraft,
+): IntegrationState["source"] {
+  return kind === "email" && emailProviderOf(draft) !== emailProviderOf(baseline) ? "none" : source;
 }
 
 /** The keys of `errors` in form order. */
@@ -270,15 +365,16 @@ export function secretSummary(hint: SecretHint): { summary: string; changed: str
   return { summary: INTEGRATIONS_COPY.secret.set(hint.last4), changed: INTEGRATIONS_COPY.secret.changed(hint.updatedBy, hint.updatedAt) };
 }
 
-/** Help under a secret input (`reenter`: the server changed, so the saved value cannot be kept). */
+/** Help under a secret input (`reenter`: where the secret goes changed, so the saved value cannot be kept). */
 export function secretInputHint(opts: {
+  kind: IntegrationKind;
   replacing: boolean;
   source: IntegrationState["source"];
   saved: boolean;
   unused: boolean;
   reenter?: boolean;
 }): string | null {
-  if (opts.reenter) return INTEGRATIONS_COPY.secret.reenter;
+  if (opts.reenter) return INTEGRATIONS_COPY.secret.reenter[opts.kind];
   if (opts.unused) return INTEGRATIONS_COPY.secret.unusedWithoutUsername;
   if (opts.replacing) return INTEGRATIONS_COPY.secret.keep;
   if (opts.source === "env" && !opts.saved) return INTEGRATIONS_COPY.secret.inServerFile;

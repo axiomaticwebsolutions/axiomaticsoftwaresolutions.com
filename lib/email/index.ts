@@ -6,7 +6,7 @@
  *   caller's transaction; then kickEmailDispatch() after commit. dispatchPendingEmails() is also run by
  *   /api/cron/emails.
  * Templates: NotificationTemplate row when active, else the code defaults (lib/email/defaults.ts), `{{var}}`
- * placeholders, branded layout (lib/email/layout.ts). Transports: console (dev, /dev/mailbox) or SMTP.
+ * placeholders, branded layout (lib/email/layout.ts). Transports: console (dev, /dev/mailbox), SMTP or Amazon SES (API).
  */
 import "server-only";
 

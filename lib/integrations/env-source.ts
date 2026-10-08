@@ -1,13 +1,15 @@
 /**
  * The env-file fallback of each integration (docs/admin-integrations-design.md section 3): whether the PAYMENT_*,
- * EMAIL_* / SMTP_* and STORAGE_* variables form a complete, usable configuration. The resolver uses it only when no
+ * EMAIL_* / SMTP_* / SES_* and STORAGE_* variables form a complete, usable configuration. The resolver uses it only when no
  * Admin row exists for the kind; the deploy preflight prints its verdict (names only).
  *
- * - Selectors: PAYMENT_PROVIDER, EMAIL_TRANSPORT, STORAGE_DRIVER. Unset means the development driver (mock, console,
- *   local) outside production; in production `missing` when none of the kind's variables is set, else
- *   `env_incomplete` naming the selector. The development drivers are refused in production.
+ * - Selectors: PAYMENT_PROVIDER, EMAIL_TRANSPORT (console | smtp | ses), STORAGE_DRIVER. Unset means the development
+ *   driver (mock, console, local) outside production; in production `missing` when none of the kind's variables is
+ *   set, else `env_incomplete` naming the selector. The development drivers are refused in production.
  * - Values are read raw (trimmed, surrounding quotes dropped, like lib/env.ts) and checked again: key id format,
- *   secret lengths and placeholders, bucket and region, the host and endpoint rules of lib/security/host-rules.ts.
+ *   secret lengths and placeholders, bucket and region, the host and endpoint rules of lib/security/host-rules.ts,
+ *   the Amazon SES region list and AWS access key ID format (EMAIL_TRANSPORT=ses: SES_REGION, SES_ACCESS_KEY_ID,
+ *   SES_SECRET_ACCESS_KEY, optional SES_CONFIGURATION_SET, plus EMAIL_FROM).
  *   The release-day stand-ins (rzp_test_pending, smtp-pending.invalid, https://r2-pending.invalid) are `env_invalid`.
  * Results name variables, never values; only `config` (server-side) holds them.
  *
@@ -17,8 +19,10 @@ import { parseMailbox } from "../email/address";
 import { isPlaceholder } from "../placeholders";
 import { endpointProblem, hostProblem } from "../security/host-rules";
 import {
+  AWS_ACCESS_KEY_ID_RE,
   BUCKET_RE,
   guessStoragePreset,
+  isSesRegion,
   INTEGRATION_ENV_NAMES,
   normalizeEndpoint,
   normalizeHost,
@@ -27,6 +31,7 @@ import {
   REGION_RE,
   SECRET_MIN_LENGTH,
   securityForPort,
+  SES_CONFIGURATION_SET_RE,
   type IntegrationKind,
 } from "./model";
 import type { EmailConfig, EnvIntegrationState, NotConfiguredReason, PaymentsConfig, StorageConfig } from "./types";
@@ -123,7 +128,16 @@ function classifyEmail(read: (name: string) => string | undefined, production: b
   const portOk = Number.isInteger(port) && port >= 1 && port <= 65_535;
   const user = read("SMTP_USER");
   const pass = read("SMTP_PASSWORD");
+  const sesRegion = read("SES_REGION")?.toLowerCase();
+  const sesKeyId = read("SES_ACCESS_KEY_ID");
+  const sesSecret = read("SES_SECRET_ACCESS_KEY");
+  const sesConfigSet = read("SES_CONFIGURATION_SET");
+  const sesKeyIdOk = sesKeyId !== undefined && AWS_ACCESS_KEY_ID_RE.test(sesKeyId) && !isPlaceholder(sesKeyId);
   const prefill: Record<string, string | number | boolean> = {};
+  if (selector === "ses") prefill.provider = "ses";
+  if (sesRegion && isSesRegion(sesRegion)) prefill.region = sesRegion;
+  if (sesKeyIdOk) prefill.accessKeyId = sesKeyId;
+  if (sesConfigSet && SES_CONFIGURATION_SET_RE.test(sesConfigSet)) prefill.configurationSet = sesConfigSet;
   if (host) prefill.host = normalizeHost(host);
   if (portOk) {
     prefill.port = port;
@@ -160,6 +174,37 @@ function classifyEmail(read: (name: string) => string | undefined, production: b
           port,
           security: securityForPort(port),
           auth: user ? { user, pass: pass ?? "" } : null,
+          from: from as { name: string; address: string },
+        },
+      };
+    }
+  } else if (effective === "ses") {
+    // Same production rules as smtp: placeholders refused, nothing development-only. No endpoint variable on purpose:
+    // the SESv2 client talks to AWS's own endpoint for the region.
+    const missing = [
+      !sesRegion && "SES_REGION",
+      !sesKeyId && "SES_ACCESS_KEY_ID",
+      !sesSecret && "SES_SECRET_ACCESS_KEY",
+      !fromRaw && "EMAIL_FROM",
+    ].filter((n): n is string => Boolean(n));
+    const invalid = [
+      sesRegion && !isSesRegion(sesRegion) && "SES_REGION",
+      sesKeyId && !sesKeyIdOk && "SES_ACCESS_KEY_ID",
+      sesSecret && !usableSecret(sesSecret, SECRET_MIN_LENGTH.secretAccessKey) && "SES_SECRET_ACCESS_KEY",
+      sesConfigSet && !SES_CONFIGURATION_SET_RE.test(sesConfigSet) && "SES_CONFIGURATION_SET",
+      fromRaw && !from && "EMAIL_FROM",
+    ].filter((n): n is string => Boolean(n));
+    if (missing.length > 0) result = fail("env_incomplete", missing);
+    else if (invalid.length > 0) result = fail("env_invalid", invalid);
+    else {
+      result = {
+        ok: true,
+        config: {
+          transport: "ses",
+          region: sesRegion as string,
+          accessKeyId: sesKeyId as string,
+          secretAccessKey: sesSecret as string,
+          configurationSet: sesConfigSet ?? null,
           from: from as { name: string; address: string },
         },
       };

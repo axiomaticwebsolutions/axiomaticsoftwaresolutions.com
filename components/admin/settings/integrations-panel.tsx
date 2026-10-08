@@ -67,7 +67,8 @@ export function RedisCard({ redis }: { redis: RedisState }) {
 /**
  * Admin > Settings > Integrations (docs/admin-integrations-design.md section 17): payments, storage and email as forms
  * for the Owner (integrations.manage) or status-only cards for anyone else, then the read-only rate-limits card. Spans
- * the settings grid and keeps its card columns. Server component; each form is a client island.
+ * the settings grid and keeps its card columns; cards in a row share one height (items-stretch) so their footers line
+ * up. Server component; each form is a client island.
  */
 export function IntegrationsPanel({ data }: { data: IntegrationsData }) {
   return (
@@ -78,7 +79,7 @@ export function IntegrationsPanel({ data }: { data: IntegrationsData }) {
         </h2>
         <p className="m-0 mt-0.5 text-[12.5px] text-ink-2">{INTEGRATIONS_COPY.description}</p>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,420px),1fr))] items-start gap-3.5">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,420px),1fr))] items-stretch gap-3.5">
         {data.items.map((item) =>
           data.canManage && item.form ? (
             <IntegrationCard key={item.id} initial={{ ...item, form: item.form }} />

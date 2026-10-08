@@ -13,7 +13,9 @@
  * script lists their names, and deploy.sh refuses to deploy while one is left.
  * Payments, storage and email are not generated: they are saved in Admin > Settings > Integrations after the first
  * sign-in (the Razorpay webhook secret is the one you choose in the Razorpay Dashboard). Their env lines are a
- * commented-out fallback in the template.
+ * commented-out fallback in the template (email: an SMTP block or an Amazon SES block, EMAIL_TRANSPORT=ses with
+ * SES_REGION, SES_ACCESS_KEY_ID, SES_SECRET_ACCESS_KEY, optional SES_CONFIGURATION_SET); a CHANGE-ME left in an
+ * uncommented line is listed below like any other.
  *
  * The file is written with mode 600 (new temp file + rename). Prints variable names only, never a value.
  * Refuses to replace an existing file unless --force. WARNING: replacing the file of a server that already issued
@@ -179,4 +181,4 @@ if (todo.length > 0) {
 }
 console.info("gen-prod-env: next: keep a copy in your password manager, create the database role (deploy/db-setup.sh)");
 console.info("gen-prod-env: and set Redis requirepass to the password inside REDIS_URL (deploy/README.md).");
-console.info("gen-prod-env: payments, email and storage are set later in Admin > Settings > Integrations.");
+console.info("gen-prod-env: payments, email (SMTP or Amazon SES) and storage are set later in Admin > Settings > Integrations.");

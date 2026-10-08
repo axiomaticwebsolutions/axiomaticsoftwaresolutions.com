@@ -125,7 +125,7 @@ const envSchema = z.object({
     .transform((v) => Math.min(v, 600)),
 
   // ---- Email (fallback)
-  EMAIL_TRANSPORT: z.enum(["console", "smtp"], "must be console or smtp").optional(),
+  EMAIL_TRANSPORT: z.enum(["console", "smtp", "ses"], "must be console, smtp or ses").optional(),
   EMAIL_FROM: z
     .string()
     .refine((v) => parseMailbox(v) !== null, "must be a sender such as \"Name <no-reply@example.com>\"")
@@ -134,6 +134,16 @@ const envSchema = z.object({
   SMTP_PORT: z.coerce.number("must be a port number").int("must be a port number").min(1).max(65535).default(587),
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: optionalSecret(1),
+  // Amazon SES API (EMAIL_TRANSPORT=ses). No endpoint variable: the AWS endpoint follows the region. The region (any
+  // case, from the SES region list) and the key ID format are checked by lib/integrations/env-source.ts, like
+  // STORAGE_REGION: a region that cannot work makes the fallback "not configured" instead of stopping the server.
+  SES_REGION: z.string().optional(),
+  SES_ACCESS_KEY_ID: optionalSecret(16),
+  SES_SECRET_ACCESS_KEY: optionalSecret(8),
+  SES_CONFIGURATION_SET: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/, "must be letters, digits, hyphens and underscores (up to 64)")
+    .optional(),
 
   // ---- Rate limiting: Redis store (instrumentation.ts). Optional in development (Postgres buckets when unset);
   // required when NODE_ENV=production (crossFieldProblems).
@@ -209,7 +219,7 @@ function crossFieldProblems(raw: RawEnv): string[] {
     if (raw.PAYMENT_PROVIDER === "mock") problems.push("PAYMENT_PROVIDER: mock is not allowed when NODE_ENV=production");
     if (raw.STORAGE_DRIVER === "local") problems.push("STORAGE_DRIVER: local is not allowed when NODE_ENV=production (use s3, or set storage in Admin)");
     if (raw.EMAIL_TRANSPORT === "console") {
-      problems.push("EMAIL_TRANSPORT: console is not allowed when NODE_ENV=production (use smtp, or set email in Admin)");
+      problems.push("EMAIL_TRANSPORT: console is not allowed when NODE_ENV=production (use smtp or ses, or set email in Admin)");
     }
     if (raw.CATALOG_SOURCE === "fixtures") problems.push("CATALOG_SOURCE: fixtures is not allowed when NODE_ENV=production (use db)");
     if (raw.APP_URL !== undefined && !raw.APP_URL.startsWith("https://")) {

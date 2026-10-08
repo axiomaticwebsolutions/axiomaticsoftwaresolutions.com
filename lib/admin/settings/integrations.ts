@@ -14,9 +14,13 @@ import "server-only";
 import type { Db } from "@/lib/db";
 import type { Env } from "@/lib/env";
 import {
+  DEFAULT_SES_REGION,
   DEFAULT_SMTP_PORTS,
+  EMAIL_PROVIDER_LABELS,
+  emailProviderOf,
   INTEGRATION_ENV_NAMES,
   INTEGRATION_TITLES,
+  isSesRegion,
   securityForPort,
   STORAGE_PRESET_DEFAULTS,
   STORAGE_PRESETS,
@@ -75,7 +79,7 @@ function providerLabel(kind: IntegrationKind, resolved: AnyResolved): string {
   if (resolved.source === "none") return "Not set";
   const dev = isDevelopment(kind, resolved);
   if (kind === "payments") return dev ? "Mock provider" : "Razorpay";
-  if (kind === "email") return dev ? "Console (dev mailbox)" : "SMTP";
+  if (kind === "email") return dev ? "Console (dev mailbox)" : EMAIL_PROVIDER_LABELS[resolved.config.transport === "ses" ? "ses" : "smtp"];
   return dev ? "Local disk" : "S3-compatible bucket";
 }
 
@@ -84,7 +88,7 @@ function providerLabel(kind: IntegrationKind, resolved: AnyResolved): string {
  * provider-shaped choices and the sender only. The rest (Key ID, SMTP host and username, endpoint, bucket, access key
  * ID) is left out, so the Owner never saves a stand-in such as "pending" or "axiomatic-files-pending" by accident.
  */
-const ENV_INVALID_PREFILL_KEYS = new Set(["preset", "region", "forcePathStyle", "port", "security", "fromName", "fromAddress"]);
+const ENV_INVALID_PREFILL_KEYS = new Set(["preset", "provider", "region", "forcePathStyle", "port", "security", "fromName", "fromAddress"]);
 
 /**
  * The env file's non-secret values for the form, without values that cannot work here: a host or endpoint the host
@@ -137,18 +141,23 @@ function formFor(kind: IntegrationKind, snapshot: IntegrationSnapshot, opts: Int
   if (kind === "email") {
     const port = typeof source.port === "number" ? source.port : DEFAULT_SMTP_PORTS.starttls;
     const security: EmailSecurity = source.security === "tls" || source.security === "starttls" ? source.security : securityForPort(port);
+    // Both providers' fields, so the Owner can switch; the other provider's start from defaults.
     return {
       kind,
       prefilledFrom,
       values: {
+        provider: emailProviderOf(source),
         host: str(source.host),
         port,
         security,
         username: str(source.username),
+        region: isSesRegion(source.region) ? source.region : DEFAULT_SES_REGION,
+        accessKeyId: str(source.accessKeyId),
+        configurationSet: str(source.configurationSet),
         fromName: str(source.fromName),
         fromAddress: str(source.fromAddress),
       },
-      secrets: { password: secretHint(secrets.password) },
+      secrets: { password: secretHint(secrets.password), secretAccessKey: secretHint(secrets.secretAccessKey) },
     };
   }
   const preset: StoragePreset = (STORAGE_PRESETS as readonly unknown[]).includes(source.preset) ? (source.preset as StoragePreset) : "aws";
@@ -184,9 +193,19 @@ export function integrationState(kind: IntegrationKind, snapshot: IntegrationSna
     mode: kind === "payments" && resolved.source !== "none" ? (resolved.config.mode === "live" ? "live" : "test") : null,
     problem: resolved.source === "none" ? integrationProblem(kind, resolved.reason, resolved.names, { canManage: opts.canManage }) : null,
     saved: admin ? { revision: admin.revision, updatedAt: iso(admin.updatedAt), updatedBy: admin.updatedByName } : null,
-    envNames: kind === "storage" ? INTEGRATION_ENV_NAMES.storage.filter((name) => name !== "STORAGE_LOCAL_DIR") : INTEGRATION_ENV_NAMES[kind],
+    envNames: envNamesFor(kind, snapshot),
     form: opts.canManage ? formFor(kind, snapshot, opts) : null,
   };
+}
+
+/** The fallback variable NAMES a card lists: storage without the dev-only directory, email those of its transport. */
+function envNamesFor(kind: IntegrationKind, snapshot: IntegrationSnapshot): readonly string[] {
+  if (kind === "storage") return INTEGRATION_ENV_NAMES.storage.filter((name) => name !== "STORAGE_LOCAL_DIR");
+  if (kind === "email") {
+    const ses = snapshot.env.email.selector === "ses";
+    return INTEGRATION_ENV_NAMES.email.filter((name) => (ses ? !name.startsWith("SMTP_") : !name.startsWith("SES_")));
+  }
+  return INTEGRATION_ENV_NAMES[kind];
 }
 
 /** The read-only rate-limits card (REDIS_URL stays in the env file). */

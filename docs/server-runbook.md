@@ -184,12 +184,22 @@ seconds: no restart and no deploy, a bucket change included.
 1. **Payment provider (Razorpay):** Dashboard > **Test Mode** > Account & Settings > API Keys > Generate Test Key
    (payment capture **automatic**). In Admin: Key ID, Key secret and a Webhook secret of your choice (a long random
    string, kept in the password manager). **Save**, then **Test Razorpay keys**. Then add the webhook (5.2).
-2. **Email delivery:** SMTP host, port and security (STARTTLS on 587 or TLS on 465), username, password, From name and
-   From address. **Save**, then **Send test email** (it goes to your own address). Quickest for test mode: Gmail with an
-   app password (Google Account > Security > 2-Step Verification on > App passwords): host `smtp.gmail.com`, port 587,
-   STARTTLS, the Gmail address as username and From address. Use a Gmail account created only for this site's mail,
-   never a main mailbox (an app password opens the whole mailbox). Before real customers, move to a sender on the site's
-   own domain (Brevo, Zoho ZeptoMail or Amazon SES, with SPF and DKIM records in Cloudflare) and revoke the app password.
+2. **Email delivery:** Provider **SMTP** or **Amazon SES (API)**. SMTP: host, port and security (STARTTLS on 587 or TLS
+   on 465), username, password, From name and From address. **Save**, then **Send test email** (it goes to your own
+   address). Quickest for test mode: Gmail with an app password (Google Account > Security > 2-Step Verification on >
+   App passwords): host `smtp.gmail.com`, port 587, STARTTLS, the Gmail address as username and From address. Use a
+   Gmail account created only for this site's mail, never a main mailbox (an app password opens the whole mailbox).
+   Before real customers, move to a sender on the site's own domain (Brevo, Zoho ZeptoMail or Amazon SES, with SPF and
+   DKIM records in Cloudflare) and revoke the app password. **Amazon SES (API)** instead of SMTP: in the SES console,
+   region **ap-south-1** (Mumbai), verify the domain (Identities > Create identity > Domain, Easy DKIM; the 3 CNAME
+   records in Cloudflare, DNS only). Create an IAM user without console access whose only policy allows
+   `ses:SendEmail` and `ses:SendRawEmail` on `arn:aws:ses:ap-south-1:<account-id>:identity/<domain>` only (in the
+   sandbox also your verified test address's identity; with a configuration set also its ARN; the full policy is in
+   docs/go-live-checklist.md), and an access key for it. In Admin: Provider **Amazon SES (API)**, AWS
+   region `ap-south-1`, the access key ID and secret access key, configuration set empty, From name and a From address
+   on the verified domain; **Save**, then **Send test email**. A new SES account is in the **sandbox**: it only delivers
+   to verified addresses (verify your own for the test) until SES > Account dashboard > Request production access is
+   granted.
 3. **Installer storage (Cloudflare R2):** R2 > Create bucket `axiomatic-files` (Asia-Pacific; public access off: no
    r2.dev URL, no custom domain). Bucket > Settings > CORS policy:
 

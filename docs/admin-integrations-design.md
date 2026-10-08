@@ -6,12 +6,13 @@ the implementation design and ships with the change. The dated entry in `docs/de
 
 Contents: 1 Outcome · 2 Scope · 3 Precedence · 4 Data model · 5 Encryption · 6 Modules · 7 Resolver · 8 Consumers ·
 9 Not configured · 10 Env and deploy scripts · 11 CSP · 12 SSRF guard · 13 RBAC and rate limits · 14 API · 15 Audit
-and logs · 16 Test probes · 17 UI · 18 Tests · 19 Docs · 20 Order of work · 21 Open points
+and logs · 16 Test probes · 17 UI · 18 Tests · 19 Docs · 20 Order of work · 21 Open points · 22-24 Implementation
+notes · 25 Amazon SES, autofill and card heights
 
 ## 1. Outcome in brief
 
-- The Owner edits Razorpay keys, SMTP and the bucket in Admin > Settings > Integrations. Rate limits (Redis) stay
-  env-only and show as a read-only card.
+- The Owner edits Razorpay keys, email (SMTP or, since the same day, the Amazon SES API; section 25) and the bucket in
+  Admin > Settings > Integrations. Rate limits (Redis) stay env-only and show as a read-only card.
 - Each integration has one effective configuration, resolved on the server. A configuration saved in Admin wins as a
   whole. The env file is only the fallback when Admin has none. Otherwise the integration is "Not configured". Admin
   and env fields are never mixed.
@@ -41,7 +42,7 @@ and logs · 16 Test probes · 17 UI · 18 Tests · 19 Docs · 20 Order of work �
 | | |
 |---|---|
 | In | Payments: Razorpay only. The mock stays env-only, for development and tests. |
-| | Email: SMTP. The console transport stays env-only, for development. |
+| | Email: SMTP or Amazon SES (API; section 25). The console transport stays env-only, for development. |
 | | Installer and attachment storage: S3-compatible. The local driver stays env-only, for development. |
 | Out (unchanged) | `REDIS_URL`, `DOWNLOAD_LINK_TTL_SECONDS`, `LICENSE_*` and every other variable. Cashfree (no adapter). |
 | Not edited | `docs/server-runbook.md` (the lead updates it). |
@@ -77,6 +78,7 @@ Env completeness (`lib/integrations/env-source.ts`):
 | payments | `mock` (not production) | `PAYMENT_KEY_SECRET` and `PAYMENT_WEBHOOK_SECRET` (key id defaults to `mock_key`) | `env_incomplete` |
 | payments | `cashfree` | never | `unsupported_provider` |
 | email | `smtp` | `SMTP_HOST` is usable, and `EMAIL_FROM` parses as `Name <address>` or `address` | `env_incomplete` or `env_invalid` |
+| email | `ses` | `SES_REGION` (any case) is in `SES_REGIONS`, `SES_ACCESS_KEY_ID` has the AWS key ID format and is no placeholder, `SES_SECRET_ACCESS_KEY` is usable, `SES_CONFIGURATION_SET` (optional) is letters, digits, `-` and `_` (up to 64), and `EMAIL_FROM` parses | `env_incomplete` (missing names) or `env_invalid` (names); `lib/env.ts` reads `SES_REGION` as text only, so a wrong region never stops the server |
 | email | `console` (not production) | always; the From defaults to `Axiomatic Software (dev) <no-reply@localhost>` | — |
 | storage | `s3` | `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`, plus a usable `STORAGE_ENDPOINT` when set | `env_incomplete` or `env_invalid` |
 | storage | `local` (not production) | always (`STORAGE_LOCAL_DIR`) | — |
@@ -822,16 +824,18 @@ matrix's dummy segment `perm-test-0000` meets a 404 and nothing is sent or saved
 | DELETE | `/api/admin/settings/integrations/[kind]/secrets/[field]` | integrations.manage | `{ currentPassword }` | `{ integration }` |
 | POST | `/api/admin/settings/integrations/[kind]/test` | integrations.manage | `{}` | `ProbeResult` |
 
-`kind` is `payments`, `email` or `storage`. `field` is `keySecret` or `webhookSecret` (payments), `password` (email)
-or `secretAccessKey` (storage). Anything else answers 404.
+`kind` is `payments`, `email` or `storage`. `field` is `keySecret` or `webhookSecret` (payments), `password` (SMTP) or
+`secretAccessKey` (Amazon SES) for email, or `secretAccessKey` (storage). Anything else answers 404.
 
 Save bodies are strict objects. An empty or missing secret keeps the stored one. `revision` is the revision the form
 loaded, or null when nothing was saved.
 
 ```
 payments: { currentPassword, revision: number | null, keyId, keySecret?, webhookSecret? }
-email:    { currentPassword, revision, host, port, security: "starttls" | "tls", username: string ("" = none),
-            password?, fromName, fromAddress }
+email:    { currentPassword, revision, provider?: "smtp", host, port, security: "starttls" | "tls",
+            username: string ("" = none), password?, fromName, fromAddress }
+        | { currentPassword, revision, provider: "ses", region, accessKeyId, secretAccessKey?,
+            configurationSet?: string ("" = none), fromName, fromAddress }          (section 25)
 storage:  { currentPassword, revision, preset: "aws" | "r2" | "spaces" | "other",
             endpoint: string ("" = none; AWS only), region, bucket, accessKeyId, secretAccessKey?, forcePathStyle: boolean }
 ```
@@ -891,7 +895,7 @@ type IntegrationState = {
   title: string; description: string; icon: IconName;
   source: "admin" | "env" | "none";
   development: boolean;            // mock / console / local
-  provider: string;                // "Razorpay" | "Mock provider" | "SMTP" | "Console (dev mailbox)" | "S3-compatible bucket" | "Local disk" | "Not set"
+  provider: string;                // "Razorpay" | "Mock provider" | "SMTP" | "Amazon SES (API)" | "Console (dev mailbox)" | "S3-compatible bucket" | "Local disk" | "Not set"
   mode: "test" | "live" | null;    // payments
   problem: string | null;          // plain sentence; env NAMES or field labels, never values
   saved: { revision: number; updatedAt: string; updatedBy: string | null } | null;
@@ -979,6 +983,20 @@ injectable for tests: `fetch` for Razorpay, a transport factory for email, a dri
 | `ETLS` | "The secure connection failed. Check the port and security setting." |
 | `EBLOCKEDADDRESS` | "Blocked: the host points to a private network address." |
 | `EENVELOPE` / 5xx | "The server refused the message. Check the From address." |
+| anything else | "Couldn’t send the test email." |
+
+- Amazon SES (`sesFailureMessage()`), by AWS exception name or code, never the AWS text (it can name the identity or
+  the account) and never a key:
+
+| AWS error | Message |
+|---|---|
+| `InvalidClientTokenId` / `SignatureDoesNotMatch` / `UnrecognizedClientException` / `InvalidSignatureException` / `IncompleteSignature` / `MissingAuthenticationTokenException` / an unnamed 403 | "AWS rejected the access key ID or secret access key." |
+| `MessageRejected` / `MailFromDomainNotVerifiedException` | "Amazon SES refused the message: verify the From address or its domain in SES (in the SES sandbox, verify the recipient too)." |
+| `AccessDenied` / `AccessDeniedException` | "This access key isn’t allowed to send email. Allow ses:SendEmail and ses:SendRawEmail." |
+| `TooManyRequestsException` / `ThrottlingException` / `Throttling` / `LimitExceededException` | "Amazon SES is throttling sends (rate or daily quota). Try again later." |
+| `SendingPausedException` / `AccountSuspendedException` | "Sending is paused for this AWS account or configuration set. Check the SES console." |
+| `NotFoundException` | "Amazon SES couldn’t find the configuration set in this region." |
+| network errors (`ENOTFOUND`, `ECONNREFUSED`, `ETIMEDOUT`, `TimeoutError`, ...) | "Couldn’t reach Amazon SES. Try again in a minute." |
 | anything else | "Couldn’t send the test email." |
 
 - Console transport: "Sent to the dev mailbox (/dev/mailbox)."
@@ -1094,11 +1112,11 @@ Copy (`INTEGRATIONS_COPY` in `lib/admin/settings/model.ts`; code uses typographi
 | Development badge | Development only |
 | Mode badges | Test mode · Live mode |
 | Payments fields | **Key ID** (hint "Starts with rzp_test_ or rzp_live_. Test or live mode follows the key.") · **Key secret** · **Webhook secret** (hint "The secret you set for the webhook in the Razorpay Dashboard.") · **Webhook URL**, read-only (hint "Add it in the Razorpay Dashboard with the events payment.captured, order.paid, payment.failed, refund.processed and refund.failed.") |
-| Email fields | **SMTP host** · **Port** · **Security** · **Username** (hint "Leave empty if the server needs no sign-in.") · **Password** · **From name** · **From address** (hint "Use an address on a domain your provider has verified (SPF and DKIM).") |
+| Email fields | **Provider** first ("SMTP" · "Amazon SES (API)"; hint, only when Save would delete the other provider's saved secret: "Saving removes the saved password." or "Saving removes the saved secret access key."), then the chosen provider's fields. SMTP: **SMTP host** · **Port** · **Security** · **Username** (hint "Leave empty if the server needs no sign-in.") · **Password**. Amazon SES: **AWS region** (select "ap-south-1 · Asia Pacific (Mumbai)", ...) · **Access key ID** (hint "An IAM user that may only call ses:SendEmail and ses:SendRawEmail.") · **Secret access key** · **Configuration set** (hint "Optional. Only if you publish SES events through a configuration set.") · help "Verify the From domain in Amazon SES (Easy DKIM). Until AWS grants production access, SES only delivers to verified addresses.". Both: **From name** · **From address** (hint "Use an address on a domain your provider has verified (SPF and DKIM).") |
 | Storage fields | **Provider** · **Endpoint** (hint "https only. Leave empty for AWS.") · **Region** · **Bucket** · **Access key ID** · **Secret access key** · **Path-style URLs** (hint "On for Cloudflare R2 and most S3-compatible stores.") · help "This page reloads after a change. Reload other open tabs before uploading." (section 24) |
-| Secret field | Set (ends 1a2b) · Set · Changed by <name> on <date> · Replace · Clear · Cancel · "Leave empty to keep the saved value." · "In the server file. Enter it here to save these settings in Admin." · "Not used without a username." |
+| Secret field | Set (ends 1a2b) · Set · Changed by <name> on <date> · Replace · Clear · Cancel · "Leave empty to keep the saved value." · "In the server file. Enter it here to save these settings in Admin." (not after switching email to the provider the server file does not select) · "Not used without a username." · reopened for entry: "The provider, server or region changed, so the saved value can’t be kept." (email) / "The endpoint changed, so the saved value can’t be kept." (storage) |
 | Buttons | Save · Test Razorpay keys · Send test email · Test bucket · Remove saved settings |
-| Password dialog | Title "Confirm with your password" · body "<Title> changes for everyone within 30 seconds." · label "Your password" · empty error "Enter your password." · buttons Save / Clear / Remove and Cancel |
+| Password dialog | Title "Confirm with your password" · body "<Title> changes for everyone within 30 seconds." (plus "Saving removes the saved password." / "... secret access key." when an email provider switch deletes it) · label "Your password" · empty error "Enter your password." · buttons Save / Clear / Remove and Cancel |
 | Clear dialog body | Required secret: "<Field> is removed. <Integration> stops until you save a new one." Optional secret: "<Field> is removed." |
 | Remove dialog body | "The site goes back to the server file. If it has no settings, <integration> stops." |
 | Problem: `missing` | Not set up yet. |
@@ -1424,10 +1442,91 @@ Checked: `pnpm typecheck`, `pnpm lint`, `pnpm test:unit`, `pnpm test:db` (new: `
 | Where | Change | Reason |
 |---|---|---|
 | `lib/integrations/model.ts` `DESTINATION_FIELDS`, `lib/integrations/store.ts` | A save that changes the SMTP host, port or security, or the storage endpoint, must enter every saved secret of the kind again (422 per field, "Enter it again: ..."); an unreadable saved row counts as changed. The form opens those secrets for entry and checks it first. | Otherwise the Owner's session and password were enough to point email at another server, keep the stored password and read it out with "Send test email". |
-| `components/admin/settings/secret-field.tsx` | `autocomplete="off"` plus `data-1p-ignore`, `data-lpignore`, `data-bwignore`, `data-form-type="other"` (was `new-password`). | Browsers offered to save or generate these as site passwords. |
+| `components/admin/settings/secret-field.tsx` | `autocomplete="off"` plus `data-1p-ignore`, `data-lpignore`, `data-bwignore`, `data-form-type="other"` (was `new-password`). Reversed in section 25: Chrome ignores `off` on password inputs and filled the Owner's saved sign-in. | Browsers offered to save or generate these as site passwords. |
 | `components/admin/settings/integration-card.tsx` | A storage save, clear or remove reloads the page (success toast handed over in sessionStorage); a repeated test empties the live region first; the test result shows when it ran and "Step: message". | The CSP of an open page kept the old bucket, so the first upload after saving the bucket failed. |
 | `lib/admin/settings/integrations.ts` | With an `env_invalid` fallback only preset, region, path style, port, security and the sender are prefilled. | The stand-ins "pending", "axiomatic-files-pending" and "pending-r2" showed as real values. |
 | `lib/integrations/env-source.ts` | Production without a selector but with other variables of the kind: `env_incomplete` naming the selector. | Those values were ignored with no warning. |
 | `lib/payments/key-scope.ts`, `reconcile.ts`, `lib/admin/orders/refund.ts` | Reconcile and refunds reach other Razorpay key ids of the same mode; "not found" for such a payment is 409 `provider_key_changed` in refunds. | A key regeneration (same account, new Key ID) stopped reconcile and refunds for earlier payments. |
 | `prisma/seed-data/bootstrap.ts` | The test-mode notice only with an explicit mock provider or `rzp_test_` key. | Unset meant "test mode" although live keys may be saved in Admin later. |
 | Copy and docs | "within 30 seconds" in the section and the dialog; the env variable names show on cards that use the server file; the audit sentence in api.md, decisions.md and section 1 now says that no-op saves and clears write no row; `.env.production.example` and the preflight header say CHANGE-ME still fails. | They disagreed with the code. |
+
+## 25. Amazon SES, autofill and card heights (2026-10-08)
+
+Owner decisions of 2026-10-08 (`docs/decisions.md`: "Amazon SES as a second email provider", "Integration forms: no
+password-manager autofill", "Settings cards: one height per row").
+
+### Amazon SES (API) as a second email provider
+
+| Where | What |
+|---|---|
+| `lib/integrations/model.ts` | `EMAIL_PROVIDERS` (`smtp`, `ses`) and labels; `SES_REGIONS` (commercial SES regions, `DEFAULT_SES_REGION` `ap-south-1`); `AWS_ACCESS_KEY_ID_RE`, `SES_CONFIGURATION_SET_RE`. Persisted email settings are a discriminated union on `provider` (`smtpSettingsSchema`, `sesSettingsSchema`); a row without `provider` (saved before SES) reads as SMTP. The save body is `smtpSaveSchema` or `sesSaveSchema` by `provider` (missing = SMTP; any other value 422 on `provider`). `SECRET_FIELDS.email` is `password` and `secretAccessKey`; `applicableSecrets()` says which one the settings use; `requiredSecrets()` is the SES key, or the SMTP password with a username. `DESTINATION_FIELDS.email` adds `provider` and `region`; `destinationChanged()` compares only the chosen provider's fields. |
+| `lib/integrations/types.ts` | `EmailConfig` gains `{ transport: "ses", region, accessKeyId, secretAccessKey, configurationSet, from }`. |
+| `lib/integrations/resolver.ts` | Builds the SES config; the SMTP host rules apply to SMTP only; only the secrets the settings use are decrypted. |
+| `lib/integrations/store.ts` | A secret the provider does not use is refused (422 "Not used with this provider."). Re-entry covers the saved secrets the new settings use. A save that switches provider deletes the other provider's saved secret (`removed` in the result; audit "Removed: Password."). `changed` lists `provider` when it changes; an empty field the old provider did not have is no change. |
+| `lib/integrations/env-source.ts`, `lib/env.ts` | `EMAIL_TRANSPORT=ses` with `SES_REGION`, `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY`, optional `SES_CONFIGURATION_SET`, plus `EMAIL_FROM`. Missing ones are `env_incomplete`, a region outside `SES_REGIONS`, a malformed or placeholder key, a short or placeholder secret or a bad configuration set `env_invalid`. Prefill: provider, region, key ID, configuration set (never the secret). No endpoint variable. |
+| `lib/email/transports/ses.ts` | nodemailer's SES transport with `SESv2Client` from `@aws-sdk/client-sesv2` 3.1146.0 (pinned like `@aws-sdk/client-s3`). `sesClientConfig()`: region, explicit credentials, 3 attempts, 10 s connect and 30 s request timeouts, never an endpoint. `close()` destroys the client. |
+| `lib/email/transports/mail-options.ts` | The one message builder (From as `{ name, address }`, HTML and text, `Auto-Submitted`, `X-Axs-Template`), shared by SMTP and SES, so both send the same MIME message (attachments or List-Unsubscribe, when added, go here). |
+| `lib/email/transport.ts` | `createEmailTransport()` selects SES; the process-wide transport is still keyed by the configuration fingerprint (rebuilt on change, the old client closed 60 s later). `sendErrorSummary()` adds the AWS HTTP status (`httpStatus`), never the message. |
+| `lib/integrations/probes.ts` | `sesFailureMessage()` maps by AWS exception name, code and status: keys rejected (`InvalidClientTokenId`, `SignatureDoesNotMatch`, `UnrecognizedClientException`, `InvalidSignatureException`, an unnamed 403), `MessageRejected` / `MailFromDomainNotVerifiedException` (sender, domain or sandbox recipient not verified), `AccessDenied(Exception)` (needs `ses:SendEmail` / `ses:SendRawEmail`), throttling (`TooManyRequestsException`, `ThrottlingException`, `LimitExceededException`), `SendingPausedException` / `AccountSuspendedException`, `NotFoundException` (configuration set), network errors. Audit reasons in `integration-actions.ts` `EMAIL_FAILURE_REASONS`. |
+| `lib/admin/settings/integrations*.ts` | The email form carries both providers' values and both secret hints; provider label "Amazon SES (API)"; the card lists the SES or the SMTP variable names by `EMAIL_TRANSPORT`. Save-time DNS checks apply to SMTP only. |
+| `components/admin/settings/integration-form-model.ts`, `integration-card.tsx` | Provider select first; fields carry `providers`; `visibleFields()` drives rendering, `dirtyKeys()`, `bodyFor()` and the client checks; the SES region is a select; a help line under the SES fields names Easy DKIM and the sandbox. |
+| `app/dev/mailbox/page.tsx`, `deploy/preflight.mjs` | "Emails are going out through Amazon SES"; "email: server file ses (ap-south-1)". |
+
+No SSRF surface: the SES client never gets an endpoint, and the region comes from a fixed list, so the secret can only
+go to `email.<region>.amazonaws.com`. The server environment cannot move it either: `sesClientConfig()` sets
+`ignoreConfiguredEndpointUrls: true` (the SDK otherwise reads `AWS_ENDPOINT_URL_SESV2`, `AWS_ENDPOINT_URL` and
+`endpoint_url` in `~/.aws/config`) and `useFipsEndpoint: false`, `useDualstackEndpoint: false`;
+`tests/unit/email-ses-endpoint.test.ts` resolves the host with the real SDK and those variables set. Explicit
+credentials keep the SDK from reading the server's `AWS_*` variables or `~/.aws` files for keys. The SMTP guard
+(section 12) is unchanged.
+
+Review fixes (same day):
+
+- Switching provider tells the Owner before Save that the other provider's saved secret goes:
+  `providerSwitchNote()` ("Saving removes the saved password.") under Provider and in the password dialog (fixed when
+  the dialog opens). `secretHintSource()`: after switching away from the server file's provider, the new provider's
+  secret no longer says "In the server file".
+- The hint under a reopened secret names what changed, per integration (`INTEGRATIONS_COPY.secret.reenter[kind]`).
+- AccessDenied reads "This access key isn’t allowed to send email. Allow ses:SendEmail and ses:SendRawEmail."
+- `lib/env.ts` reads `SES_REGION` as text (like `STORAGE_REGION`); env-source judges it, case-insensitively.
+
+### No password-manager autofill
+
+Seen live: the saved Admin sign-in was filled into "Key ID" / "Access key ID" and "Key secret" / "Secret access key"
+(Chrome ignores `autocomplete="off"` on password inputs; section 24 had chosen it). Now:
+
+- `secret-field.tsx`: `autocomplete="new-password"`, the ignore attributes (`data-1p-ignore`, `data-lpignore="true"`,
+  `data-bwignore`, `data-form-type="other"`) and a `name`.
+- `integration-card.tsx`: every text, number and email input, every select and the read-only webhook URL
+  `autocomplete="off"` plus the same attributes (`NO_PASSWORD_MANAGER`); every input and select gets an id suffix and
+  `name` (from `fieldDomKey()`, or `razorpay-webhook-url`) that never contains "user", "login" or "email"
+  (`smtp-auth-id`, `razorpay-key-id`, `ses-access-key-id`, `storage-bucket`, ...); the card `<form>` is
+  `autocomplete="off"` (`SettingsCard` `autoComplete`).
+- What it does not stop: the ignore attributes only bind 1Password, LastPass, Bitwarden and Dashlane. Chrome's own
+  password manager ignores them and treats `new-password` as a sign-up field, so it may still offer "Suggest strong
+  password" on a secret input or "Save password?" after a save. The Owner declines ("No thanks", not "Never"); a secret
+  ever saved in Chrome is deleted there and rotated (`docs/go-live-checklist.md`, `docs/security.md`).
+
+### Equal card heights
+
+`SettingsCard` is a flex column: header and footer `shrink-0`, the body (`data-slot="settings-card-body"`) `flex-1
+content-start`. `settings-view.tsx` and `integrations-panel.tsx` use `items-stretch`. Every row of the settings grid
+therefore shares one height and the footers (`data-slot="settings-card-footer"`) line up; precedent
+`components/admin/overview/panel.tsx`.
+
+### Tests
+
+- Unit: `integration-model` (SES save and persisted schemas, region and From rules, legacy rows, applicable and
+  required secrets, the re-entry rule), `integration-env-source` (SES fallback, missing and invalid names, prefill),
+  `email-ses-transport` (new: selection SMTP vs SES with a mocked SESv2 client, client options without an endpoint,
+  the raw MIME message, configuration set, close, rebuild on change), `email-ses-endpoint` (new: the real SDK resolves
+  `email.<region>.amazonaws.com` even with `AWS_ENDPOINT_URL*` and the FIPS / dual-stack switches set),
+  `integration-probes` (SES sends and every AWS error mapping), `integration-resolver` (SES rows, only the used secret
+  is opened), `integration-form-model` (provider switch and its removal note, the server-file hint after a switch, the
+  per-kind re-entry hint, SES bodies and checks, DOM keys, autocomplete source checks), `admin-settings-model` (SES
+  views), `env` (an upper-case or stray `SES_REGION` never stops the server).
+- DB: `admin-integrations-routes` (SES save as Owner with password, non-Owner refused, secrets never in responses, logs
+  or audit rows, provider switch and region re-entry with audit details, production save without DNS, test send through
+  a mocked SES client with mapped and audited errors), `integration-store` (refused foreign secret, removal on switch).
+- E2E: `admin-integrations.spec.ts` (autocomplete and ignore attributes on inputs, selects and the webhook URL, ids and
+  names, form `autocomplete="off"`, the provider switch, equal rows at 1280 and 1920 px, one column at 360 px).

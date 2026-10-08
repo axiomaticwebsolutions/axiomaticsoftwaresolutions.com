@@ -25,6 +25,7 @@ import { endpointProblem, hostProblem } from "@/lib/security/host-rules";
 import { openIntegrationSecret } from "./crypto";
 import { classifyEnvIntegrations, type EnvClassification, type IntegrationEnvInput } from "./env-source";
 import {
+  applicableSecrets,
   INTEGRATION_SETTINGS_SCHEMAS,
   isSecretField,
   razorpayMode,
@@ -119,14 +120,19 @@ function resolveAdmin<K extends IntegrationKind>(
     return none("admin_unreadable", ["settings"]);
   }
   const settings = parsed.data as PersistedSettings[K];
-  if (kind === "email" && hostProblem((settings as EmailSettings).host, { production })) return none("admin_invalid", ["host"]);
+  if (kind === "email") {
+    const e = settings as EmailSettings;
+    if (e.provider === "smtp" && hostProblem(e.host, { production })) return none("admin_invalid", ["host"]);
+  }
   if (kind === "storage") {
     const endpoint = (settings as StorageSettings).endpoint;
     if (endpoint !== null && endpointProblem(endpoint, { production })) return none("admin_invalid", ["endpoint"]);
   }
   const secrets: Partial<Record<SecretField, string>> = {};
+  // Only the secrets these settings use are opened (email: the SMTP password or the SES secret key, by provider).
+  const usable: readonly string[] = applicableSecrets(kind, settings as Record<string, unknown>);
   for (const sealed of row.secrets) {
-    if (!isSecretField(kind, sealed.field)) continue;
+    if (!isSecretField(kind, sealed.field) || !usable.includes(sealed.field)) continue;
     try {
       secrets[sealed.field] = openIntegrationSecret(kind, sealed.field, sealed.ciphertext, ikm());
     } catch {
@@ -152,14 +158,24 @@ function resolveAdmin<K extends IntegrationKind>(
   }
   if (kind === "email") {
     const e = settings as EmailSettings;
-    const config: EmailConfig = {
-      transport: "smtp",
-      host: e.host,
-      port: e.port,
-      security: e.security,
-      auth: e.username === null ? null : { user: e.username, pass: secrets.password as string },
-      from: { name: e.fromName, address: e.fromAddress },
-    };
+    const config: EmailConfig =
+      e.provider === "ses"
+        ? {
+            transport: "ses",
+            region: e.region,
+            accessKeyId: e.accessKeyId,
+            secretAccessKey: secrets.secretAccessKey as string,
+            configurationSet: e.configurationSet,
+            from: { name: e.fromName, address: e.fromAddress },
+          }
+        : {
+            transport: "smtp",
+            host: e.host,
+            port: e.port,
+            security: e.security,
+            auth: e.username === null ? null : { user: e.username, pass: secrets.password as string },
+            from: { name: e.fromName, address: e.fromAddress },
+          };
     return configured(kind, "admin", config) as Resolved<IntegrationConfigs[K]>;
   }
   const st = settings as StorageSettings;

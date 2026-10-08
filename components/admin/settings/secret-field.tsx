@@ -11,6 +11,8 @@ import { secretSummary } from "./integration-form-model";
 export type SecretFieldProps = {
   /** The input's id (also the base of the Replace button's id). */
   id: string;
+  /** The input's name: never one that looks like a sign-in field (integration-form-model.ts fieldDomKey). */
+  name?: string;
   label: string;
   /** The field's own help (e.g. where the webhook secret comes from). */
   hint?: string;
@@ -36,11 +38,16 @@ export const replaceButtonId = (id: string) => `${id}-replace`;
 /**
  * A write-only secret (Admin > Settings > Integrations). Saved: "Set (ends 1a2b)", who changed it and when, Replace and
  * Clear. Replace swaps in an empty password input with Cancel; leaving it empty keeps the saved value. Nothing saved:
- * the input shows directly. The value is never prefilled, never echoed and dropped from state after a save. The input
- * is marked as no site password (autocomplete off plus the password managers' ignore attributes).
+ * the input shows directly. The value is never prefilled, never echoed and dropped from state after a save.
+ *
+ * Password managers: autocomplete="new-password" plus the managers' ignore attributes. Chrome ignores
+ * autocomplete="off" on password inputs and filled the Owner's saved Admin sign-in into these forms (email into Key ID,
+ * password into Key secret); it never fills a saved password into a new-password input (docs/decisions.md,
+ * 2026-10-08, reverses the earlier autocomplete="off").
  */
 export function SecretField({
   id,
+  name,
   label,
   hint,
   secret,
@@ -141,9 +148,11 @@ export function SecretField({
         size="sm"
         mono
         type="password"
-        // Not a sign-in password: keep browsers and password managers from offering to save, generate or fill it
-        // (saving would copy the secret out of the encrypted store, and could overwrite the Owner's sign-in entry).
-        autoComplete="off"
+        name={name}
+        // Not a sign-in password: "new-password" stops Chrome filling the Owner's saved sign-in password here (it
+        // ignores "off" on password inputs); the ignore attributes keep 1Password, LastPass, Bitwarden and Dashlane
+        // from saving or filling it (saving would copy the secret out of the encrypted store).
+        autoComplete="new-password"
         data-1p-ignore=""
         data-lpignore="true"
         data-bwignore=""

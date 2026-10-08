@@ -6,9 +6,11 @@
  * - loadIntegrationRows(): every saved integration with its sealed secrets and the names of who changed them.
  * - writeIntegration(): advisory lock per kind, revision check (409 integration_changed), merge with the stored
  *   secrets, required-secret check (422 naming the field), encryption, upserts. Never clears a secret; a save that
- *   changes nothing writes nothing. A save that changes where the secrets go (model.ts DESTINATION_FIELDS: the SMTP
- *   server, the storage endpoint) must enter every stored secret of the kind again (422 naming each), so a kept
- *   secret can never be sent to a server the Owner just typed in.
+ *   changes nothing writes nothing. A save that changes where the secrets go (model.ts DESTINATION_FIELDS: the email
+ *   provider, SMTP server or SES region, the storage endpoint) must enter every stored secret the new settings use
+ *   again (422 naming each), so a kept secret can never be sent to a server the Owner just typed in. Stored secrets
+ *   the new settings cannot use (the SMTP password after switching to Amazon SES, and the reverse) are deleted by that
+ *   save; entering one is refused.
  * - clearIntegrationSecret(), deleteIntegration(): under the same lock.
  * Secret values only ever exist here on their way into sealIntegrationSecret().
  */
@@ -18,6 +20,7 @@ import { db as defaultDb, type Db, type Tx } from "@/lib/db";
 import { ApiError, errors } from "@/lib/http";
 import { sealIntegrationSecret, secretLast4 } from "./crypto";
 import {
+  applicableSecrets,
   destinationChanged,
   fromDbKind,
   INTEGRATION_SETTINGS_SCHEMAS,
@@ -82,6 +85,8 @@ export type WriteIntegrationResult = {
   created: boolean;
   /** Field keys whose value changed (a secret counts whenever a new value was entered). Empty: nothing was written. */
   changed: string[];
+  /** Stored secrets deleted because the new settings cannot use them (email provider switch). */
+  removed: string[];
 };
 
 /** Saves an integration (see the module comment). Throws ApiError 409 / 422. */
@@ -90,9 +95,11 @@ export async function writeIntegration<K extends IntegrationKind>(tx: Tx, input:
   const parsed = INTEGRATION_SETTINGS_SCHEMAS[kind].safeParse(input.settings);
   if (!parsed.success) throw errors.validation({}, ["The settings are not valid."]);
   const settings = parsed.data as PersistedSettings[K];
+  const usable: readonly string[] = applicableSecrets(kind, settings as Record<string, unknown>);
   const entered = Object.entries(input.secrets).filter((entry): entry is [string, string] => typeof entry[1] === "string");
   for (const [field, value] of entered) {
     if (!isSecretField(kind, field)) throw errors.validation({ [field]: "Unknown field." });
+    if (!usable.includes(field)) throw errors.validation({ [field]: "Not used with this provider." });
     const problem = secretProblem(field, value);
     if (problem) throw errors.validation({ [field]: problem });
   }
@@ -117,13 +124,21 @@ export async function writeIntegration<K extends IntegrationKind>(tx: Tx, input:
   // unreadable saved row counts as moved (where its secrets used to go is unknown).
   if (existing && (previous === null || destinationChanged(kind, previous, next))) {
     for (const field of stored) {
-      if (isSecretField(kind, field) && !provided.has(field) && !fieldErrors[field]) fieldErrors[field] = SECRET_REENTRY_MESSAGES[kind];
+      if (isSecretField(kind, field) && usable.includes(field) && !provided.has(field) && !fieldErrors[field]) {
+        fieldErrors[field] = SECRET_REENTRY_MESSAGES[kind];
+      }
     }
   }
   if (Object.keys(fieldErrors).length > 0) throw errors.validation(fieldErrors);
-  const changed = Object.keys(next).filter((key) => key !== "provider" && (previous === null || !isDeepStrictEqual(previous[key], next[key])));
+  // "provider" is implied on a first save (payments: always Razorpay) and listed when it changes (email: SMTP / SES).
+  // A field the previous provider did not have counts as changed only when it holds a value (an empty SES
+  // configuration set after SMTP is not a change).
+  const changed = Object.keys(next).filter((key) =>
+    previous === null ? key !== "provider" : !isDeepStrictEqual(previous[key] ?? null, next[key] ?? null),
+  );
   changed.push(...entered.map(([field]) => field));
-  if (existing && changed.length === 0) return { revision: existing.revision, created: false, changed: [] };
+  const removed = [...stored].filter((field) => !usable.includes(field)).sort();
+  if (existing && changed.length === 0 && removed.length === 0) return { revision: existing.revision, created: false, changed: [], removed: [] };
 
   const revision = (existing?.revision ?? 0) + 1;
   const json = settings as unknown as object;
@@ -141,7 +156,8 @@ export async function writeIntegration<K extends IntegrationKind>(tx: Tx, input:
       update: { ciphertext, last4, updatedById: input.actorId },
     });
   }
-  return { revision, created: existing === null, changed };
+  if (removed.length > 0) await tx.integrationSecret.deleteMany({ where: { kind: dbKind, field: { in: removed } } });
+  return { revision, created: existing === null, changed, removed };
 }
 
 /** Removes one saved secret. null: nothing is saved for the kind; `cleared: false`: that secret was not set. */

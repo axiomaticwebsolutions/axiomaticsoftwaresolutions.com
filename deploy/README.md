@@ -13,7 +13,7 @@ Browser / desktop apps --https--> aaPanel Nginx :443 (Let's Encrypt) --http--> 1
 aaPanel Cron --runuser axiomatic--> cron-*.sh --http--> 127.0.0.1:3000/api/cron/{emails,reconcile,renewals,maintenance}
 aaPanel Cron --runuser axiomatic--> deploy/backup.sh --> /www/backup/axiomatic/*.dump (14 days)
 Razorpay --https--> https://<domain>/api/webhooks/payments/razorpay
-Files: private S3-compatible bucket (browsers upload/download directly). Email: SMTP provider.
+Files: private S3-compatible bucket (browsers upload/download directly). Email: SMTP provider or the Amazon SES API.
 ```
 
 | File | Purpose |
@@ -88,7 +88,7 @@ Run in the aaPanel Terminal (root) unless a step says "as the app user" (`sudo -
    secrets saved in Admin), `LICENSE_SIGNING_PRIVATE_KEY`, `LICENSE_SIGNING_PUBLIC_KEY`, `REDIS_URL`,
    `TRUSTED_PROXY_HOPS`. Optional, with defaults: `DATABASE_POOL_*`, `LICENSE_OFFLINE_GRACE_DAYS`,
    `SECURITY_HSTS_STRICT`, `DOWNLOAD_LINK_TTL_SECONDS`. Fallback only (normally left out): `PAYMENT_*`, `STORAGE_*`
-   (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*`, `SMTP_*`. What is saved in Admin wins over them, per integration.
+   (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*`, `SMTP_*`, `SES_*`. What is saved in Admin wins over them, per integration.
 5. **PostgreSQL 16 or 17**: aaPanel > App Store > PostgreSQL (Manager) > install. In its settings / config file set
    `listen_addresses = 'localhost'` and restart it. Do not create the database in the aaPanel UI (it must be UTF8 with
    collation C). As root (only now, before the app has ever run; later runs as the app user, see "Privileges"):
@@ -129,8 +129,11 @@ Run in the aaPanel Terminal (root) unless a step says "as the app user" (`sudo -
       (`https://<domain>/api/webhooks/payments/razorpay`) with that same secret and the events `payment.captured`,
       `order.paid`, `payment.failed`, `refund.processed`, `refund.failed` (a refund Razorpay could not complete puts
       the order in review so it can be refunded again). Then "Test Razorpay keys".
-    - **Email delivery**: SMTP host, port, security, username and password, From name and address; "Send test email"
-      sends one to your own address.
+    - **Email delivery**: Provider SMTP (host, port, security, username and password) or Amazon SES (API) (AWS
+      region, default `ap-south-1`; access key ID and secret access key of an IAM user limited to `ses:SendEmail` and
+      `ses:SendRawEmail`, scoped to the sending identity in that region (policy: `docs/go-live-checklist.md`);
+      optional configuration set), then From name and address; "Send test email" sends one to your
+      own address (in the SES sandbox that address must be verified in SES).
     - **Installer storage**: provider, endpoint, region, bucket, access key ID and secret access key (creating the
       private bucket and its CORS rule: `docs/deploy-today.md` step 0.5); "Test bucket" uploads, reads and deletes a
       tiny file under `axs-probe/` (it cannot check CORS).
@@ -251,11 +254,12 @@ release stays on disk until later deploys prune it.
 
 - After editing `shared/.env.production`: `bash /www/wwwroot/axiomatic/current/deploy/restart.sh` (graceful PM2 reload,
   health check). That includes the `STORAGE_*` fallback: the CSP's bucket origin is set at runtime, not by the build.
-- Razorpay, SMTP and storage credentials saved in Admin > Settings > Integrations are rotated there: save the new value
-  (Replace, then Save with your password). No restart or deploy; other PM2 processes follow within 30 s. They win over
-  any `PAYMENT_*`, `EMAIL_*`, `SMTP_*` or `STORAGE_*` line, which is only a fallback when nothing is saved.
+- Razorpay, SMTP / Amazon SES and storage credentials saved in Admin > Settings > Integrations are rotated there: save
+  the new value (Replace, then Save with your password). No restart or deploy; other PM2 processes follow within 30 s.
+  They win over any `PAYMENT_*`, `EMAIL_*`, `SMTP_*`, `SES_*` or `STORAGE_*` line, which is only a fallback when
+  nothing is saved.
 - Removing the release-day stand-ins: save the real values in Admin first (they win at once), then delete every
-  `PAYMENT_*`, `STORAGE_*` (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*` and `SMTP_*` line and run `restart.sh`. The
+  `PAYMENT_*`, `STORAGE_*` (except `DOWNLOAD_LINK_TTL_SECONDS`), `EMAIL_*`, `SMTP_*` and `SES_*` line and run `restart.sh`. The
   cards then say "Saved in Admin"; if the Admin settings are removed later, nothing falls back to stand-ins.
 - Never run `pm2 reload --update-env` from a shell that exported app variables: PM2 copies the caller's environment,
   and an exported variable wins over the file. The scripts call PM2 with a clean environment.
@@ -270,6 +274,7 @@ release stays on disk until later deploys prune it.
 | Razorpay Key ID / Key secret (Admin, or `PAYMENT_KEY_ID` / `PAYMENT_KEY_SECRET`) | regenerate in Razorpay, save in Admin, "Test Razorpay keys" | unpaid orders start a fresh payment attempt; payments taken with the old keys of the same account and mode are still reconciled and refundable from Admin; after a test-to-live switch or with another account, refund old payments in the Razorpay Dashboard |
 | Storage access key (Admin, or `STORAGE_ACCESS_KEY_ID` / `STORAGE_SECRET_ACCESS_KEY`) | new key at the provider, save in Admin, "Test bucket", then delete the old key | none |
 | SMTP password (Admin, or `SMTP_PASSWORD`) | new credential at the provider, save in Admin, "Send test email" | none |
+| Amazon SES secret access key (Admin, or `SES_SECRET_ACCESS_KEY`) | IAM > the SES user > create a second access key, save the new key ID and secret in Admin, "Send test email", then deactivate and delete the old key | none |
 | DB password (in `DATABASE_URL`) | edit the URL (letters and digits), as the app user `bash deploy/db-setup.sh --host 127.0.0.1 --superuser postgres`, restart | none |
 | Redis password (in `REDIS_URL`) | edit the URL, set the same `requirepass` in aaPanel > Redis, restart Redis, then restart the app | rate-limited requests may be refused until the app restarts |
 | `LICENSE_KEY_PEPPER`, `LICENSE_KEY_ENC_KEY` | **never** once a license key exists | issued keys could no longer be checked or revealed; the integration secrets saved in Admin could no longer be read (enter them again) |

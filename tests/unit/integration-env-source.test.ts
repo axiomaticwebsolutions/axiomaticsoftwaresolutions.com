@@ -26,6 +26,13 @@ const SMTP = {
   SMTP_USER: "mailer",
   SMTP_PASSWORD: "smtp-password-01",
 };
+const SES = {
+  EMAIL_TRANSPORT: "ses",
+  EMAIL_FROM: "Axiomatic <no-reply@axiomatic.example>",
+  SES_REGION: "ap-south-1",
+  SES_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
+  SES_SECRET_ACCESS_KEY: "ses-secret-access-key-01",
+};
 const S3 = {
   STORAGE_DRIVER: "s3",
   STORAGE_ENDPOINT: "https://acc123.r2.cloudflarestorage.com/",
@@ -76,7 +83,7 @@ describe("classifyEnvIntegrations: drivers", () => {
 
   it("reports cashfree as unsupported and an unknown selector as invalid", () => {
     expect(verdict({ PAYMENT_PROVIDER: "cashfree" }, PROD).payments).toBe("unsupported_provider:PAYMENT_PROVIDER");
-    expect(verdict({ PAYMENT_PROVIDER: "paypal", EMAIL_TRANSPORT: "ses", STORAGE_DRIVER: "gcs" }, DEV)).toEqual({
+    expect(verdict({ PAYMENT_PROVIDER: "paypal", EMAIL_TRANSPORT: "sendgrid", STORAGE_DRIVER: "gcs" }, DEV)).toEqual({
       payments: "env_invalid:PAYMENT_PROVIDER",
       email: "env_invalid:EMAIL_TRANSPORT",
       storage: "env_invalid:STORAGE_DRIVER",
@@ -150,6 +157,49 @@ describe("classifyEnvIntegrations: values", () => {
     expect(verdict({ ...S3, STORAGE_BUCKET: "Bad_Bucket", STORAGE_FORCE_PATH_STYLE: "maybe" }, PROD).storage).toBe(
       "env_invalid:STORAGE_BUCKET,STORAGE_FORCE_PATH_STYLE",
     );
+  });
+});
+
+describe("classifyEnvIntegrations: Amazon SES (EMAIL_TRANSPORT=ses)", () => {
+  it("accepts a complete SES fallback in production, with an optional configuration set", () => {
+    expect(classifyEnvIntegrations(SES, PROD).email.result).toEqual({
+      ok: true,
+      config: {
+        transport: "ses",
+        region: "ap-south-1",
+        accessKeyId: "AKIAIOSFODNN7EXAMPLE",
+        secretAccessKey: "ses-secret-access-key-01",
+        configurationSet: null,
+        from: { name: "Axiomatic", address: "no-reply@axiomatic.example" },
+      },
+    });
+    const withSet = classifyEnvIntegrations({ ...SES, SES_REGION: "EU-WEST-1", SES_CONFIGURATION_SET: "axs-events" }, PROD).email.result;
+    expect(withSet).toMatchObject({ ok: true, config: { region: "eu-west-1", configurationSet: "axs-events" } });
+    // SMTP variables next to an SES selector are ignored (and the reverse).
+    expect(verdict({ ...SES, SMTP_HOST: "smtp-pending.invalid" }, PROD).email).toBe("ok");
+    expect(verdict({ ...SMTP, SES_REGION: "mars-1" }, PROD).email).toBe("ok");
+  });
+
+  it("names what is missing and what can't work, never a value", () => {
+    expect(verdict({ EMAIL_TRANSPORT: "ses" }, PROD).email).toBe("env_incomplete:SES_REGION,SES_ACCESS_KEY_ID,SES_SECRET_ACCESS_KEY,EMAIL_FROM");
+    expect(verdict({ ...SES, SES_REGION: "ap-south-9", SES_ACCESS_KEY_ID: "akia-lower", SES_SECRET_ACCESS_KEY: "CHANGE-ME", SES_CONFIGURATION_SET: "bad set" }, PROD).email).toBe(
+      "env_invalid:SES_REGION,SES_ACCESS_KEY_ID,SES_SECRET_ACCESS_KEY,SES_CONFIGURATION_SET",
+    );
+    expect(verdict({ ...SES, SES_ACCESS_KEY_ID: "XXXXXXXXXXXXXXXXXXXX" }, PROD).email).toBe("env_invalid:SES_ACCESS_KEY_ID");
+    expect(verdict({ ...SES, EMAIL_FROM: "not an address" }, DEV).email).toBe("env_invalid:EMAIL_FROM");
+    // Without EMAIL_TRANSPORT in production the SES values are reported, not used silently.
+    expect(verdict({ ...SES, EMAIL_TRANSPORT: undefined }, PROD).email).toBe("env_incomplete:EMAIL_TRANSPORT");
+  });
+
+  it("prefills the provider, region, key ID and configuration set (never the secret) and names the SES variables", () => {
+    const c = classifyEnvIntegrations({ ...SES, SES_CONFIGURATION_SET: "axs-events" }, PROD).email;
+    expect(c.selector).toBe("ses");
+    expect(c.prefill).toMatchObject({ provider: "ses", region: "ap-south-1", accessKeyId: "AKIAIOSFODNN7EXAMPLE", configurationSet: "axs-events", fromName: "Axiomatic" });
+    expect(JSON.stringify([c.prefill, c.namesSet])).not.toContain(SES.SES_SECRET_ACCESS_KEY);
+    expect(c.namesSet).toEqual(["EMAIL_TRANSPORT", "EMAIL_FROM", "SES_REGION", "SES_ACCESS_KEY_ID", "SES_SECRET_ACCESS_KEY", "SES_CONFIGURATION_SET"]);
+    const invalid = classifyEnvIntegrations({ ...SES, SES_REGION: "mars-1", SES_ACCESS_KEY_ID: "CHANGE-ME" }, PROD).email.prefill;
+    expect(invalid).not.toHaveProperty("region");
+    expect(invalid).not.toHaveProperty("accessKeyId");
   });
 });
 

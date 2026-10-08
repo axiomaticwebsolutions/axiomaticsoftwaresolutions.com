@@ -8,7 +8,17 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/lib/db";
 import type { EmailTransport, OutgoingEmail } from "@/lib/email/transport";
-import { emailFailureMessage, probeEmail, probePayments, probeStorage, storageFailureMessage, STORAGE_PROBE_PREFIX, TEST_EMAIL_SUBJECT } from "@/lib/integrations/probes";
+import { createSesTransport } from "@/lib/email/transports/ses";
+import {
+  emailFailureMessage,
+  probeEmail,
+  probePayments,
+  probeStorage,
+  sesFailureMessage,
+  storageFailureMessage,
+  STORAGE_PROBE_PREFIX,
+  TEST_EMAIL_SUBJECT,
+} from "@/lib/integrations/probes";
 import type { EmailConfig, PaymentsConfig, StorageConfig } from "@/lib/integrations/types";
 import { LocalStorageDriver } from "@/lib/storage/local";
 import type { StorageDriver } from "@/lib/storage";
@@ -116,6 +126,48 @@ describe("probeEmail", () => {
     expect(emailFailureMessage(Object.assign(new Error("x"), { code: "ECONNECTION" }))).toBe("Couldn’t connect to the SMTP host.");
     expect(emailFailureMessage(Object.assign(new Error("x"), { code: "EENVELOPE", responseCode: 553 }))).toBe("The server refused the message. Check the From address.");
     expect(emailFailureMessage(new Error("weird"))).toBe("Couldn’t send the test email.");
+  });
+
+  it("Amazon SES: sends through a one-off SES transport and maps AWS errors to fixed messages, never keys or AWS text", async () => {
+    const ses: EmailConfig = {
+      transport: "ses",
+      region: "ap-south-1",
+      accessKeyId: "AKIAPROBEKEY00000001",
+      secretAccessKey: "probe-ses-secret-key-0001",
+      configurationSet: null,
+      from: smtp.from,
+    };
+    const awsError = (name: string, status: number, message = `${name}: AKIAPROBEKEY00000001 for ${OWNER} in account 123456789012`) =>
+      Object.assign(new Error(message), { name, $metadata: { httpStatusCode: status } });
+    const destroy = vi.fn();
+    const sendWith = (outcome: () => Promise<unknown>) => async (config: EmailConfig) =>
+      createSesTransport(config as Extract<EmailConfig, { transport: "ses" }>, { send: outcome, destroy });
+    const ok = await probeEmail(configured(ses), { to: OWNER, transportFactory: sendWith(async () => ({ MessageId: "m-1" })), now: NOW });
+    expect(ok).toMatchObject({ ok: true, steps: [{ status: "ok", message: `Sent to ${OWNER}. Check that inbox (and spam).` }] });
+    expect(destroy).toHaveBeenCalledTimes(1);
+
+    const cases: [unknown, string][] = [
+      [awsError("InvalidClientTokenId", 403), "AWS rejected the access key ID or secret access key."],
+      [awsError("SignatureDoesNotMatch", 403), "AWS rejected the access key ID or secret access key."],
+      [awsError("UnrecognizedClientException", 403), "AWS rejected the access key ID or secret access key."],
+      [awsError("MessageRejected", 400), "Amazon SES refused the message: verify the From address or its domain in SES (in the SES sandbox, verify the recipient too)."],
+      [awsError("MailFromDomainNotVerifiedException", 400), "Amazon SES refused the message: verify the From address or its domain in SES (in the SES sandbox, verify the recipient too)."],
+      [awsError("AccessDeniedException", 403), "This access key isn’t allowed to send email. Allow ses:SendEmail and ses:SendRawEmail."],
+      [awsError("TooManyRequestsException", 429), "Amazon SES is throttling sends (rate or daily quota). Try again later."],
+      [awsError("LimitExceededException", 400), "Amazon SES is throttling sends (rate or daily quota). Try again later."],
+      [awsError("SendingPausedException", 400), "Sending is paused for this AWS account or configuration set. Check the SES console."],
+      [awsError("NotFoundException", 404), "Amazon SES couldn’t find the configuration set in this region."],
+      [Object.assign(new Error("getaddrinfo ENOTFOUND email.ap-south-1.amazonaws.com"), { code: "ENOTFOUND" }), "Couldn’t reach Amazon SES. Try again in a minute."],
+      [Object.assign(new Error("timed out"), { name: "TimeoutError" }), "Couldn’t reach Amazon SES. Try again in a minute."],
+      [awsError("SomethingNew", 403), "AWS rejected the access key ID or secret access key."],
+      [new Error("weird"), "Couldn’t send the test email."],
+    ];
+    for (const [error, message] of cases) {
+      const result = await probeEmail(configured(ses, "env"), { to: OWNER, transportFactory: sendWith(async () => Promise.reject(error)), now: NOW });
+      expect([result.ok, result.steps[0]?.message], (error as Error).name).toEqual([false, message]);
+      expect(JSON.stringify(result)).not.toMatch(/AKIAPROBEKEY|probe-ses-secret|123456789012/);
+      expect(sesFailureMessage(error)).toBe(message);
+    }
   });
 
   it("points to the dev mailbox for the console transport", async () => {

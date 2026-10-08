@@ -31,17 +31,21 @@ import {
   clientErrors,
   dirtyKeys,
   endpointPlaceholder,
+  fieldDomKey,
   hasChanges,
   INTEGRATION_FIELDS,
   orderedErrorKeys,
   presetHint,
+  providerSwitchNote,
   requiredSecretFields,
   secretHintOf,
+  secretHintSource,
   secretInputHint,
   secretsToReenter,
   serverFieldErrors,
   testButtonState,
   toDraft,
+  visibleFields,
   type IntegrationDraft,
   type IntegrationFieldDef,
 } from "./integration-form-model";
@@ -53,9 +57,23 @@ import { SETTINGS_GRID_CLASS, SettingsCard } from "./settings-card";
 /** An integration the signed-in Owner may edit (the server sends `form` only with integrations.manage). */
 export type ManagedIntegration = IntegrationState & { form: IntegrationForm };
 
-type DialogState = { action: "save" } | { action: "clear"; field: SecretFieldKey } | { action: "remove" };
+/** `removes`: the sentence about a saved secret the save deletes (email provider switch), fixed when the dialog opens. */
+type DialogState = { action: "save"; removes: string | null } | { action: "clear"; field: SecretFieldKey } | { action: "remove" };
 
 const text = (v: IntegrationDraft[string] | undefined) => (typeof v === "string" ? v : "");
+
+/**
+ * Password managers must leave every integration input alone: the identifier inputs (Key ID, access key IDs, SMTP
+ * username, bucket) got the Owner's saved Admin email filled in live. Their names and ids never look like a sign-in
+ * field (fieldDomKey), autocomplete is off, and these attributes opt out of 1Password, LastPass, Bitwarden and Dashlane.
+ * Secret inputs carry them too (secret-field.tsx), with autocomplete="new-password".
+ */
+const NO_PASSWORD_MANAGER = {
+  "data-1p-ignore": "",
+  "data-lpignore": "true",
+  "data-bwignore": "",
+  "data-form-type": "other",
+} as const;
 
 /**
  * A storage change reloads the page so the new Content-Security-Policy (which names the bucket) applies at once; the
@@ -135,9 +153,12 @@ function SwitchRow({
  * Save: client checks with the shared schemas, then the password dialog, then PUT. Field errors from the server show
  * under their fields (the first one gets focus); a wrong password stays in the dialog. Clear and Remove also go
  * through the dialog. The test button needs a configured integration and no unsaved changes. Secret values live only
- * in the draft until the save answers, and are dropped then. A new SMTP server or storage endpoint opens the saved
- * secrets for entry (the server refuses to keep them for another server). A storage save, clear or remove reloads the
- * page, so its Content-Security-Policy names the new bucket before the next upload.
+ * in the draft until the save answers, and are dropped then. A new email provider, SMTP server, SES region or storage
+ * endpoint opens the saved secrets for entry (the server refuses to keep them for another server). Email shows the
+ * fields of the chosen provider (SMTP or Amazon SES) only; switching provider says under Provider and in the save dialog
+ * that Save deletes the other provider's saved secret (providerSwitchNote). A storage save, clear or remove reloads the page, so its
+ * Content-Security-Policy names the new bucket before the next upload. The form and every input opt out of password
+ * managers (NO_PASSWORD_MANAGER, secret-field.tsx; docs/decisions.md 2026-10-08 autofill).
  */
 export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
   const router = useRouter();
@@ -166,11 +187,15 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
     if (message) window.setTimeout(() => adminToast.success(message), 0);
   }, [kind]);
 
-  const fieldId = (key: string) => `${uid}-${key}`;
+  const domKeys = React.useMemo(() => new Map(INTEGRATION_FIELDS[kind].map((f) => [f.key, fieldDomKey(f)])), [kind]);
+  const fieldId = (key: string) => `${uid}-${domKeys.get(key) ?? key}`;
   const revision = state.saved?.revision ?? null;
-  // Saved secrets that a new SMTP server or endpoint needs entered again (the server refuses to keep them).
+  // Saved secrets that a new email provider, SMTP server, SES region or endpoint needs entered again (the server
+  // refuses to keep them).
   const reenter = secretsToReenter(form, draft);
   const dirty = dirtyKeys(kind, baseline, draft);
+  // Switching the email provider deletes the other provider's saved secret on Save: said under Provider and in the dialog.
+  const switchNote = providerSwitchNote(form, draft);
   const test = testButtonState(state, dirty.length > 0);
   const testHintId = `${uid}-test-hint`;
 
@@ -197,15 +222,20 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
     } else if (key === "security") {
       next = applySecurity(draft, value as EmailSecurity);
       setErrors((e) => ({ ...e, security: "", port: "" }));
-    } else if (key === "region") {
+    } else if (key === "region" && kind === "storage") {
       next = applyRegion(draft, String(value));
       setErrors((e) => ({ ...e, region: "", endpoint: "" }));
+    } else if (key === "provider") {
+      // SMTP <-> Amazon SES: the other provider's fields hide, so their errors go too.
+      next = { ...draft, provider: value };
+      setErrors({});
     } else {
       next = { ...draft, [key]: value };
       setErrors((e) => (e[key] ? { ...e, [key]: "" } : e));
     }
     setDraft(next);
-    // A new SMTP server or endpoint: open the saved secrets for entry (they cannot be kept for another server).
+    // A new email provider, SMTP server, SES region or endpoint: open the saved secrets for entry (they cannot be kept
+    // for another server).
     const open = secretsToReenter(form, next);
     if (open.length > 0) setReplacing((r) => (open.every((f) => r[f]) ? r : { ...r, ...Object.fromEntries(open.map((f) => [f, true])) }));
   }
@@ -253,7 +283,7 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
       focusField(first);
       return;
     }
-    openDialog({ action: "save" });
+    openDialog({ action: "save", removes: switchNote });
   }
 
   async function confirm(password: string): Promise<PasswordOutcome> {
@@ -326,10 +356,15 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
         }
       : dialog?.action === "remove"
         ? { description: removeDialogBody(kind), confirmLabel: INTEGRATIONS_COPY.dialog.remove, tone: "danger" as const }
-        : { description: INTEGRATIONS_COPY.dialog.body(state.title), confirmLabel: INTEGRATIONS_COPY.dialog.save, tone: "primary" as const };
+        : {
+            description: [INTEGRATIONS_COPY.dialog.body(state.title), dialog?.action === "save" ? dialog.removes : null].filter(Boolean).join(" "),
+            confirmLabel: INTEGRATIONS_COPY.dialog.save,
+            tone: "primary" as const,
+          };
 
   function renderField(def: IntegrationFieldDef) {
     const id = fieldId(def.key);
+    const name = fieldDomKey(def);
     const error = errors[def.key] || undefined;
     const wide = def.wide ? "col-span-full" : undefined;
     if (def.kind === "secret") {
@@ -341,6 +376,7 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
         <SecretField
           key={def.key}
           id={id}
+          name={name}
           label={def.label}
           hint={def.hint}
           secret={hint}
@@ -359,7 +395,14 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
             window.requestAnimationFrame(() => document.getElementById(replaceButtonId(id))?.focus());
           }}
           onClear={() => openDialog({ action: "clear", field })}
-          inputHint={secretInputHint({ replacing: replacing[field] === true, source: state.source, saved: state.saved !== null, unused, reenter: mustReenter })}
+          inputHint={secretInputHint({
+            kind,
+            replacing: replacing[field] === true,
+            source: secretHintSource(state.source, kind, baseline, draft),
+            saved: state.saved !== null,
+            unused,
+            reenter: mustReenter,
+          })}
           className={wide}
         />
       );
@@ -368,11 +411,19 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
       return <SwitchRow key={def.key} id={id} field={def} checked={draft[def.key] === true} onChange={(v) => change(def.key, v)} error={error} />;
     }
     const isEndpoint = def.key === "endpoint";
-    const hint = def.key === "preset" ? (presetNote ?? def.hint) : def.hint;
+    const hint = def.key === "preset" ? (presetNote ?? def.hint) : def.key === "provider" ? (switchNote ?? def.hint) : def.hint;
     return (
       <Field key={def.key} id={id} size="sm" label={def.label} hint={hint} error={error} className={cn("content-start gap-[5px]", wide)}>
         {def.kind === "select" ? (
-          <NativeSelect size="sm" value={text(draft[def.key])} onChange={(e) => change(def.key, e.target.value)} className="font-semibold">
+          <NativeSelect
+            size="sm"
+            name={name}
+            autoComplete="off"
+            {...NO_PASSWORD_MANAGER}
+            value={text(draft[def.key])}
+            onChange={(e) => change(def.key, e.target.value)}
+            className="font-semibold"
+          >
             {(def.options ?? []).map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
@@ -383,6 +434,7 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
           <Input
             size="sm"
             mono={def.mono}
+            name={name}
             type={def.kind === "number" ? "number" : def.kind === "email" ? "email" : "text"}
             inputMode={def.inputMode}
             min={def.kind === "number" ? 1 : undefined}
@@ -390,6 +442,7 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
             step={def.kind === "number" ? 1 : undefined}
             maxLength={def.kind === "number" ? undefined : def.maxLength}
             autoComplete="off"
+            {...NO_PASSWORD_MANAGER}
             spellCheck={false}
             autoCapitalize="off"
             placeholder={isEndpoint ? endpointPlaceholder(text(draft.preset) as StoragePreset) || undefined : undefined}
@@ -408,6 +461,7 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
       <SettingsCard
         as="form"
         id={`integration-${kind}`}
+        autoComplete="off"
         headingLevel={3}
         icon={state.icon}
         title={state.title}
@@ -451,7 +505,7 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
           <IntegrationProblem problem={state.problem} />
         </div>
         <div className={SETTINGS_GRID_CLASS}>
-          {INTEGRATION_FIELDS[kind].map(renderField)}
+          {visibleFields(kind, draft).map(renderField)}
           {webhook ? (
             <Field
               id={fieldId("webhookUrl")}
@@ -464,10 +518,21 @@ export function IntegrationCard({ initial }: { initial: ManagedIntegration }) {
               }
               className="col-span-full content-start gap-[5px]"
             >
-              <Input size="sm" mono readOnly value={webhook.webhookUrl} className="font-semibold" />
+              <Input
+                size="sm"
+                mono
+                readOnly
+                name="razorpay-webhook-url"
+                autoComplete="off"
+                {...NO_PASSWORD_MANAGER}
+                spellCheck={false}
+                value={webhook.webhookUrl}
+                className="font-semibold"
+              />
             </Field>
           ) : null}
           {kind === "storage" ? <p className="col-span-full m-0 text-[12px] text-ink-2">{INTEGRATIONS_COPY.storageHelp}</p> : null}
+          {kind === "email" && draft.provider === "ses" ? <p className="col-span-full m-0 text-[12px] text-ink-2">{INTEGRATIONS_COPY.sesHelp}</p> : null}
         </div>
         <div className="grid gap-2 px-4 pb-3.5">
           <span className="sr-only" aria-live="polite">

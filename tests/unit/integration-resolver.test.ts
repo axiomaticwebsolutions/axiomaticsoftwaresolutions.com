@@ -129,6 +129,32 @@ describe("precedence (per integration, as a whole)", () => {
     expect(logs.join("\n")).not.toContain(KEY_SECRET);
   });
 
+  it("resolves a saved Amazon SES configuration, opening only the secret SES uses", async () => {
+    const ses = { provider: "ses", region: "ap-south-1", accessKeyId: "AKIAIOSFODNN7EXAMPLE", configurationSet: "axs-events", fromName: "Axiomatic", fromAddress: "no-reply@axiomatic.example" };
+    // A leftover SMTP password sealed under another key would make the row unreadable if it were opened.
+    const leftover = row("email", ses, { password: "old-smtp-password" }, Buffer.alloc(32, 9));
+    const sesRow = row("email", ses, { secretAccessKey: "ses-secret-access-key-01" });
+    rows = [{ ...sesRow, secrets: [...sesRow.secrets, ...leftover.secrets] }];
+    setIntegrationEnvForTests({ ...ENV, NODE_ENV: "production" });
+    const snap = await getIntegrationSnapshot({ fresh: true });
+    expect(snap.email).toMatchObject({
+      source: "admin",
+      config: {
+        transport: "ses",
+        region: "ap-south-1",
+        accessKeyId: "AKIAIOSFODNN7EXAMPLE",
+        secretAccessKey: "ses-secret-access-key-01",
+        configurationSet: "axs-events",
+        from: { name: "Axiomatic", address: "no-reply@axiomatic.example" },
+      },
+    });
+    expect(logs.join("\n")).not.toContain("integration_secret_unreadable");
+    rows = [row("email", ses, {})];
+    expect((await getIntegrationSnapshot({ fresh: true })).email).toEqual({ source: "none", reason: "admin_incomplete", names: ["secretAccessKey"] });
+    rows = [row("email", { ...ses, region: "mars-1" }, { secretAccessKey: "ses-secret-access-key-01" })];
+    expect((await getIntegrationSnapshot({ fresh: true })).email).toEqual({ source: "none", reason: "admin_unreadable", names: ["settings"] });
+  });
+
   it("applies the production host rules to saved settings at resolve time", async () => {
     setIntegrationEnvForTests({ NODE_ENV: "production" });
     rows = [emailRow("127.0.0.1"), storageRow("http://files.example.com")];

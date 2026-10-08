@@ -50,7 +50,7 @@ async function failure(promise: Promise<unknown>): Promise<{ status: number; cod
 describe("writeIntegration", () => {
   it("stores settings in plain JSON and secrets only as AES-GCM ciphertext bound to the kind and field", async () => {
     const result = await savePayments({ keySecret: KEY_SECRET, webhookSecret: WEBHOOK_SECRET }, null);
-    expect(result).toEqual({ revision: 1, created: true, changed: ["keyId", "keySecret", "webhookSecret"] });
+    expect(result).toEqual({ revision: 1, created: true, changed: ["keyId", "keySecret", "webhookSecret"], removed: [] });
     const config = await db.integrationConfig.findUniqueOrThrow({ where: { kind: "PAYMENTS" }, include: { secrets: true } });
     expect(config).toMatchObject({ revision: 1, settings: PAYMENTS, updatedById: owner.id });
     expect(JSON.stringify(config)).not.toContain(KEY_SECRET);
@@ -67,13 +67,13 @@ describe("writeIntegration", () => {
   it("keeps a stored secret when none is entered, replaces it when one is, and writes nothing for an unchanged save", async () => {
     await savePayments({ keySecret: KEY_SECRET, webhookSecret: WEBHOOK_SECRET }, null);
     const before = await db.integrationSecret.findUniqueOrThrow({ where: { kind_field: { kind: "PAYMENTS", field: "keySecret" } } });
-    expect(await savePayments({}, 1, "rzp_test_StoreTest0002")).toEqual({ revision: 2, created: false, changed: ["keyId"] });
+    expect(await savePayments({}, 1, "rzp_test_StoreTest0002")).toEqual({ revision: 2, created: false, changed: ["keyId"], removed: [] });
     const kept = await db.integrationSecret.findUniqueOrThrow({ where: { kind_field: { kind: "PAYMENTS", field: "keySecret" } } });
     expect(kept.ciphertext).toBe(before.ciphertext);
-    expect(await savePayments({ keySecret: "rzp-key-secret-0002" }, 2, "rzp_test_StoreTest0002")).toEqual({ revision: 3, created: false, changed: ["keySecret"] });
+    expect(await savePayments({ keySecret: "rzp-key-secret-0002" }, 2, "rzp_test_StoreTest0002")).toEqual({ revision: 3, created: false, changed: ["keySecret"], removed: [] });
     const replaced = await db.integrationSecret.findUniqueOrThrow({ where: { kind_field: { kind: "PAYMENTS", field: "keySecret" } } });
     expect(openIntegrationSecret("payments", "keySecret", replaced.ciphertext, ikm())).toBe("rzp-key-secret-0002");
-    expect(await savePayments({}, 3, "rzp_test_StoreTest0002")).toEqual({ revision: 3, created: false, changed: [] });
+    expect(await savePayments({}, 3, "rzp_test_StoreTest0002")).toEqual({ revision: 3, created: false, changed: [], removed: [] });
   });
 
   it("refuses a stale revision (409 integration_changed) and a first save without a required secret (422 naming it)", async () => {
@@ -94,6 +94,29 @@ describe("writeIntegration", () => {
     const e = await failure(savePayments({}, 1));
     expect([e.status, e.details?.fieldErrors]).toEqual([422, { keySecret: ["Enter it again."], webhookSecret: ["Enter it again."] }]);
     expect(await savePayments({ keySecret: KEY_SECRET, webhookSecret: WEBHOOK_SECRET }, 1)).toMatchObject({ revision: 2, changed: ["keyId", "keySecret", "webhookSecret"] });
+  });
+
+  it("email: a secret the provider does not use is refused, and switching provider deletes the other provider's secret", async () => {
+    used.add("email");
+    const smtp = { provider: "smtp" as const, host: "smtp.store.example", port: 587, security: "starttls" as const, username: "mailer", fromName: "Axiomatic", fromAddress: "no-reply@axiomatic.example" };
+    const ses = { provider: "ses" as const, region: "ap-south-1" as const, accessKeyId: "AKIASTORETEST0000001", configurationSet: null, fromName: "Axiomatic", fromAddress: "no-reply@axiomatic.example" };
+    const save = (settings: typeof smtp | typeof ses, secrets: Partial<Record<"password" | "secretAccessKey", string>>, expectedRevision: number | null) =>
+      db.$transaction((tx) => writeIntegration(tx, { kind: "email", settings, secrets, actorId: owner.id, expectedRevision, ikm: ikm() }));
+    const wrong = await failure(save(smtp, { password: "smtp-password-01", secretAccessKey: "ses-secret-access-key-01" }, null));
+    expect([wrong.status, wrong.details?.fieldErrors]).toEqual([422, { secretAccessKey: ["Not used with this provider."] }]);
+    expect(await save(smtp, { password: "smtp-password-01" }, null)).toEqual({ revision: 1, created: true, changed: ["host", "port", "security", "username", "fromName", "fromAddress", "password"], removed: [] });
+    expect(await save(ses, { secretAccessKey: "ses-secret-access-key-01" }, 1)).toEqual({
+      revision: 2,
+      created: false,
+      changed: ["provider", "region", "accessKeyId", "secretAccessKey"],
+      removed: ["password"],
+    });
+    const fields = await db.integrationSecret.findMany({ where: { kind: "EMAIL" }, select: { field: true, ciphertext: true } });
+    expect(fields.map((f) => f.field)).toEqual(["secretAccessKey"]);
+    expect(openIntegrationSecret("email", "secretAccessKey", fields[0]?.ciphertext ?? "", ikm())).toBe("ses-secret-access-key-01");
+    // Bound to its kind and field: the SES key cannot be opened as the storage key.
+    expect(() => openIntegrationSecret("storage", "secretAccessKey", fields[0]?.ciphertext ?? "", ikm())).toThrow();
+    expect(await save(ses, {}, 2)).toEqual({ revision: 2, created: false, changed: [], removed: [] });
   });
 
   it("serialises two first saves: one wins, the other gets 409", async () => {
