@@ -74,13 +74,27 @@ export async function requireVerifiedCustomer(): Promise<CurrentAuth> {
   return auth;
 }
 
+/** Staff whose console access is live: kind STAFF, ACTIVE, with a role (requireStaff, the admin shell, /api/me). */
+export function hasLiveStaffAccess(user: Pick<User, "kind" | "staffRole" | "staffStatus">): boolean {
+  return user.kind === "STAFF" && !!user.staffRole && user.staffStatus === StaffStatus.ACTIVE;
+}
+
 /** An active staff member, optionally holding `perm` (lib/rbac.ts), else 401/403. */
 export async function requireStaff(perm?: Permission): Promise<StaffAuth> {
   const { session, user } = await requireUser();
   const role = user.staffRole;
-  if (user.kind !== "STAFF" || !role || user.staffStatus !== StaffStatus.ACTIVE) throw errors.forbidden();
+  if (!role || !hasLiveStaffAccess(user)) throw errors.forbidden();
   if (perm && !can(role, perm)) throw errors.forbidden(roleForbiddenMessage(role));
   return { session, user: { ...user, staffRole: role } };
+}
+
+/**
+ * The signed-in user's own settings (/api/me/password, /api/me/sessions, /api/me/two-step): customers, and staff only
+ * while their console access is live (Admin > My profile). 403 for invited, deactivated or role-less staff.
+ */
+export function assertSelfService<A extends { user: Pick<User, "kind" | "staffRole" | "staffStatus"> }>(auth: A): A {
+  if (auth.user.kind === "STAFF" && !hasLiveStaffAccess(auth.user)) throw errors.forbidden();
+  return auth;
 }
 
 export type AccountRoleOptions = {

@@ -22,8 +22,9 @@ export type SeedStaff = {
 };
 
 /**
- * Admin seed staff s1-s6 (lastActive ago(i * 0.7)). Karan (Finance) gets two-step on: the prototype had it off,
- * which contradicts its own "required for Owner/Finance" rule. Vikram, Sneha and Karan share SEED_DEMO_PASSWORD.
+ * Admin seed staff s1-s6 (lastActive ago(i * 0.7)). Every active seeded staff member has two-step on (codes appear at
+ * /dev/mailbox), so the dev checks exercise the code step; it is optional per person, never forced by role
+ * (decisions.md 2026-10-08). Vikram, Sneha and Karan share SEED_DEMO_PASSWORD.
  */
 export const SAMPLE_STAFF: readonly SeedStaff[] = [
   { key: "anita", name: "Anita Desai", email: "anita@axiomatic.example", role: StaffRole.OWNER, status: StaffStatus.ACTIVE, twoStepEnabled: true, password: null, lastActiveAgoDays: 0 },

@@ -2,8 +2,9 @@
  * GET /api/admin/staff/:id -> { staff: StaffRow } (404 for anyone who is not staff).
  * PATCH /api/admin/staff/:id { role, reason } -> { staff }: a destructive action (staff.change_role): reason 4-500
  * characters, exactly one "Changed staff role" audit row ("Support → Finance"). 409 `own_role` (not your own role),
- * `role_unchanged`, `last_owner` (at least one active Owner remains), `staff_changed`; 422 reason / role. Owner and
- * Finance get two-step sign-in turned on. Owner only (staff.manage).
+ * `role_unchanged`, `last_owner` (at least one active Owner remains), `staff_changed`; 422 reason / role. Two-step
+ * sign-in is never changed here (each person sets it in Admin > My profile; decisions.md 2026-10-08). Owner only
+ * (staff.manage).
  */
 import { destructiveFields } from "@/lib/admin/destructive";
 import { adminRoute, idParam } from "@/lib/admin/http";

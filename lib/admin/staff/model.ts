@@ -4,8 +4,9 @@
  *
  * Rules: Owner only (staff.manage). Invitations are AuthToken STAFF_INVITE rows (7 days, single use, meta
  * { staffRole, invitedById }); the invitee is a STAFF user with staffStatus INVITED and no password until they accept
- * at /staff-invite. Owner and Finance always have two-step sign-in on. Nobody changes their own role or deactivates
- * themselves, and at least one active Owner always remains.
+ * at /staff-invite. Two-step sign-in is each person's own choice (Admin > My profile; decisions.md 2026-10-08): no
+ * role forces it and nothing here turns it on. Nobody changes their own role or deactivates themselves, and at least
+ * one active Owner always remains.
  */
 import { z } from "zod";
 import type { StaffRole } from "@/generated/prisma/enums";
@@ -13,7 +14,7 @@ import { formatAdminDateTimeLong } from "@/lib/admin/audit/format";
 import type { ListQuerySpec } from "@/lib/admin/list-query";
 import type { CsvColumn } from "@/lib/csv";
 import { defineListState } from "@/lib/url-state";
-import { PERMISSIONS, permissionsFor, requiresTwoStep, STAFF_ROLE_LABELS, STAFF_ROLES, type Permission } from "@/lib/rbac";
+import { PERMISSIONS, permissionsFor, STAFF_ROLE_LABELS, STAFF_ROLES, type Permission } from "@/lib/rbac";
 import { makeEmailSchema } from "@/lib/validation/contact";
 import { isLinkLikeName, NAME_LINK_ERROR } from "@/lib/validation/names";
 import { PASSWORD_ERROR, passwordSchema } from "@/lib/validation/password";
@@ -25,9 +26,6 @@ export const STAFF_INVITE_TEMPLATE = "staff_invite";
 export const STAFF_HOME_PATH = "/admin";
 export const STAFF_NAME_MAX = 120;
 export const STAFF_INVITE_TOKEN_MAX = 256;
-
-/** Roles that always sign in with two-step codes (decisions.md Phase 6); defined in lib/rbac.ts for the sign-in flow. */
-export { requiresTwoStep, TWO_STEP_ROLES } from "@/lib/rbac";
 
 export function roleLabel(role: StaffRole): string {
   return STAFF_ROLE_LABELS[role];
@@ -146,14 +144,9 @@ export function staffDisplayName(row: Pick<StaffRow, "name" | "email">): string 
   return row.name.trim() || row.email;
 }
 
-/** Whether this person signs in with two-step codes: their own setting, or always for Owner and Finance. */
-export function twoStepOn(row: Pick<StaffRow, "twoStepEnabled" | "role">): boolean {
-  return row.twoStepEnabled || requiresTwoStep(row.role);
-}
-
-/** Two-step cell and field: "On" or "Off" (Owner and Finance are always "On"; sign-in enforces it). */
-export function twoStepLabel(row: Pick<StaffRow, "twoStepEnabled" | "role">): string {
-  return twoStepOn(row) ? "On" : "Off";
+/** Two-step cell and field: "On" or "Off", exactly the person's own setting (the only thing sign-in looks at). */
+export function twoStepLabel(row: Pick<StaffRow, "twoStepEnabled">): string {
+  return row.twoStepEnabled ? "On" : "Off";
 }
 
 /** Status badge text: Active, Invited, "Invite expired" (no working link) or Deactivated. */
@@ -270,7 +263,6 @@ export const STAFF_COPY = {
   assign: "Assign",
   roleTitle: (name: string, role: string) => `Make ${name} ${role}?`,
   roleConsequence: "Their access changes on their next request.",
-  roleTwoStepNote: "Owner and Finance always sign in with an emailed code, so two-step sign-in will be turned on.",
   roleUpdated: "Role updated",
   ownRecord: "This is you. Another Owner can change your role or access.",
   notFound: "This staff member doesn’t exist. They may have been removed.",

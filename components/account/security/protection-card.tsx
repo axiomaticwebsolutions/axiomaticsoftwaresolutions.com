@@ -13,6 +13,11 @@ import { exportedToast, SECURITY_COPY } from "./security-model";
 
 export type ProtectionCardProps = {
   twoStepEnabled: boolean;
+  /**
+   * The portal's "Account data" export (Owner only; reads the portal context, so it needs the portal layout). Off in
+   * Admin > My profile, where the card is only the two-step switch. Default true.
+   */
+  accountData?: boolean;
 };
 
 type TwoStepResponse = { twoStepEnabled: boolean; changed: boolean };
@@ -21,10 +26,12 @@ const EXPORT_BUTTON = "h-auto rounded-9 px-3.5 py-2 text-[13.5px] leading-[norma
 
 /**
  * Two-step verification switch and "Account data" (prototype card). Turning two-step on is immediate; turning it off
- * asks for the account password (decisions.md Phase 5). "Export data" downloads the JSON account export
- * (GET /api/account/export, Owner only: other roles see it disabled with "Requires Owner").
+ * asks for the account password (decisions.md Phase 5). The note under the switch says codes come by email, so it is
+ * only safe once email sending works (decisions.md 2026-10-08). "Export data" downloads the JSON account export
+ * (GET /api/account/export, Owner only: other roles see it disabled with "Requires Owner"). Staff use the same card
+ * in Admin > My profile with `accountData={false}` (POST /api/me/two-step serves both).
  */
-export function ProtectionCard({ twoStepEnabled }: ProtectionCardProps) {
+export function ProtectionCard({ twoStepEnabled, accountData = true }: ProtectionCardProps) {
   const [enabled, setEnabled] = React.useState(twoStepEnabled);
   const [busy, setBusy] = React.useState(false);
   const [confirmOff, setConfirmOff] = React.useState(false);
@@ -68,7 +75,10 @@ export function ProtectionCard({ twoStepEnabled }: ProtectionCardProps) {
   }
 
   return (
-    <section aria-label={`${SECURITY_COPY.twoStepHeading} and ${SECURITY_COPY.dataHeading.toLowerCase()}`} className={`${SECURITY_CARD} grid gap-3.5 px-[18px] py-4`}>
+    <section
+      aria-label={accountData ? `${SECURITY_COPY.twoStepHeading} and ${SECURITY_COPY.dataHeading.toLowerCase()}` : SECURITY_COPY.twoStepHeading}
+      className={`${SECURITY_CARD} grid gap-3.5 px-[18px] py-4`}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 id="security-two-step-heading" className="m-0 text-[15px] font-extrabold">
@@ -77,28 +87,35 @@ export function ProtectionCard({ twoStepEnabled }: ProtectionCardProps) {
           <p id="security-two-step-body" className="mb-0 mt-1 text-[13.5px] leading-[1.5] text-ink-2">
             {SECURITY_COPY.twoStepBody}
           </p>
+          <p id="security-two-step-email" className="mb-0 mt-1.5 text-[13px] font-semibold leading-[1.5] text-ink-2">
+            {SECURITY_COPY.twoStepEmailNote}
+          </p>
         </div>
         <Switch
           checked={enabled}
           onCheckedChange={(next) => void toggle(next)}
           aria-labelledby="security-two-step-heading"
-          aria-describedby="security-two-step-body"
+          aria-describedby="security-two-step-body security-two-step-email"
           aria-busy={busy || undefined}
           className="mt-0.5"
         />
       </div>
-      <div aria-hidden="true" className="h-px bg-line-subtle" />
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="m-0 text-[15px] font-extrabold">{SECURITY_COPY.dataHeading}</h2>
-          <p className="mb-0 mt-1 text-[13.5px] leading-[1.5] text-ink-2">{SECURITY_COPY.dataBody}</p>
-        </div>
-        <PermissionAction perm="team.manage">
-          <Button type="button" variant="secondary" loading={exporting} onClick={exportData} className={EXPORT_BUTTON}>
-            {SECURITY_COPY.exportData}
-          </Button>
-        </PermissionAction>
-      </div>
+      {accountData ? (
+        <>
+          <div aria-hidden="true" className="h-px bg-line-subtle" />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="m-0 text-[15px] font-extrabold">{SECURITY_COPY.dataHeading}</h2>
+              <p className="mb-0 mt-1 text-[13.5px] leading-[1.5] text-ink-2">{SECURITY_COPY.dataBody}</p>
+            </div>
+            <PermissionAction perm="team.manage">
+              <Button type="button" variant="secondary" loading={exporting} onClick={exportData} className={EXPORT_BUTTON}>
+                {SECURITY_COPY.exportData}
+              </Button>
+            </PermissionAction>
+          </div>
+        </>
+      ) : null}
       <PortalConfirmDialog
         open={confirmOff}
         onOpenChange={setConfirmOff}

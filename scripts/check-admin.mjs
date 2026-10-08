@@ -1,13 +1,14 @@
 /**
  * Admin console check (dev tool). Drives the real app in the locally installed Google Chrome (Playwright, channel
- * "chrome") as the four staff roles, each signed in through the /sign-in form with the two-step code read from
- * /dev/mailbox: the Owner (SEED_OWNER_EMAIL), Vikram (Administrator), Sneha (Support) and Karan (Finance).
+ * "chrome") as the four staff roles, each signed in through the /sign-in form (with the two-step code read from
+ * /dev/mailbox exactly when that person has two-step on; the dev seed turns it on for its staff): the Owner
+ * (SEED_OWNER_EMAIL), Vikram (Administrator), Sneha (Support) and Karan (Finance).
  *
  *   node scripts/check-admin.mjs [--base=http://localhost:3000] [--only=pages,reasons,admin,support,finance,owner]
  *     [--roles=owner,admin,support,finance] [--widths=1280,360] [--concurrency=3] [--shots=<dir>] [--json=<file>]
  *     [--keep-data] [--keep-limits] [--verbose]
  *
- *   pages    Every /admin module (lib/rbac.ts ADMIN_MODULES), a few drawers (?id=) and an unknown admin URL, for each
+ *   pages    Every /admin module (lib/rbac.ts ADMIN_MODULES), My profile, a few drawers (?id=) and an unknown admin URL, for each
  *            role at each width: HTTP 200 (the unknown URL shows the noindex in-shell "Page not found"), the
  *            permission-denied panel exactly on the modules lib/rbac.ts locks for the role (and the sidebar lock on the
  *            same modules), no console errors, page errors, 404s or 5xx responses, no horizontal overflow, one <h1> and
@@ -378,8 +379,9 @@ async function waitForMail(to, subjectRe, { exclude = new Set(), timeoutMs = 45_
 
 // ---------- sign-in ----------
 /**
- * Signs in through the /sign-in form (staff confirm with the emailed two-step code from /dev/mailbox) and keeps the
- * context's storage state for every later context of that person.
+ * Signs in through the /sign-in form (people with two-step on confirm with the emailed code from /dev/mailbox; it is
+ * optional for every role, decisions.md 2026-10-08) and keeps the context's storage state for every later context of
+ * that person.
  */
 async function signInViaUi(who) {
   current = `sign-in ${who}`;
@@ -401,7 +403,9 @@ async function signInViaUi(who) {
       page.locator("#two-step-code").waitFor({ timeout: 60_000 }).then(() => "code"),
       page.waitForURL((u) => new URL(u).pathname.startsWith(user.home), { timeout: 60_000 }).then(() => "home"),
     ]);
-    if (user.role) check(step === "code", `${user.label} must confirm with an emailed two-step code`, step);
+    // Only the person's own setting decides (no role forces a code).
+    const twoStep = (await one(`SELECT "twoStepEnabled" FROM "User" WHERE email = $1`, [user.email]))?.twoStepEnabled === true;
+    check(step === (twoStep ? "code" : "home"), `${user.label} ${twoStep ? "confirms with an emailed two-step code" : "signs in without a code (two-step off)"}`, step);
     if (step === "code") {
       const mail = await waitForMail(user.email, /sign-in code/i, { exclude: before });
       const code = /(\d{6})/.exec(mail.subject)?.[1];
@@ -457,7 +461,13 @@ function pageRoutes(fx) {
   ].map((r) => ({ ...r, drawer: true }));
   // Unknown admin URLs render the in-shell not-found page. app/admin/loading.tsx streams the shell first, so the status is
   // already 200 when notFound() runs (as /account/no-such-page in the portal); the page is noindex.
-  return [...modules, ...drawers, { key: null, path: "/admin/no-such-page", expect: "Page not found", noindex: true, widths: [1280] }];
+  return [
+    ...modules,
+    ...drawers,
+    // My profile: every role opens it (two-step switch, password, sessions).
+    { key: null, path: "/admin/profile", expect: "Two-step verification", noindex: true },
+    { key: null, path: "/admin/no-such-page", expect: "Page not found", noindex: true, widths: [1280] },
+  ];
 }
 
 const report = { base: BASE, startedAt: new Date().toISOString(), pages: [], journeys: {} };
@@ -1099,7 +1109,8 @@ async function ownerJourney(fx) {
       await confirmWith(page, { reason: `Admin console check ${TAG}: moves to accounts`, confirm: "Change role" });
       check(await waitForToast(page, "Role updated"), "the Owner changes the role with a reason", await toasts(page));
       const row = await one(`SELECT "staffRole", "twoStepEnabled" FROM "User" WHERE id = $1`, [inviteeId]);
-      check(row?.staffRole === "FINANCE" && row?.twoStepEnabled === true, "the member is now Finance with two-step sign-in on", JSON.stringify(row));
+      // A role change never touches two-step sign-in (decisions.md 2026-10-08): the new member accepted with it off.
+      check(row?.staffRole === "FINANCE" && row?.twoStepEnabled === false, "the member is now Finance, two-step sign-in still off", JSON.stringify(row));
     });
     await step("settings", async () => {
       await go(page, "/admin/settings");

@@ -3,8 +3,8 @@
  * STAFF_INVITE token with { staffRole, invitedById }, staff_invite email sent directly and never stored, audit),
  * conflicts (customer emails,
  * existing, invited and deactivated staff), resend and revoke; role changes, deactivation and reactivation through
- * runDestructive (reason, exactly one audit row, not yourself, at least one active Owner, two-step for Owner and
- * Finance, sessions revoked on deactivation), including two concurrent demotions of the last two Owners.
+ * runDestructive (reason, exactly one audit row, not yourself, at least one active Owner, two-step left as each person
+ * set it for every role, sessions revoked on deactivation), including two concurrent demotions of the last two Owners.
  */
 import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -93,11 +93,12 @@ describe("inviteStaff", () => {
     ]);
   });
 
-  it("turns two-step sign-in on for Owner and Finance invitations", async () => {
+  it("leaves two-step sign-in off for every invited role, Owner and Finance included", async () => {
     const owner = await makeStaff("OWNER");
-    for (const role of ["OWNER", "FINANCE", "ADMIN"] as StaffRole[]) {
+    for (const role of ["OWNER", "FINANCE", "ADMIN", "SUPPORT"] as StaffRole[]) {
       const { staff: row } = await inviteStaff(actorOf(owner), { email: email(`twostep-${role}`), role });
-      expect(row.twoStepEnabled, role).toBe(role !== "ADMIN");
+      expect(row.twoStepEnabled, role).toBe(false);
+      expect((await db.user.findUniqueOrThrow({ where: { id: row.id } })).twoStepEnabled, role).toBe(false);
     }
   });
 
@@ -156,7 +157,7 @@ describe("resend and revoke invitations", () => {
 });
 
 describe("changeStaffRole", () => {
-  it("needs a reason, then changes the role with exactly one audit row (Owner/Finance get two-step)", async () => {
+  it("needs a reason, then changes the role with exactly one audit row (two-step stays as it was)", async () => {
     const owner = await makeStaff("OWNER");
     const support = await db.user.update({ where: { id: (await makeStaff("SUPPORT")).id }, data: { twoStepEnabled: false } });
     // A password-only session from before the change must not carry the new role (no two-step was passed).
@@ -169,16 +170,28 @@ describe("changeStaffRole", () => {
     expect(await auditRows(support.id)).toHaveLength(0);
 
     const row = await changeStaffRole(actorOf(owner), support.id, { role: "FINANCE", reason: "Moved to accounts" });
-    expect(row).toMatchObject({ role: "FINANCE", twoStepEnabled: true });
+    expect(row).toMatchObject({ role: "FINANCE", twoStepEnabled: false });
     const rows = await auditRows(support.id);
     expect(rows.map((r) => [r.action, r.reason, r.detail])).toEqual([
-      ["Changed staff role", "Moved to accounts", "Support \u2192 Finance \u00B7 two-step sign-in turned on \u00B7 signed out of 1 session"],
+      ["Changed staff role", "Moved to accounts", "Support \u2192 Finance \u00B7 signed out of 1 session"],
     ]);
     expect(await resolveSession(db, before.token)).toBeNull();
     expect(await db.authToken.count({ where: { userId: support.id, type: "LOGIN_OTP", usedAt: null } })).toBe(0);
     const same = await apiError(changeStaffRole(actorOf(owner), support.id, { role: "FINANCE", reason: "Again please" }));
     expect([same.status, same.code]).toEqual([409, "role_unchanged"]);
     expect(await auditRows(support.id)).toHaveLength(1);
+  });
+
+  it("keeps a two-step setting that is on through role changes and reactivation", async () => {
+    const owner = await makeStaff("OWNER");
+    const finance = await makeStaff("FINANCE", { twoStep: true });
+    expect((await changeStaffRole(actorOf(owner), finance.id, { role: "SUPPORT", reason: "Moved to support" })).twoStepEnabled).toBe(true);
+    await deactivateStaff(actorOf(owner), finance.id, { reason: "Long leave" });
+    expect((await reactivateStaff(actorOf(owner), finance.id, { reason: "Back from leave" })).twoStepEnabled).toBe(true);
+    const offFinance = await makeStaff("FINANCE");
+    await deactivateStaff(actorOf(owner), offFinance.id, { reason: "Long leave" });
+    const back = await reactivateStaff(actorOf(owner), offFinance.id, { reason: "Back from leave" });
+    expect([back.role, back.twoStepEnabled]).toEqual(["FINANCE", false]);
   });
 
   it("never changes your own role", async () => {

@@ -15,7 +15,6 @@ import type { StaffRole } from "@/generated/prisma/enums";
 import { formatAdminDateTimeLong, relativeAgo } from "@/lib/admin/audit/format";
 import {
   permissionCountLabel,
-  requiresTwoStep,
   roleLabel,
   STAFF_COPY,
   staffDisplayName,
@@ -193,11 +192,7 @@ export function StaffDrawer({ row, open, onOpenChange, close, now }: StaffDrawer
           if (!next) setRoleTarget(null);
         }}
         title={STAFF_COPY.roleTitle(name, roleTarget ? roleLabel(roleTarget) : "")}
-        consequence={
-          roleTarget && requiresTwoStep(roleTarget) && !row.twoStepEnabled
-            ? `${STAFF_COPY.roleConsequence} ${STAFF_COPY.roleTwoStepNote}`
-            : STAFF_COPY.roleConsequence
-        }
+        consequence={STAFF_COPY.roleConsequence}
         successMessage={STAFF_COPY.roleUpdated}
         onConfirm={async ({ reason }) => {
           if (!roleTarget) return;

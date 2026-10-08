@@ -20,7 +20,7 @@ injected content (an admin-entered banner, a ticket message, a product descripti
 
 | Threat | Main controls |
 |---|---|
-| Account takeover (password guessing, stuffing) | argon2id hashes; per-email and per-IP limits (Redis) counted before the check; same error and same work for unknown emails; two-step codes (always on for Owner and Finance staff) |
+| Account takeover (password guessing, stuffing) | argon2id hashes; per-email and per-IP limits (Redis) counted before the check; same error and same work for unknown emails; optional emailed two-step codes for every account, staff included (turned on in Security or Admin > My profile; Owner and Finance turn it on once SMTP works) |
 | Stolen sign-in code or reset link | codes bound to the browser that passed the password step (challenge id, only its hash stored); 10/30-minute lifetimes, 5 guesses, single use; a new code or link voids older ones |
 | Trusted device outliving a security event | trusted-device cookie bound to the user's security epoch and password hash (see below) |
 | Session theft | httpOnly, SameSite=Lax, Secure cookies; only the SHA-256 of the token in the database; idle expiry (customers 30 days, staff 12 hours); rotation on sign-in, two-step and verification; "sign out everywhere"; revocation on password reset, role change and deactivation |
@@ -137,6 +137,15 @@ its `api.razorpay.com` iframe on `/checkout` and `/orders/:id` with no violation
 Lax (not Strict) so links from emails into `/account` keep the session; CSRF tokens and the same-origin check cover
 cross-site writes. A `__Host-` prefix would also stop a sibling subdomain from planting cookies; it means renaming the
 cookies (everyone signs in again) and is listed under follow-ups.
+
+**Two-step sign-in is optional for every account** (decisions.md 2026-10-08). Only `User.twoStepEnabled` decides
+whether sign-in asks for an emailed code; no role forces it. Invitations (on acceptance) and the production bootstrap
+start it off; role changes and reactivation never change it. Customers switch it in Security, staff in Admin > My
+profile (`/admin/profile`), both through `POST /api/me/two-step` (turning it on needs a verified email, turning it off
+the password; a staff change writes an AuditLog row, a customer change an account activity entry). Because the codes
+are emailed, it is only safe to turn on once email sending works: the go-live checklist has the Owner and Finance turn
+it on after the SMTP test. `/api/me/two-step`, `/api/me/password` and `/api/me/sessions` refuse staff without live
+console access (403).
 
 **Trusted devices and the security epoch.** "Trust this device" after a two-step code sets `axs_td` =
 `2.<securityEpoch>.<expiry>.<HMAC-SHA256(SESSION_SECRET)>` over the user id, `User.securityEpoch`, the expiry and a

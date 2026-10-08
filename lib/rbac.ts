@@ -55,13 +55,6 @@ export function isStaffRole(value: unknown): value is StaffRole {
   return typeof value === "string" && (STAFF_ROLES as readonly string[]).includes(value);
 }
 
-/** Roles that always sign in with two-step codes, whatever the stored flag says (decisions.md Phase 6). */
-export const TWO_STEP_ROLES: readonly StaffRole[] = ["OWNER", "FINANCE"];
-
-export function requiresTwoStep(role: StaffRole | null | undefined): boolean {
-  return !!role && TWO_STEP_ROLES.includes(role);
-}
-
 /** Server-side check for every admin route and action. A missing role (customer, signed out) is never allowed. */
 export function can(role: StaffRole | null | undefined, perm: Permission): boolean {
   if (!isStaffRole(role)) return false;

@@ -39,7 +39,7 @@ Scheduler (cron) --http 127.0.0.1-----------> start)  |    browsers upload and d
 |---|---|
 | `app/(store)` | Storefront pages: `/`, `/software` (catalog) and `/software/[slug]`, `/pricing`, `/compare`, `/cart`, `/contact`, `/about`, `/support`, `/docs/[slug]`, `/legal/[doc]`, `/orders/[id]` (order page) |
 | `app/(checkout)`, `app/(auth)`, `app/(staff-auth)` | `/checkout`; `/sign-in`, `/register`, `/verify`, `/forgot`, `/reset`, `/invite`; `/staff-invite` |
-| `app/account`, `app/admin` | Customer portal (14 pages) and admin console (17 modules); each page checks its own access |
+| `app/account`, `app/admin` | Customer portal (14 pages) and admin console (17 modules, plus My profile at `/admin/profile` for every active staff member); each page checks its own access |
 | `app/api` | Route handlers (see [`api.md`](api.md)); `app/dev` development-only pages |
 | `components/` | `ui` (shadcn/Radix primitives), `store`, `checkout`, `auth`, `account`, `admin`, `data-table` (lists that become cards on phones), `icons` (generated Material Symbols registry), `seo` |
 | `lib/` | Server and shared logic (next table); `lib/rbac.ts` is the only source of permissions |
@@ -66,7 +66,7 @@ Scheduler (cron) --http 127.0.0.1-----------> start)  |    browsers upload and d
 | `downloads/`, `software/`, `storage/` | Entitlement checks and presigned links; the portal software view; S3 and local storage drivers |
 | `email/` | Templates and layout, outbox (queued in the business transaction), direct sending for codes and invitations, console and SMTP transports, the dev mailbox |
 | `portal/` | Portal context and services: overview, team and invitations, tickets and uploads, billing, notifications, activity, search, export, trials |
-| `admin/` | `adminRoute()`, the route registry, destructive-action helper, list queries, CSV exports, and one folder per module (catalog, orders and refunds, customers, licenses, renewals, coupons, content, templates, leads, tickets, staff, audit, settings, overview, reports) |
+| `admin/` | `adminRoute()`, the route registry, destructive-action helper, list queries, CSV exports, and one folder per module (catalog, orders and refunds, customers, licenses, renewals, coupons, content, templates, leads, tickets, staff, audit, settings, overview, reports), plus `profile/` (My profile: the staff member's own details and sessions; two-step, password and sessions go through `/api/me/*` like the portal Security page) |
 | `jobs/` | Maintenance job: retention cutoffs, bounded batches, tasks |
 | `security/` | Content-Security-Policy builder, security headers, the hashed inline scripts |
 | `design/tokens.ts` | Design tokens (the single source for Tailwind and the shadcn aliases) |
@@ -194,7 +194,7 @@ Full threat model and rationale: [`security.md`](security.md).
 
 | Area | Control | Where |
 |---|---|---|
-| Passwords and sign-in | argon2id; 5 failures per email and 20 per IP per 15 minutes, counted before the check; emailed two-step codes (always for Owner and Finance staff); trusted devices bound to `User.securityEpoch` and the password hash | `lib/auth/*` |
+| Passwords and sign-in | argon2id; 5 failures per email and 20 per IP per 15 minutes, counted before the check; emailed two-step codes, optional for every account and decided only by `User.twoStepEnabled` (customers turn it on in Security, staff in Admin > My profile; staff changes are audited); trusted devices bound to `User.securityEpoch` and the password hash | `lib/auth/*`, `lib/portal/profile.ts` |
 | Sessions | Opaque token, only its SHA-256 stored; httpOnly, SameSite=Lax, Secure; rotated on sign-in, two-step and verification; revoked on reset, role change and deactivation | `lib/auth/sessions.ts`, `cookies.ts` |
 | CSRF | Session-bound HMAC token in `x-csrf-token` plus a same-origin check on every mutation | `lib/auth/csrf.ts` |
 | Authorisation | Every route checks on the server: team permission (`requireAccountRole`, `requireLicenseMember`) or staff permission (`adminRoute(perm)`); other accounts' ids answer 404; a test runs every admin route as every role | `lib/rbac.ts`, `lib/admin/http.ts` |

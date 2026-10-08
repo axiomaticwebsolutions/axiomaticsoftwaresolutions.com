@@ -71,7 +71,7 @@ Customers and staff use the same endpoints. All mutations need CSRF; bodies are 
 | Route | Purpose and response | Main errors |
 |---|---|---|
 | `POST /api/auth/register` | `{ name, email, password, businessName?, next? }`: creates the user, a business account (Owner) and a session, emails a 6-digit code. 201 `{ user, redirectTo: "/verify" }` | 409 `email_taken`, 422, 429 (5 per hour per IP) |
-| `POST /api/auth/sign-in` | `{ email, password, next? }` -> `{ requires2fa: false, redirectTo }` + session, or `{ requires2fa: true, challengeId, emailHint }` | 401 `invalid_credentials` (same for unknown email and wrong password), 429 (5 per email, 20 per IP per 15 min) |
+| `POST /api/auth/sign-in` | `{ email, password, next? }` -> `{ requires2fa: false, redirectTo }` + session, or `{ requires2fa: true, challengeId, emailHint }` (only when the user turned two-step on and the device is not trusted; optional for every account, no role forces it) | 401 `invalid_credentials` (same for unknown email and wrong password), 429 (5 per email, 20 per IP per 15 min) |
 | `POST /api/auth/sign-in/verify` | `{ challengeId, code, trustDevice }` -> `{ redirectTo }` + session (+ `axs_td` trusted-device cookie, 30 days) | 422 `invalid_code`, 410 `code_expired`, 429 |
 | `POST /api/auth/sign-out` | Revokes the session; 204 (also when signed out) | - |
 | `POST /api/auth/verify-email` | Session; `{ code, next? }` -> `{ verified, claimedOrders, redirectTo }`; claims guest orders with that email and rotates the session | 401, 422 `invalid_code`, 410 `code_expired`, 429 |
@@ -83,7 +83,9 @@ Customers and staff use the same endpoints. All mutations need CSRF; bodies are 
 
 ## Signed-in user (`/api/me/*`)
 
-Session required (401 otherwise); mutations need CSRF.
+Session required (401 otherwise); mutations need CSRF. Customers use these from the portal Security page, staff from
+Admin > My profile (`/admin/profile`); `password`, `two-step` and `sessions` answer 403 for staff without live console
+access (invited, deactivated, no role).
 
 | Route | Purpose and response | Main errors |
 |---|---|---|
@@ -91,7 +93,7 @@ Session required (401 otherwise); mutations need CSRF.
 | `PATCH /api/me` | `{ name?, phone? }` (profile) -> `{ user }` | 422, 429 (30 per 10 min) |
 | `POST /api/me/active-account` | `{ accountId }` -> `{ account, role }`: the portal business switcher | 404 unless an ACTIVE membership |
 | `POST /api/me/password` | `{ current, next }` -> `{ revokedSessions }`; other sessions are signed out | 422 `incorrect_password`, 429 (5 per 15 min) |
-| `POST /api/me/two-step` | `{ enabled, password? }` -> `{ twoStepEnabled, changed }`; turning off needs the password | 403 `email_unverified` (to turn on), 422 `incorrect_password`, 429 |
+| `POST /api/me/two-step` | `{ enabled, password? }` -> `{ twoStepEnabled, changed }`; turning off needs the password. Optional for every account; a change logs "Turned on/off two-step verification" as customer account activity, or for staff as an AuditLog row (actor = target = the staff member) | 403 `email_unverified` (to turn on), 403 for staff without live access, 422 `incorrect_password`, 429 |
 | `GET` / `PATCH /api/me/preferences` | Customer email preferences `{ renewals, updates, tickets, offers }`; offers records consent and withdrawal times | 403 for staff, 429 (120 writes per 10 min) |
 | `GET /api/me/sessions` | Live sessions of the user, this one first (device label, IP prefix) | - |
 | `DELETE /api/me/sessions` | Signs out every other session: `{ revoked }` | - |
@@ -105,8 +107,8 @@ Public; the token in the link is the credential. Previews are read-only.
 |---|---|---|
 | `GET /api/invites/:token` | Team invitation preview: account, role, inviter, expiry, whether the person already has a password | 404 `invite_invalid`, 410 `invite_used` / `invite_revoked` / `invite_expired`, 429 (60 per 10 min per IP) |
 | `POST /api/invites/accept` | `{ token, name?, password? }` (CSRF): joins the account, verifies the email, rotates the session: `{ redirectTo, accountId, user }` | 401 `sign_in_required`, 403 `wrong_account` / `staff_account`, 404, 410, 422, 429 (20 per 15 min per IP) |
-| `GET /api/staff-invites/:token` | Staff invitation preview (role, two-step requirement, inviter, expiry) | 404, 410, 429 |
-| `POST /api/staff-invites/accept` | `{ token, name, password }` (CSRF): sets the password and signs the new staff member in: `{ redirectTo: "/admin", user }` | 403 `signed_in` (sign out first), 404, 409 `invite_changed`, 410, 422, 429 |
+| `GET /api/staff-invites/:token` | Staff invitation preview (role and its summary, inviter, expiry) | 404, 410, 429 |
+| `POST /api/staff-invites/accept` | `{ token, name, password }` (CSRF): sets the password and signs the new staff member in (two-step off until they turn it on in My profile): `{ redirectTo: "/admin", user }` | 403 `signed_in` (sign out first), 404, 409 `invite_changed`, 410, 422, 429 |
 
 ## Checkout and orders
 
@@ -260,7 +262,7 @@ Catalog writes revalidate the storefront cache.
 ### Staff, audit and settings
 | Route | Permission | Notes |
 |---|---|---|
-| `GET` / `POST /api/admin/staff`, `GET` / `PATCH .../:id` | `staff.manage` | Invite `{ email, role }` -> `{ staff, emailSent }`; role change needs a reason and signs the person out; 409 `customer_email` / `already_staff` / `already_invited` / `own_role` / `last_owner` / `staff_changed` |
+| `GET` / `POST /api/admin/staff`, `GET` / `PATCH .../:id` | `staff.manage` | Invite `{ email, role }` -> `{ staff, emailSent }`; role change needs a reason and signs the person out (two-step sign-in is never changed here: each person sets it in My profile); 409 `customer_email` / `already_staff` / `already_invited` / `own_role` / `last_owner` / `staff_changed` |
 | `POST .../staff/:id/deactivate`, `.../reactivate`, `.../resend-invite`, `DELETE .../:id/invite` | `staff.manage` | Reasons (not resend); deactivation signs them out everywhere; 409 `deactivate_self` / `not_invited` |
 | `GET /api/admin/audit`, `GET .../:id`, `GET .../export.csv` | `audit.view` | Append-only: no write routes |
 | `GET /api/admin/settings`, `PATCH .../settings/:section` | `settings.manage` | Sections `business`, `tax`, `licensing`, `sample-notice`; one audit row per changed field; integrations show configured or not, never values |

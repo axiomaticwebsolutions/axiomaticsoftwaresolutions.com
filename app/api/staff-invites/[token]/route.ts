@@ -1,6 +1,6 @@
 /**
- * GET /api/staff-invites/:token -> 200 { invite: { email, role, roleLabel, roleSummary, twoStep, inviterName,
- * expiresAt, viewer: { signedIn, email } } }. Public (the token is the credential) and read-only.
+ * GET /api/staff-invites/:token -> 200 { invite: { email, role, roleLabel, roleSummary, inviterName, expiresAt,
+ * viewer: { signedIn, email } } }. Public (the token is the credential) and read-only.
  * 404 `invite_invalid`, 410 `invite_used` | `invite_revoked` | `invite_expired`; 429 after 60 previews in 10 minutes
  * per IP. Never cached, never sent on as a Referer.
  */

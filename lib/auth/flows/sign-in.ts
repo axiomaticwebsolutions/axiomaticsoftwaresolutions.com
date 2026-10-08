@@ -8,7 +8,8 @@
  *    same 401 `invalid_credentials` with the same message, after the same argon2id work (verifyAgainstDummy for
  *    unknown emails). The optional "{n} attempts left." suffix comes from the per-email counter, which exists for
  *    unknown emails too, so it reveals nothing.
- * 3. Two-step users without a valid trusted-device cookie get an emailed code instead of a session
+ * 3. Users who turned two-step on (User.twoStepEnabled, the only switch: optional for every account, staff included;
+ *    decisions.md 2026-10-08) and have no valid trusted-device cookie get an emailed code instead of a session
  *    ({ requires2fa: true, challengeId, emailHint }). The per-email attempt stays counted until the code succeeds.
  * 4. Otherwise completeSignIn(): clear/refund the counters, claim guest orders, rotate the session.
  */
@@ -19,7 +20,6 @@ import { createLoginChallenge, type LoginChallenge } from "@/lib/auth/flows/logi
 import { hashPassword, needsRehash, verifyAgainstDummy, verifyPassword } from "@/lib/auth/password";
 import { attempt, refund, RATE_LIMITS } from "@/lib/auth/rate-limit";
 import { verifyTrustedDevice } from "@/lib/auth/trusted-device";
-import { requiresTwoStep } from "@/lib/rbac";
 import { db } from "@/lib/db";
 import { getEnv } from "@/lib/env";
 import { log } from "@/lib/log";
@@ -53,8 +53,8 @@ export async function signIn(input: SignInInput, ctx: SignInContext): Promise<Si
     throw invalidCredentialsError(perEmail.count, perEmail.limit);
   }
 
-  // Owner and Finance staff always confirm with a code (decisions.md Phase 6), even if the stored flag is off.
-  if (user.twoStepEnabled || (user.kind === "STAFF" && requiresTwoStep(user.staffRole))) {
+  // Only the user's own setting decides, for customers and every staff role alike (decisions.md 2026-10-08).
+  if (user.twoStepEnabled) {
     const trusted = verifyTrustedDevice(
       ctx.trustedDevice,
       { userId: user.id, passwordHash: user.passwordHash, securityEpoch: user.securityEpoch, secret: getEnv().SESSION_SECRET },

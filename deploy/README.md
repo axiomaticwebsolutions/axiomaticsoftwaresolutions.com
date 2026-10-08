@@ -1,5 +1,7 @@
 # Operating the app on the aaPanel server (no Docker)
 
+> **The live server** for axiomaticsoftwaresolutions.com is set up with a few differences from this README (app user `axsstore`, port 3210, database `axs_store`, its own Redis on 6380, a hand-written proxy file, backups in `/home/axsstore/backups`): see [`docs/server-runbook.md`](../docs/server-runbook.md).
+
 Operator reference for the production server: a Linux VPS (Ubuntu 22.04/24.04 or Debian 12, x86_64, 2-4 GB RAM)
 managed with aaPanel. Everything runs natively: Node.js 24 + PM2, PostgreSQL and Redis from the aaPanel App Store,
 aaPanel's Nginx in front. Commands print names and counts, never secret values.
@@ -114,8 +116,10 @@ Run in the aaPanel Terminal (root) unless a step says "as the app user" (`sudo -
 11. **Razorpay webhook** (Test Mode > Webhooks): URL `https://<domain>/api/webhooks/payments/razorpay`, secret =
     `PAYMENT_WEBHOOK_SECRET`, events `payment.captured`, `order.paid`, `payment.failed`, `refund.processed`,
     `refund.failed` (a refund Razorpay could not complete puts the order in review so it can be refunded again). Then sign
-    in as the Owner, delete the `BOOTSTRAP_OWNER_*` lines from the env file, and from your PC run
-    `node scripts/smoke-prod.mjs --base=https://<domain>`.
+    in as the Owner (password only: the bootstrapped Owner starts with two-step sign-in off, so no working SMTP is
+    needed to get in), delete the `BOOTSTRAP_OWNER_*` lines from the env file, and from your PC run
+    `node scripts/smoke-prod.mjs --base=https://<domain>`. Once email sending works, the Owner (and Finance staff) turn
+    two-step on in Admin > My profile (`docs/go-live-checklist.md`; decisions.md 2026-10-08).
 
 ## Scheduled jobs (aaPanel > Cron)
 
@@ -237,7 +241,7 @@ release stays on disk until later deploys prune it.
 |---|---|---|
 | `CRON_SECRET` | new random value (`openssl rand -hex 32`), restart | none (cron scripts read the file every run) |
 | `CSRF_SECRET` | new random value, restart | open forms fail once; reload fixes it |
-| `SESSION_SECRET` | new random value, restart | trusted devices forgotten (two-step code again), sign-in codes in flight void |
+| `SESSION_SECRET` | new random value, restart | trusted devices forgotten (two-step code again for people who have it on), sign-in codes in flight void |
 | `ORDER_TOKEN_SECRET` | new random value, restart | guest order links already emailed stop working |
 | `PAYMENT_WEBHOOK_SECRET` | new value here and in the Razorpay webhook at the same time, restart | webhooks in between fail and are retried by Razorpay |
 | `PAYMENT_KEY_ID` / `PAYMENT_KEY_SECRET` | regenerate in Razorpay, restart | none |

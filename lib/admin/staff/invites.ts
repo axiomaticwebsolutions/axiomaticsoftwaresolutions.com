@@ -9,9 +9,10 @@
  *   logged and reported to the caller; "Resend" issues a fresh link.
  * - The invitee is a STAFF user created at invite time (staffStatus INVITED, no password, unverified, name ""). The
  *   role they get is the user's current staffRole (the Owner may change it while the invitation is open).
- * - Accepting sets the name and a password (policy), verifies the email, activates the account (two-step on for
- *   Owner and Finance), writes "Accepted staff invitation" to the audit log and signs the person in. Anyone already
- *   signed in on that browser (customer or staff) is asked to sign out first.
+ * - Accepting sets the name and a password (policy), verifies the email, activates the account (two-step sign-in
+ *   stays off for every role; the person can turn it on in Admin > My profile, decisions.md 2026-10-08), writes
+ *   "Accepted staff invitation" to the audit log and signs the person in. Anyone already signed in on that browser
+ *   (customer or staff) is asked to sign out first.
  * Server-only.
  */
 import "server-only";
@@ -29,7 +30,6 @@ import { ApiError, ipPrefix } from "@/lib/http";
 import { log } from "@/lib/log";
 import { isStaffRole } from "@/lib/rbac";
 import {
-  requiresTwoStep,
   roleLabel,
   ROLE_SUMMARIES,
   STAFF_ERRORS,
@@ -166,8 +166,6 @@ export type StaffInvitePreview = {
   role: StaffRole;
   roleLabel: string;
   roleSummary: string;
-  /** Owner and Finance sign in with an emailed code as well as the password. */
-  twoStep: boolean;
   inviterName: string | null;
   expiresAt: string;
   /** Someone is signed in on this browser (they must sign out first). */
@@ -189,7 +187,6 @@ export async function previewStaffInvite(
     role: invitee.staffRole,
     roleLabel: roleLabel(invitee.staffRole),
     roleSummary: ROLE_SUMMARIES[invitee.staffRole],
-    twoStep: requiresTwoStep(invitee.staffRole),
     inviterName: inviter ? inviter.name.trim() || inviter.email : null,
     expiresAt: token.expiresAt.toISOString(),
     viewer: { signedIn: input.viewer !== null, email: input.viewer?.email ?? null },
@@ -209,7 +206,9 @@ export type AcceptStaffInviteResult = { user: User; token: string; session: Sess
 /**
  * POST /api/staff-invites/accept. 403 `signed_in` when a session exists on the browser. Then, in one transaction:
  * token used (only while open and unexpired), the user activated with the name, password and a verified email
- * (two-step on for Owner and Finance), other links voided, the audit row written and a staff session created.
+ * (two-step sign-in set off: an invitee has never signed in, so this never overrides a choice they made; rows
+ * invited under the old Owner/Finance rule start off too), other links voided, the audit row written and a staff
+ * session created.
  * A concurrent revoke or second acceptance answers 410/409 with no change.
  */
 export async function acceptStaffInvite(
@@ -237,7 +236,7 @@ export async function acceptStaffInvite(
         staffStatus: "ACTIVE",
         emailVerifiedAt: now,
         lastActiveAt: now,
-        ...(requiresTwoStep(role) ? { twoStepEnabled: true } : {}),
+        twoStepEnabled: false,
       },
     });
     if (activated.count !== 1) throw new ApiError(409, "invite_changed", STAFF_INVITE_MESSAGES.changed);

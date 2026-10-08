@@ -12,15 +12,15 @@ what it found and fixed, and what is still open. Binding design rules stay in `d
 |---|---|
 | `node scripts/check-storefront.mjs` | Every storefront, cart, checkout and auth page at 1280 and 360px: status, console, one `<h1>` and one `<main>`, title, overflow, axe (WCAG 2.0 A/AA + 2.1 AA) |
 | `node scripts/check-portal.mjs --only=pages` | Every `/account` page as Owner, Billing admin and Technical contact at 1280 and 360px (same checks) |
-| `node scripts/check-admin.mjs --only=pages` | Every `/admin` module (and drawers) as Owner, Administrator, Support and Finance at 1280 and 360px (same checks) |
+| `node scripts/check-admin.mjs --only=pages` | Every `/admin` module (and drawers) plus My profile (`/admin/profile`) as Owner, Administrator, Support and Finance at 1280 and 360px (same checks) |
 | `node scripts/check-a11y.mjs` | The states the crawls never reach (below). `--only=focus,store,auth,orders,portal,admin,reflow,motion,forced` runs a subset; `--base=URL` targets another dev server |
 | `pnpm test:unit` | `tests/unit/a11y-pass.test.ts`, `design-a11y.test.ts` and `focus-outline-classes.test.ts` guard the rules below at source level |
 
 `scripts/check-a11y.mjs` needs a dev server with `PAYMENT_PROVIDER=mock`, `EMAIL_TRANSPORT=console` and the seed. It
 signs the demo Owner (Priya) and Administrator (Vikram) in over HTTP (staff code from `/dev/mailbox`), hands only the
 session cookie to the browser and signs them out at the end. It writes nothing except sign-in records (sessions, one
-unused two-step challenge for the seeded staff Owner, sign-in code emails) and rate-limit counters, and never prints
-passwords, codes, keys or tokens (URLs in error messages are masked).
+unused two-step challenge for the seeded staff Owner, who has two-step on in the dev seed; sign-in code emails) and
+rate-limit counters, and never prints passwords, codes, keys or tokens (URLs in error messages are masked).
 
 ## Method
 

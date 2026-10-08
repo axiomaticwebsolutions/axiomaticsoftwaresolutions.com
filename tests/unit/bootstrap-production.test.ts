@@ -327,6 +327,10 @@ describe("formatBootstrapReport", () => {
     expect(text).toContain("order=10001, license=20001, ticket=1001, lead=1001");
     expect(text).toContain("founder@axiomaticsoftwaresolutions.com");
     expect(text).toContain("https://shop.example.in/sign-in");
+    // The Owner starts with two-step off (no SMTP needed to sign in) and is told where to turn it on.
+    expect(text).toContain("two-step sign-in off (password only)");
+    expect(text).toContain("turn two-step on in Admin > My profile");
+    expect(text).not.toMatch(/always get a 6-digit code|SMTP must already work/);
     expect(text).toContain("  - w1");
     expect(text).toContain("  - n1");
     expect(text).not.toContain(PASSWORD);

@@ -32,8 +32,11 @@ export const STAFF_NAMES: Record<StaffRole, string> = {
   FINANCE: "Karan Mehta",
 };
 
-/** An active (or invited/deactivated) staff member without a password (tests sign in by creating a session). */
-export async function makeStaff(role: StaffRole, opts: { status?: StaffStatus; name?: string } = {}): Promise<User> {
+/**
+ * An active (or invited/deactivated) staff member without a password (tests sign in by creating a session). Two-step
+ * sign-in is off unless `twoStep` is set: it is each person's own choice, for every role (decisions.md 2026-10-08).
+ */
+export async function makeStaff(role: StaffRole, opts: { status?: StaffStatus; name?: string; twoStep?: boolean } = {}): Promise<User> {
   return db.user.create({
     data: {
       email: `admin-fx.${role.toLowerCase()}.${tag()}@axiomatic.test`,
@@ -42,7 +45,7 @@ export async function makeStaff(role: StaffRole, opts: { status?: StaffStatus; n
       staffRole: role,
       staffStatus: opts.status ?? "ACTIVE",
       emailVerifiedAt: new Date("2026-01-01T00:00:00.000Z"),
-      twoStepEnabled: role === "OWNER" || role === "FINANCE",
+      twoStepEnabled: opts.twoStep ?? false,
     },
   });
 }

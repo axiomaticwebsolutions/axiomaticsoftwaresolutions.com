@@ -1,10 +1,11 @@
 /**
  * Staff invitation links (/api/staff-invites/*): preview, acceptance (name + password policy, email verified, staff
- * session started, two-step on for Owner and Finance, audit row), single use, expiry, replacement by a resend,
- * revocation, CSRF, "sign out first" for a signed-in browser, and customer emails refused at invite time. The
- * staff_invite email is sent directly (captured here from the email transport) and never stored in the outbox.
+ * session started, two-step off for every role even on rows invited under the old rule, audit row), single use,
+ * expiry, replacement by a resend, revocation, CSRF, "sign out first" for a signed-in browser, and customer emails
+ * refused at invite time. The staff_invite email is sent directly (captured here from the email transport) and never
+ * stored in the outbox.
  */
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as invitePOST } from "@/app/api/admin/staff/route";
 import { DELETE as revokeDELETE } from "@/app/api/admin/staff/[id]/invite/route";
@@ -14,6 +15,7 @@ import { POST as acceptPOST } from "@/app/api/staff-invites/accept/route";
 import { GET as previewGET } from "@/app/api/staff-invites/[token]/route";
 import { STAFF_RATE_LIMITS } from "@/lib/admin/staff/limits";
 import { ANON_CSRF_BINDING, issueCsrfToken } from "@/lib/auth/csrf";
+import { signIn } from "@/lib/auth/flows/sign-in";
 import { verifyPassword } from "@/lib/auth/password";
 import { clear } from "@/lib/auth/rate-limit";
 import { resolveSession } from "@/lib/auth/sessions";
@@ -82,7 +84,9 @@ describe("preview", () => {
     expect(res.headers.get("cache-control")).toContain("no-store");
     expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     const { invite: body } = (await res.json()) as { invite: Json };
-    expect(body).toMatchObject({ email: address, role: "FINANCE", roleLabel: "Finance", twoStep: true, inviterName: "Anita Desai", viewer: { signedIn: false, email: null } });
+    expect(body).toMatchObject({ email: address, role: "FINANCE", roleLabel: "Finance", inviterName: "Anita Desai", viewer: { signedIn: false, email: null } });
+    // Two-step sign-in is optional for every role (decisions.md 2026-10-08): the preview no longer announces a code.
+    expect(body).not.toHaveProperty("twoStep");
     expect((await db.authToken.findFirstOrThrow({ where: { email: address, type: "STAFF_INVITE" } })).usedAt).toBeNull();
   });
 
@@ -108,7 +112,7 @@ describe("accept", () => {
     expect(await res.json()).toEqual({ redirectTo: "/admin", user: { id, name: "Meera Iyer", email: address } });
 
     const user = await db.user.findUniqueOrThrow({ where: { id } });
-    expect(user).toMatchObject({ kind: "STAFF", staffRole: "FINANCE", staffStatus: "ACTIVE", name: "Meera Iyer", twoStepEnabled: true });
+    expect(user).toMatchObject({ kind: "STAFF", staffRole: "FINANCE", staffStatus: "ACTIVE", name: "Meera Iyer", twoStepEnabled: false });
     expect(user.emailVerifiedAt).not.toBeNull();
     expect(await verifyPassword(PASSWORD, user.passwordHash)).toBe(true);
     const sessionToken = jar.get("axs_session");
@@ -123,6 +127,23 @@ describe("accept", () => {
     anonymous();
     const again = await accept({ token, name: "Someone Else", password: PASSWORD });
     expect([again.status, await errorCodeOf(again)]).toEqual([410, "invite_used"]);
+  });
+
+  it("starts two-step off for an invitee whose row still has it on from the old Owner/Finance rule", async () => {
+    const address = email("legacy");
+    const { id, token } = await invite(address, "FINANCE");
+    // Invited before decisions.md 2026-10-08: Owner and Finance invitees were created with two-step on.
+    await db.user.update({ where: { id }, data: { twoStepEnabled: true } });
+    anonymous();
+    const res = await accept({ token, name: "Legacy Finance", password: PASSWORD });
+    expect(res.status).toBe(200);
+    expect((await db.user.findUniqueOrThrow({ where: { id } })).twoStepEnabled).toBe(false);
+
+    // A password sign-in completes without an emailed code (no lockout while email sending is not set up).
+    const ip = `10.${randomInt(256)}.${randomInt(256)}.${randomInt(1, 255)}`;
+    const result = await signIn({ email: address, password: PASSWORD }, { ip, userAgent: "Vitest", now: new Date() });
+    expect(result.requires2fa).toBe(false);
+    expect(await db.authToken.count({ where: { userId: id, type: "LOGIN_OTP" } })).toBe(0);
   });
 
   it("checks the name and password policy and needs the CSRF token", async () => {

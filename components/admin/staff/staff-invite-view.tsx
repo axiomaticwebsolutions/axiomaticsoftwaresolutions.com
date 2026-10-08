@@ -24,7 +24,6 @@ export type StaffInviteSummary = {
   email: string;
   roleLabel: string;
   roleSummary: string;
-  twoStep: boolean;
   inviterName: string | null;
   /** "14 Oct 2026" (IST). */
   expiresLabel: string;
@@ -86,7 +85,6 @@ function RoleCard({ invite }: { invite: StaffInviteSummary }) {
           <p className="m-0 text-[11.5px] font-extrabold uppercase tracking-[0.08em] text-ink-2">{STAFF_INVITE_COPY.yourRole}</p>
           <p className="m-0 mt-0.5 text-[16px] font-extrabold">{invite.roleLabel}</p>
           <p className="m-0 mt-1 text-[14px] leading-[1.5] text-ink-2">{invite.roleSummary}</p>
-          {invite.twoStep ? <p className="m-0 mt-1.5 text-[13.5px] font-semibold leading-[1.5] text-ink-2">{STAFF_INVITE_COPY.twoStep}</p> : null}
         </div>
       </div>
       <p className="mb-0 mt-3 border-t border-lavender-line pt-3 text-[13.5px] font-semibold leading-[1.5] text-ink-2">

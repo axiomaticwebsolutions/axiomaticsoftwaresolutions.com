@@ -1,5 +1,7 @@
 # Deploy today: test-mode release on your aaPanel server (no Docker)
 
+> **The live server** (axiomaticsoftwaresolutions.com, aaPanel VPS shared with other apps) differs from this guide in several places: app user, port, database name, Redis, proxy and backup folder. For that server use [`server-runbook.md`](server-runbook.md); its commands already include the differences.
+
 This guide puts the site on `https://<domain>` on your own Linux VPS, managed with aaPanel, with **Razorpay in TEST
 mode**, real email (SMTP) and real private file storage (an S3-compatible bucket). Nobody can pay real money yet and
 the site keeps its "sample" labels. What must change before live sales is in [`go-live-checklist.md`](go-live-checklist.md).
@@ -89,9 +91,11 @@ Only Nginx faces the internet. The app listens on `127.0.0.1:3000`; PostgreSQL a
   two-factor authentication, and set "Authorized IP" if your home or office IP is fixed.
 
 ### 0.4 Email (SMTP provider)
-The app sends sign-in codes, order, license and invoice emails by SMTP. **Owners sign in with an emailed code, so
-without working SMTP you cannot get into Admin.** Pick one provider and verify your domain with it (it gives you DNS
-records to add: SPF and DKIM). Use port **587** (STARTTLS, which the app requires in production) or 465 (TLS).
+The app sends verification and sign-in codes, password resets, order, license and invoice emails by SMTP. Two-step
+sign-in (an emailed code) is optional and starts **off** for the first Owner, so you can get into Admin with the
+password even before SMTP works; you turn it on once email works (step 11, item 3). Customers still need email to
+verify their address, so set SMTP up today. Pick one provider and verify your domain with it (it gives you DNS records
+to add: SPF and DKIM). Use port **587** (STARTTLS, which the app requires in production) or 465 (TLS).
 
 | Provider | SMTP host | Port | Username | Password |
 |---|---|---|---|---|
@@ -395,7 +399,7 @@ Open the file: aaPanel > Files > `/www/wwwroot/axiomatic/shared/` > `.env.produc
 | `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | the bucket key | Step 0.5, item 3 (the least-privilege key) |
 | `EMAIL_FROM` | `"Axiomatic Software <no-reply@<domain>>"` (keep the quotes) | A sender on the domain you verified (step 0.4) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` | host, `587`, user name, password | The table in step 0.4 |
-| `BOOTSTRAP_OWNER_EMAIL` | your email address | The first Owner; it receives the sign-in codes, so use a mailbox you read |
+| `BOOTSTRAP_OWNER_EMAIL` | your email address | The first Owner; it receives password resets (and sign-in codes once you turn two-step on), so use a mailbox you read |
 | `BOOTSTRAP_OWNER_NAME` (optional) | `"Your Name"` | Remove the `#` in front to use it |
 
 Leave every generated value, `TRUSTED_PROXY_HOPS=1`, `PAYMENT_PROVIDER=razorpay`, `STORAGE_DRIVER=s3`,
@@ -613,8 +617,10 @@ If you ever change `PAYMENT_WEBHOOK_SECRET`, change it in Razorpay too and run
 
 ## 9. First sign-in, settings and installers
 1. Open `https://<domain>/sign-in` and sign in with `BOOTSTRAP_OWNER_EMAIL` and `BOOTSTRAP_OWNER_PASSWORD` from step 4.
-   Owners always confirm with a 6-digit code sent by email: it arrives within a minute if SMTP works. No code? Check
-   the spam folder, then step 12.3 (`sudo -iu axiomatic pm2 logs axiomatic`, look for `email_` lines) and the SMTP values.
+   No code is asked: two-step sign-in starts off for the first Owner, so this works even while SMTP is not set up
+   yet. Turn it on later, once emails arrive (step 11, item 3). If a code is asked anyway, two-step is on for this
+   account: the code arrives within a minute if SMTP works; no code? Check the spam folder, then step 12.3
+   (`sudo -iu axiomatic pm2 logs axiomatic`, look for `email_` lines) and the SMTP values.
 2. Remove the bootstrap lines (`BOOTSTRAP_OWNER_EMAIL`, `BOOTSTRAP_OWNER_PASSWORD` and `BOOTSTRAP_OWNER_NAME` if you
    used it) from the server. The account keeps its password and the app never reads these variables; a later
    bootstrap run would refuse an email line left without its password line:
@@ -680,6 +686,9 @@ Use a private browser window and an email address that is **not** the Owner's (f
    If it stays "Confirming payment" for more than a minute, check Razorpay > Webhooks > your webhook > deliveries
    (response 200 expected) and `sudo -iu axiomatic pm2 logs axiomatic`.
 3. **Emails:** the order confirmation and "license issued" emails arrive at the test address.
+   - Email works, so turn on two-step sign-in for the Owner now: in Admin, open the account menu (your initials, top
+     right) > **My profile** > switch **Two-step verification** on. Sign out and back in once: the 6-digit code must
+     arrive by email. Finance staff do the same in their own My profile.
 4. **Invoice:** download the invoice PDF from the order page: it has an `AXS/<FY>/0001`-style number and, while the
    business details are sample, says it is not a valid tax invoice.
 5. **Download:** the order page (or the portal after verifying the email) offers the installer you published in

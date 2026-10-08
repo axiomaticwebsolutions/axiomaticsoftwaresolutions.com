@@ -13,7 +13,7 @@
  *   d  Pending -> simulate the bank (ok) -> PAID; failed -> "Try again" keeps the cart -> success; cancel -> canceled;
  *      a failure reported just after the order page opened still shows.
  *   e  Sign-in lockout: five wrong passwords, then even the right one gets 429 with Retry-After.
- *   f  Two-step sign-in of a staff user with the emailed code from /dev/mailbox.
+ *   f  Two-step sign-in of a staff user (Sneha, two-step on in the dev seed) with the emailed code from /dev/mailbox.
  *
  * Needs a development server with PAYMENT_PROVIDER=mock and EMAIL_TRANSPORT=console (codes come from /dev/mailbox),
  * and DATABASE_URL in .env.local for read-only checks. With TRUSTED_PROXY_HOPS=0 every local request shares the

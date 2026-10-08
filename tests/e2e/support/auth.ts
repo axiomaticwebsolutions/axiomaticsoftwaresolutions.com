@@ -1,9 +1,10 @@
 /**
  * Sign-in and registration helpers.
  *
- * - signInHttp / signInAs: seeded people (staff and the demo customer) sign in through POST /api/auth/sign-in; staff
- *   confirm with the two-step code emailed to /dev/mailbox (POST /api/auth/sign-in/verify). Only the session cookie
- *   reaches the browser context, so seeded passwords and codes never appear in traces or reports.
+ * - signInHttp / signInAs: seeded people (staff and the demo customer) sign in through POST /api/auth/sign-in; people
+ *   with two-step on (the seeded staff) confirm with the code emailed to /dev/mailbox (POST /api/auth/sign-in/verify).
+ *   Only the session cookie reaches the browser context, so seeded passwords and codes never appear in traces or
+ *   reports.
  * - registerCustomerHttp: a throwaway customer (register + verification code from /dev/mailbox), signed in and verified.
  * - waitForHydration: typing before React hydrates a form makes dev builds log a hydration mismatch and can lose the
  *   input; wait until React owns the element (scripts/check-portal.mjs).

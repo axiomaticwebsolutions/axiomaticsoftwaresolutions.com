@@ -82,7 +82,8 @@ decision taken where the handoff was silent, contradictory, or out of date. Acce
     then restores `termsBefore` in reverse item order when the license still matches `termsAfter` (otherwise REVIEW).
     Proposed for a refunded trial -> paid UPGRADE: restore the trial terms (status TRIAL, trial plan and dates), so an
     ended trial reads as expired rather than revoked. To be confirmed.
-12. **Two-step sign-in** uses an emailed 6-digit code (not TOTP).
+12. **Two-step sign-in** uses an emailed 6-digit code (not TOTP). Optional for every account, staff included
+    (owner decision 2026-10-08, at the end of this file).
 13. **Hosting**: recommended AWS Mumbai (managed Postgres, Redis, S3 + CloudFront, containers). Decide before Phase 3.
 14. **Seller details** stay placeholders in the seed; real legal name/GSTIN/address are entered in Admin > Settings.
     Each Invoice stores a snapshot of the seller details so later edits never change past invoices.
@@ -879,8 +880,9 @@ Open items (owner decisions and later phases)
 - Routes: /admin (overview) and /admin/<module> for products, plans, releases, orders, customers, coupons, renewals,
   licenses, tickets, content, templates, reports, staff, audit, settings, plus a Leads inbox (contact and demo
   requests; not in the prototype). The open drawer is in the URL (`?id=`), as are filters, sort and page.
-- Staff sign in through /sign-in (two-step by emailed code). The prototype's "Signed in as" demo switcher is not
-  built; locally, sign in as the seeded staff (Vikram admin, Sneha support, Karan finance) with SEED_DEMO_PASSWORD.
+- Staff sign in through /sign-in (two-step by emailed code for those who turn it on; optional since 2026-10-08). The
+  prototype's "Signed in as" demo switcher is not built; locally, sign in as the seeded staff (Vikram admin, Sneha
+  support, Karan finance) with SEED_DEMO_PASSWORD.
 - Permissions: lib/rbac.ts PERMS + ADMIN_MODULES stay the single source; new `leads.view` (owner, admin, support).
   Locked modules show a lock in the sidebar and a permission-denied page; actions a role lacks are disabled with the
   "Requires Owner / Finance" tooltip; every /api/admin route enforces the same permission (a table-driven test covers
@@ -908,7 +910,9 @@ Open items (owner decisions and later phases)
 - Content: FAQs (home, pricing, support, per product) and the site banner + sample notice (content.manage);
   templates: edit subject/body with variable hints and "Send test" to the signed-in staff member (templates.manage).
 - Staff (Owner only): invite by email (AuthToken STAFF_INVITE, 7 days), change role (reason), deactivate/reactivate
-  (reason; deactivation signs them out everywhere). Owner and Finance staff always have two-step sign-in on.
+  (reason; deactivation signs them out everywhere). ~~Owner and Finance staff always have two-step sign-in on.~~
+  Superseded 2026-10-08: two-step sign-in is optional for every account ("Two-step sign-in optional for every
+  account" at the end of this file).
   You cannot change your own role or deactivate yourself; at least one active Owner remains.
 - Settings (Owner only): business, tax (rate, SAC, invoice prefix 1-3 chars), licensing, sample notice. Secrets are
   never shown or stored here; the page shows only whether each integration is configured (from env).
@@ -942,8 +946,9 @@ Open items (owner decisions and later phases)
   reports.export: Leads (leads.view), FAQs (content.manage) and Templates (templates.manage) exports are Owner-only.
   The audit export needs audit.view; the staff export staff.manage (Owner). Every export is audited and rate
   limited (RATE_LIMITS.adminExport, 60 per 10 minutes per staff member).
-- Owner and Finance always sign in with an emailed code: the sign-in flow requires two-step for these roles whatever
-  `twoStepEnabled` says (the seeded Owner had it off), and the staff list shows them as "On".
+- ~~Owner and Finance always sign in with an emailed code: the sign-in flow requires two-step for these roles whatever
+  `twoStepEnabled` says (the seeded Owner had it off), and the staff list shows them as "On".~~ Superseded
+  2026-10-08: only `twoStepEnabled` decides, for every role ("Two-step sign-in optional for every account" below).
 - The drawer's scrolling body is a focusable region ("{Kind} details"), so read-only drawers stay keyboard
   scrollable (axe scrollable-region-focusable).
 
@@ -1218,3 +1223,35 @@ Open after Phase 7 (not needed for the test release):
   `more`; the old regex never matched reconcile's nested summary, which logged a line every 10 minutes.
 - Razorpay webhook events everywhere (env template included): payment.captured, order.paid, payment.failed,
   refund.processed, refund.failed.
+
+## Two-step sign-in optional for every account (owner decision, 2026-10-08)
+Replaces the Phase 6 rule "Owner and Finance always sign in with an emailed code" (Phase 6 decisions, "Staff"; Phase 6
+build decisions, "Shell and foundation").
+- The owner's decision: "Emailed sign-in codes (two-step verification) are OPTIONAL for every account, staff included.
+  Turn off the forced code for Owner and Finance staff, and add an option in the user's profile to turn it on." Reason:
+  the live test-mode site has no SMTP yet, so the Owner could not receive a code and was locked out of Admin.
+- Policy: `User.twoStepEnabled` alone decides whether sign-in asks for a code, for customers and every staff role
+  (`lib/auth/flows/sign-in.ts`). `TWO_STEP_ROLES` and `requiresTwoStep()` are gone from `lib/rbac.ts`, and nothing
+  turns the flag on by itself any more: not an invitation, its acceptance (the preview `GET /api/staff-invites/:token`
+  no longer returns `twoStep`, and the invitation page no longer promises a code), a role change, reactivation or the
+  production bootstrap. New staff and the bootstrapped Owner start with two-step off and sign in with the password.
+  Trusted-device cookies, the security epoch, rate limits and the code flow itself are unchanged for anyone who turns
+  it on.
+- Staff turn it on and off in **Admin > My profile** (`/admin/profile`, in the top bar's account menu next to Sign
+  out; every ACTIVE role, checked on the server like every admin page: signed out -> sign-in, customers -> /account,
+  invited or role-less staff -> the layout's notice). The page shows name, email and role (read-only), the portal's
+  two-step switch (`ProtectionCard` without "Account data"), "Password" and "Active sessions", reusing the portal
+  components and the existing `POST /api/me/two-step`, `POST /api/me/password` and `/api/me/sessions` routes. Those
+  routes now answer 403 for staff without live console access (`assertSelfService` in `lib/auth/guards.ts`).
+- Auditing: a staff member's change writes one AuditLog row "Turned on two-step verification" / "Turned off two-step
+  verification" (actor = target = that staff member, target type `staff`, truncated IP) in the same transaction, since
+  staff have no business account activity. Customers keep the security entry in their account activity, as before.
+- Copy (portal Security and Admin > My profile, owner review): under the switch, "Codes are sent by email, so turn
+  this on only once this site's emails reach you; otherwise you can't sign in."
+  (`SECURITY_COPY.twoStepEmailNote`). The staff list's "2-step" column and CSV show the stored setting (Owner and
+  Finance are no longer shown as "On" regardless).
+- Data: no schema change or migration. Rows written under the old rule keep `twoStepEnabled = true` until the person
+  turns it off in My profile (the lead fixes the live Owner separately). The dev seed keeps two-step on for its staff,
+  whose codes appear at /dev/mailbox.
+- Before live sales, once SMTP works, the Owner and Finance staff turn two-step on in Admin > My profile
+  (`docs/go-live-checklist.md`).

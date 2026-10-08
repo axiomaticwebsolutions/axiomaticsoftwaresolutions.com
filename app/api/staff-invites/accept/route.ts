@@ -1,10 +1,11 @@
 /**
  * POST /api/staff-invites/accept { token, name, password } -> 200 { redirectTo: "/admin", user: { id, name, email } }
  * plus a new staff session cookie (CSRF token re-issued). The link proves the address, so the email counts as
- * verified; Owner and Finance get two-step sign-in. 403 `signed_in` when this browser is signed in (customer or
- * staff: sign out first), 403 `csrf_failed`; 404 `invite_invalid`, 410 `invite_used` | `invite_revoked` |
- * `invite_expired`, 409 `invite_changed`; 422 on name / password ("Use at least 8 characters with letters and a
- * number."); 429 after 20 attempts in 15 minutes per IP.
+ * verified; two-step sign-in starts off for every role until the person turns it on in Admin > My profile
+ * (decisions.md 2026-10-08). 403 `signed_in` when this browser is signed in (customer or staff: sign out first), 403
+ * `csrf_failed`; 404 `invite_invalid`, 410 `invite_used` | `invite_revoked` | `invite_expired`, 409 `invite_changed`;
+ * 422 on name / password ("Use at least 8 characters with letters and a number."); 429 after 20 attempts in 15
+ * minutes per IP.
  */
 import { acceptStaffInvite } from "@/lib/admin/staff/invites";
 import { STAFF_RATE_LIMITS } from "@/lib/admin/staff/limits";

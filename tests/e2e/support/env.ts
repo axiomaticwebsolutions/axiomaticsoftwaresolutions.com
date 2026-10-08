@@ -66,7 +66,10 @@ export const SEED = {
   ownerPassword: () => requiredSetting("SEED_OWNER_PASSWORD"),
 };
 
-/** Seeded people the journeys sign in as. Staff confirm every sign-in with an emailed two-step code. */
+/**
+ * Seeded people the journeys sign in as. The dev seed turns two-step on for its staff, so they confirm each sign-in
+ * with an emailed code (two-step is optional per person, never forced by role: decisions.md 2026-10-08).
+ */
 export const PEOPLE = {
   owner: () => ({ email: SEED.ownerEmail(), password: SEED.ownerPassword(), home: "/admin" }),
   admin: () => ({ email: "vikram@axiomatic.example", password: SEED.demoPassword(), home: "/admin" }),

@@ -34,6 +34,8 @@ export const SECURITY_COPY = {
   mismatch: "Passwords don\u2019t match.",
   twoStepHeading: "Two-step verification",
   twoStepBody: "Ask for a one-time code sent to your email when signing in from a new device.",
+  /** new (decisions.md 2026-10-08; also in Admin > My profile): codes need working email, or the user is locked out. */
+  twoStepEmailNote: "Codes are sent by email, so turn this on only once this site\u2019s emails reach you; otherwise you can\u2019t sign in.",
   twoStepOn: "Two-step verification on",
   twoStepOff: "Two-step verification off",
   /** new */

@@ -12,7 +12,8 @@
  *   test-mode wording while PAYMENT_KEY_ID is a Razorpay test key (BOOTSTRAP_SAMPLE_NOTICE_TEXT overrides the text);
  * - counters: AX-10001, LIC-20001, T-1001, DEMO-/MSG-1001. Invoice and credit-note series are not written: they
  *   start at 0001 in each financial year (lib/counters.ts COUNTER_START);
- * - the first Owner (argon2id, ACTIVE, email verified, two-step on) from BOOTSTRAP_OWNER_*.
+ * - the first Owner (argon2id, ACTIVE, email verified, two-step sign-in OFF: password only until the Owner turns it on
+ *   in Admin > My profile once email sending works; decisions.md 2026-10-08) from BOOTSTRAP_OWNER_*.
  * Never: customers, business accounts, orders, payments, licenses, tickets, coupons, leads or sample staff.
  *
  * Idempotent: one transaction under an advisory lock; rows are only created when missing; the catalog step runs once
@@ -120,7 +121,8 @@ function readValue(source: Source, key: string): string | undefined {
 
 /**
  * True for domains reserved for documentation and testing (RFC 2606 / RFC 6761) and mDNS names: mail sent there
- * never arrives, so an Owner with such an address could never receive the emailed sign-in code.
+ * never arrives, so an Owner with such an address could never receive a password reset (or, once two-step is on, the
+ * emailed sign-in code).
  */
 export function isUndeliverableEmail(email: string): boolean {
   const domain = email.slice(email.lastIndexOf("@") + 1).toLowerCase();
@@ -155,7 +157,7 @@ function readOwner(source: Source, problems: string[]): BootstrapOwnerInput | nu
     if (!parsed.success) problems.push(`${OWNER_ENV.email}: is not a valid email address`);
     else if (isUndeliverableEmail(parsed.data)) {
       problems.push(
-        `${OWNER_ENV.email}: must be a mailbox you can read. Owners sign in with a code emailed to this address, and reserved domains such as .example never receive mail`,
+        `${OWNER_ENV.email}: must be a mailbox you can read. Password resets (and sign-in codes, once two-step is on) go to this address, and reserved domains such as .example never receive mail`,
       );
     } else email = parsed.data;
   }
@@ -720,8 +722,9 @@ export async function applyBootstrap(tx: Tx, plan: BootstrapPlan, input: { now: 
         name: plan.owner.name,
         passwordHash: input.passwordHash,
         emailVerifiedAt: input.now,
-        // Owners always confirm sign-in with an emailed code (lib/rbac.ts requiresTwoStep); the flag says so too.
-        twoStepEnabled: true,
+        // Off: the site may have no working SMTP yet, and a code that never arrives would lock the Owner out. The Owner
+        // turns it on in Admin > My profile once email sending works (decisions.md 2026-10-08).
+        twoStepEnabled: false,
         staffRole: StaffRole.OWNER,
         staffStatus: StaffStatus.ACTIVE,
       },
@@ -835,7 +838,7 @@ export function formatBootstrapReport(
 
   const owner = plan.owner;
   if (owner.action === "create") {
-    lines.push(`  Owner: ${dryRun ? "would create" : "created"} ${owner.email} ("${owner.name}"), staff Owner, email verified, two-step sign-in by emailed code.`);
+    lines.push(`  Owner: ${dryRun ? "would create" : "created"} ${owner.email} ("${owner.name}"), staff Owner, email verified, two-step sign-in off (password only).`);
   } else if (owner.action === "keep") {
     lines.push(`  Owner: ${owner.email} already exists; nothing changed (its password is never reset here: use "Forgot password" on /sign-in).`);
   } else {
@@ -852,7 +855,8 @@ export function formatBootstrapReport(
     lines.push(
       "",
       "Next steps:",
-      `  1. Sign in at ${base}/sign-in as the Owner. Owners always get a 6-digit code by email, so SMTP must already work.`,
+      `  1. Sign in at ${base}/sign-in as the Owner with the password (no emailed code: two-step sign-in starts off).`,
+      "     Once email sending works, turn two-step on in Admin > My profile (go-live checklist).",
       "  2. Admin > Releases: each product has a DRAFT release without files. Upload an installer, then publish it.",
       "  3. Admin > Settings: check the business details. While `sample` is on, invoices say they are not valid tax",
       "     invoices and the site shows sample labels; switch it off (and the sample notice in Admin > Content) at go-live.",

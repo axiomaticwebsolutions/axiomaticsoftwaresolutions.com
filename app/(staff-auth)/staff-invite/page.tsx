@@ -43,7 +43,6 @@ async function loadInvite(raw: string | undefined, auth: CurrentAuth | null): Pr
         email: invite.email,
         roleLabel: invite.roleLabel,
         roleSummary: invite.roleSummary,
-        twoStep: invite.twoStep,
         inviterName: invite.inviterName,
         expiresLabel: formatDateIST(new Date(invite.expiresAt)),
       },
@@ -60,7 +59,8 @@ async function loadInvite(raw: string | undefined, auth: CurrentAuth | null): Pr
 
 /**
  * /staff-invite?token=… from the staff invitation email (decisions.md Phase 6 "Staff"): the invitation, then the
- * person's name and password. Accepting signs them in to /admin (Owner and Finance with two-step sign-in on).
+ * person's name and password. Accepting signs them in to /admin (two-step sign-in off until they turn it on in
+ * Admin > My profile).
  */
 export default async function StaffInvitePage({ searchParams }: { searchParams: AuthSearchParams }) {
   const params = await searchParams;

@@ -60,7 +60,6 @@ export const STAFF_INVITE_COPY = {
   yourRole: "Your role",
   invitationFor: "Invitation for",
   expires: (date: string) => `Expires ${date}`,
-  twoStep: "This role signs in with a code we email each time, as well as the password.",
   intro: "Choose your name and a password. You\u2019ll sign in to the admin console with this email.",
   fullName: "Full name",
   password: "Password",

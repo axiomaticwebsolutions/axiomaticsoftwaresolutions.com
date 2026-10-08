@@ -260,9 +260,10 @@ describe("production bootstrap on an empty database", () => {
     expect(audit[0]?.detail).not.toContain(PASSWORD);
   }, SLOW);
 
-  it("the Owner is an active, verified, two-step staff Owner who can sign in with the password", async () => {
+  it("the Owner is an active, verified staff Owner with two-step off, who can sign in with the password alone", async () => {
     const owner = await db.user.findUniqueOrThrow({ where: { email: OWNER_EMAIL } });
-    expect(owner).toMatchObject({ kind: "STAFF", staffRole: "OWNER", staffStatus: "ACTIVE", twoStepEnabled: true, name: "Asha Rao" });
+    // Off: the live site may have no SMTP yet; the Owner turns it on in Admin > My profile (decisions.md 2026-10-08).
+    expect(owner).toMatchObject({ kind: "STAFF", staffRole: "OWNER", staffStatus: "ACTIVE", twoStepEnabled: false, name: "Asha Rao" });
     expect(owner.emailVerifiedAt).toBeInstanceOf(Date);
     expect(owner.passwordHash).toMatch(/^[$]argon2id[$]/);
     expect(needsRehash(owner.passwordHash ?? "")).toBe(false);

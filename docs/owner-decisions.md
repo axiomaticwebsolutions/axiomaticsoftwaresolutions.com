@@ -409,6 +409,14 @@ New in Phase 7:
 | Activity is kept 24 months: worth saying on the portal Activity page or in the privacy notice (see T6) | `components/account/activity`, `content/legal` |
 | An expired staff invitation reads "No working link" in the staff drawer once its last link is purged (30 days after it expired); the list still says "Invite expired" | `lib/admin/staff/model.ts` |
 
+New on 2026-10-08 (two-step sign-in optional for every account):
+
+| Copy | Where it lives |
+|---|---|
+| Under the two-step switch (portal Security and Admin > My profile): "Codes are sent by email, so turn this on only once this site’s emails reach you; otherwise you can’t sign in." | `SECURITY_COPY.twoStepEmailNote` in `components/account/security/security-model.ts` |
+| Admin > My profile: menu item and title "My profile"; "Your details, two-step verification, password and the devices signed in as you."; card "Your details" with "Only an Owner can change your role, in Staff & roles." | `PROFILE_COPY` in `lib/admin/profile/model.ts` |
+| Production bootstrap report: "two-step sign-in off (password only)" and the next step "Once email sending works, turn two-step on in Admin > My profile (go-live checklist)." | `formatBootstrapReport()` in `prisma/seed-data/bootstrap.ts` |
+
 ## Decided already (change only on purpose)
 
 These were open once and are now settled; they are listed so nobody reopens them by accident.
@@ -417,7 +425,9 @@ These were open once and are now settled; they are listed so nobody reopens them
 - Guest orders are claimed by the earliest account the user created and still owns, never by an account they joined
   by invitation (Phase 5).
 - Subscriptions renew manually through the cart; no mandates or automatic charges (business rule 2).
-- Owner and Finance staff always sign in with an emailed code (Phase 6).
+- Two-step sign-in (emailed codes) is optional for every account, staff included: only each person's own setting
+  decides, staff switch it in Admin > My profile, and Owner and Finance turn it on once SMTP works (owner decision
+  2026-10-08; replaces the Phase 6 rule that Owner and Finance always sign in with an emailed code).
 - "Expiring" is fixed at 60 days and shown read-only in Settings (Phase 6 night).
 - A failed refund puts the order in review and the refund can be issued again (Phase 6 night; the customer email is
   P1).

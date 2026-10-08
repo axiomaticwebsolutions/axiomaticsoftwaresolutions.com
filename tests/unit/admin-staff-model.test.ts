@@ -7,7 +7,7 @@ import {
   PERMISSION_LABELS,
   PERMISSION_ROWS,
   permissionCountLabel,
-  requiresTwoStep,
+  STAFF_COPY,
   STAFF_CSV_COLUMNS,
   STAFF_LIST_SPEC,
   STAFF_LIST_STATE,
@@ -35,13 +35,15 @@ const row = (over: Partial<StaffRow> = {}): StaffRow => ({
 });
 
 describe("staff model", () => {
-  it("knows which roles always use two-step sign-in", () => {
-    expect(["OWNER", "ADMIN", "SUPPORT", "FINANCE"].map((r) => requiresTwoStep(r as never))).toEqual([true, false, false, true]);
-    expect(requiresTwoStep(null)).toBe(false);
-    expect(twoStepLabel(row({ role: "FINANCE", twoStepEnabled: false }))).toBe("On");
-    expect(twoStepLabel(row({ role: "OWNER", twoStepEnabled: false }))).toBe("On");
-    expect(twoStepLabel(row({ role: "SUPPORT", twoStepEnabled: false }))).toBe("Off");
-    expect(twoStepLabel(row())).toBe("On");
+  it("shows two-step as each person's own setting: no role forces it (decisions.md 2026-10-08)", () => {
+    for (const role of ["OWNER", "ADMIN", "SUPPORT", "FINANCE"] as const) {
+      expect(twoStepLabel(row({ role, twoStepEnabled: false })), role).toBe("Off");
+      expect(twoStepLabel(row({ role, twoStepEnabled: true })), role).toBe("On");
+    }
+    expect(STAFF_CSV_COLUMNS.find((c) => c.header === "Two-step sign-in")?.value(row({ role: "OWNER", twoStepEnabled: false }))).toBe("Off");
+    // No copy promises a forced code any more (the role-change dialog and the invitation page used to).
+    expect(JSON.stringify(STAFF_COPY)).not.toMatch(/always sign in with an emailed code/i);
+    expect(JSON.stringify(STAFF_INVITE_COPY)).not.toMatch(/code we email/i);
   });
 
   it("labels statuses, names and permission counts from lib/rbac", () => {

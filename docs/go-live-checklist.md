@@ -134,8 +134,10 @@ Tick an item only after you have done the check, not because the setting "should
 - [ ] **Catalog and Owner bootstrapped.** /software lists the products, and
   `sudo -iu axiomatic bash -lc 'cd /www/wwwroot/axiomatic/current && NODE_ENV=production node --import tsx scripts/bootstrap-production.ts --dry-run'`
   reports nothing left to create.
-- [ ] **Email works.** The Owner signs in at https://<domain>/sign-in and receives the two-step code within a minute
-  (if it does not arrive, nobody can sign in to Admin).
+- [ ] **Owner can sign in.** The Owner signs in at https://<domain>/sign-in with the password alone (two-step sign-in
+  starts off, so Admin is reachable before SMTP works; decisions.md 2026-10-08).
+- [ ] **Email works.** "Forgot password" on /sign-in (or a test purchase) sends an email that arrives within a minute.
+  Until it does, leave two-step sign-in off: its codes are emailed.
 - [ ] **Settings reviewed.** Admin > Settings: business details (sample placeholders are fine today, `sample` stays
   on), support / sales / legal / privacy emails are mailboxes you read, invoice prefix `AXS` and credit-note prefix
   `AXC` (or your choice, up to 3 characters), GST rate 18 % and SAC 997331 (to confirm with your CA). Integrations
@@ -245,6 +247,11 @@ Tick an item only after you have done the check, not because the setting "should
   address, open "Show original": SPF, DKIM and DMARC all PASS.
 - [ ] **Out of the sandbox.** Amazon SES: production access granted for ap-south-1 (the sandbox only sends to verified
   addresses). Other providers: the domain shows as verified and the sending limits fit your volume.
+- [ ] **Owner and Finance use two-step sign-in.** Before live sales, once SMTP works (the items above), the Owner and
+  every Finance staff member turn two-step on in Admin > My profile (account menu, top right > My profile >
+  Two-step verification). It is optional for every account and nothing turns it on for them (decisions.md
+  2026-10-08). Check: sign out and back in; the 6-digit code arrives by email, and Admin > Staff & roles shows "On" in
+  the 2-step column for each of them.
 
 ### Operations
 - [ ] **HSTS covers every subdomain.** Only once every name under the domain serves HTTPS (`www`, mail and panel

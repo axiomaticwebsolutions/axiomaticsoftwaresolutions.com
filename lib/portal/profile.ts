@@ -1,15 +1,21 @@
 /**
  * The signed-in user's own settings (portal Security page and the business switcher; decisions.md Phase 5):
  * - Profile: name (person-name rule) and Indian mobile. No activity entry (the prototype logs none for "Save profile").
- * - Two-step verification on/off. Turning it on needs a verified email and sends nothing (codes are emailed at
- *   sign-in); turning it off needs the account password, checked under a 5 per 15 minutes per user limit that is
- *   counted before verifying and cleared on success. Changes log "Turned on|off two-step verification" (security,
- *   target = the user's email) on the active business account, with the actor's id.
+ * - Two-step verification on/off, optional for every account (customers in Security, staff in Admin > My profile;
+ *   decisions.md 2026-10-08). Turning it on needs a verified email and sends nothing (codes are emailed at sign-in);
+ *   turning it off needs the account password, checked under a 5 per 15 minutes per user limit that is counted before
+ *   verifying and cleared on success. Changes log "Turned on|off two-step verification": for customers on the active
+ *   business account's activity (security, target = the user's email, with the actor's id); for staff, who have no
+ *   business account, as an admin AuditLog row (actor and target = that staff member). Staff whose console access is
+ *   not active (invited, deactivated, no role) get 403.
  * - Active business account: must be one of the user's ACTIVE memberships; stored on the session (server side).
  */
 import "server-only";
 import type { Session, TeamRole, User } from "@/generated/prisma/client";
+import { staffDisplayName } from "@/lib/admin/staff/model";
+import { actorFromStaff, audit } from "@/lib/audit";
 import { activeAccountIdFor } from "@/lib/auth/flows/activity";
+import { assertSelfService } from "@/lib/auth/guards";
 import { verifyPassword } from "@/lib/auth/password";
 import { attempt, clear, enforce, hit, RATE_LIMITS } from "@/lib/auth/rate-limit";
 import { db as defaultDb } from "@/lib/db";
@@ -60,24 +66,39 @@ export async function updateProfile(
 
 export type TwoStepResult = { twoStepEnabled: boolean; changed: boolean };
 
+/** Audit target type of a staff member's own two-step change (the staff module opens it). */
+export const TWO_STEP_AUDIT_TARGET_TYPE = "staff";
+
 /**
- * POST /api/me/two-step. 403 `email_unverified` when turning it on without a verified email; 429 when the password
- * checks or changes are rate limited; 422 `incorrect_password` (fieldErrors.password) when turning it off with a wrong
- * password. Asking for the state the user already has changes nothing and logs nothing (`changed: false`).
+ * POST /api/me/two-step. 403 for staff without live console access; 403 `email_unverified` when turning it on without
+ * a verified email; 429 when the password checks or changes are rate limited; 422 `incorrect_password`
+ * (fieldErrors.password) when turning it off with a wrong password. Asking for the state the user already has changes
+ * nothing and logs nothing (`changed: false`). `ipPrefix` (truncated client IP) goes on a staff member's audit row.
  */
 export async function setTwoStep(
   auth: { user: Pick<User, "id" | "kind" | "name">; session: Pick<Session, "activeAccountId"> },
   input: TwoStepInput,
-  opts: { now?: Date; client?: typeof defaultDb } = {},
+  opts: { now?: Date; client?: typeof defaultDb; ipPrefix?: string | null } = {},
 ): Promise<TwoStepResult> {
   const client = opts.client ?? defaultDb;
   const now = opts.now ?? new Date();
-  // Re-read the user: the session's copy may be stale (a password change, another tab's toggle).
+  // Re-read the user: the session's copy may be stale (a password change, another tab's toggle, a role change).
   const user = await client.user.findUnique({
     where: { id: auth.user.id },
-    select: { id: true, name: true, email: true, kind: true, passwordHash: true, emailVerifiedAt: true, twoStepEnabled: true },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      kind: true,
+      passwordHash: true,
+      emailVerifiedAt: true,
+      twoStepEnabled: true,
+      staffRole: true,
+      staffStatus: true,
+    },
   });
   if (!user) throw errors.unauthorized();
+  assertSelfService({ user });
 
   if (input.enabled) {
     if (!user.emailVerifiedAt) throw new ApiError(403, "email_unverified", TWO_STEP_UNVERIFIED_MESSAGE);
@@ -103,12 +124,23 @@ export async function setTwoStep(
       data: input.enabled ? { twoStepEnabled: true } : { twoStepEnabled: false, securityEpoch: { increment: 1 } },
     });
     if (count === 0) return false;
+    const action = input.enabled ? TWO_STEP_ON_ACTION : TWO_STEP_OFF_ACTION;
+    if (user.kind === "STAFF") {
+      // Staff have no business account activity: the admin audit log records it (actor = target = this person).
+      await audit(tx, actorFromStaff(user, opts.ipPrefix), {
+        action,
+        target: staffDisplayName(user),
+        targetType: TWO_STEP_AUDIT_TARGET_TYPE,
+        targetId: user.id,
+      });
+      return true;
+    }
     const accountId = await activeAccountIdFor(tx, user, auth.session);
     if (accountId) {
       await recordAccountActivity(tx, {
         accountId,
         actor: { id: user.id, name: actorLabel(user) },
-        action: input.enabled ? TWO_STEP_ON_ACTION : TWO_STEP_OFF_ACTION,
+        action,
         target: user.email,
         kind: "security",
         at: now,

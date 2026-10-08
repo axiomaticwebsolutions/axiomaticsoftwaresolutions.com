@@ -261,6 +261,35 @@ describe("two-step sign-in", () => {
   });
 });
 
+describe("two-step is optional for every role (decisions.md 2026-10-08)", () => {
+  async function staffWithRole(role: "OWNER" | "FINANCE", twoStep: boolean) {
+    const { user } = await makeUser({ kind: "STAFF", twoStep, name: `Two-step ${role.toLowerCase()}` });
+    return db.user.update({ where: { id: user.id }, data: { staffRole: role } });
+  }
+
+  it.each(["OWNER", "FINANCE"] as const)("signs %s staff with the flag off straight in, without a code", async (role) => {
+    const user = await staffWithRole(role, false);
+    const result = await signedIn(user.email, PASSWORD);
+    expect(result.redirectTo).toBe("/admin");
+    expect((await resolveSession(db, result.token, at(1)))?.user).toMatchObject({ id: user.id, staffRole: role });
+    expect(mail.sent.filter((m) => m.to === user.email)).toHaveLength(0);
+    expect(await db.authToken.count({ where: { userId: user.id, type: "LOGIN_OTP" } })).toBe(0);
+  });
+
+  it.each(["OWNER", "FINANCE"] as const)("asks %s staff with the flag on for the emailed code", async (role) => {
+    const user = await staffWithRole(role, true);
+    const sessionsBefore = await db.session.count({ where: { userId: user.id } });
+    const result = await signIn({ email: user.email, password: PASSWORD, next: undefined }, ctx());
+    expect(result.requires2fa).toBe(true);
+    if (!result.requires2fa) return;
+    const code = codeIn(lastMail(mail.sent, user.email, "login_code"));
+    expect(await db.session.count({ where: { userId: user.id } })).toBe(sessionsBefore);
+    const done = await verifyLoginCode({ challengeId: result.challengeId, code, trustDevice: false }, ctx({ now: at(1) }));
+    expect(done.redirectTo).toBe("/admin");
+    expect(done.user.id).toBe(user.id);
+  });
+});
+
 describe("trusted devices", () => {
   async function trustedSignIn(email: string) {
     const first = await signIn({ email, password: PASSWORD }, ctx());

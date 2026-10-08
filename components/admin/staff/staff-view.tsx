@@ -16,7 +16,7 @@ import {
   STAFF_LIST_STATE,
   staffDisplayName,
   staffStatusLabel,
-  twoStepOn,
+  twoStepLabel,
   type StaffRow,
 } from "@/lib/admin/staff/model";
 import { listStateToParams } from "@/lib/url-state";
@@ -42,8 +42,7 @@ function NameCell({ row }: { row: StaffRow }) {
 }
 
 function TwoStep({ row }: { row: StaffRow }) {
-  const on = twoStepOn(row);
-  return <span className={cn("font-semibold", on ? "text-sage-fg" : "text-danger")}>{on ? "On" : "Off"}</span>;
+  return <span className={cn("font-semibold", row.twoStepEnabled ? "text-sage-fg" : "text-danger")}>{twoStepLabel(row)}</span>;
 }
 
 function staffColumns(now: string): ColumnDef<StaffRow>[] {

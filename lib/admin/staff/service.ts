@@ -9,9 +9,10 @@
  *   `emailSent` reports a failed send (the Owner can resend).
  * - changeStaffRole / deactivateStaff / reactivateStaff: DESTRUCTIVE_ACTIONS through runDestructive (reason, exactly one
  *   audit row in the same transaction). Not on yourself; at least one active Owner remains (the active Owner rows are
- *   locked, so two concurrent demotions cannot both pass). Owner and Finance always get two-step sign-in. A role change
- *   signs the person out everywhere and voids their open sign-in codes, so a new role (Owner and Finance with two-step)
- *   starts from a fresh sign-in; deactivation also voids reset and verification codes.
+ *   locked, so two concurrent demotions cannot both pass). None of them touches two-step sign-in: it is each person's
+ *   own setting (Admin > My profile; decisions.md 2026-10-08). A role change signs the person out everywhere and voids
+ *   their open sign-in codes, so a new role starts from a fresh sign-in; deactivation also voids reset and
+ *   verification codes.
  * Server-only.
  */
 import "server-only";
@@ -25,7 +26,6 @@ import { errors, type ApiError } from "@/lib/http";
 import { log } from "@/lib/log";
 import { issueStaffInvite, sendStaffInviteEmail, voidStaffInvites, type StaffInviteEmail } from "./invites";
 import {
-  requiresTwoStep,
   ROLE_FILTER_TO_ENUM,
   roleLabel,
   sameRoleMessage,
@@ -168,7 +168,8 @@ export async function inviteStaff(
           name: "",
           staffRole: input.role,
           staffStatus: "INVITED",
-          twoStepEnabled: requiresTwoStep(input.role),
+          // Off for every role: the person turns it on in Admin > My profile once email sending works.
+          twoStepEnabled: false,
           createdAt: now,
         },
         select: STAFF_SELECT,
@@ -300,9 +301,9 @@ async function staffTarget(client: Db, id: string): Promise<string> {
 
 /**
  * PATCH /api/admin/staff/:id { role, reason }. 409 `own_role`, `role_unchanged`, `last_owner`, `staff_changed`;
- * 422 reason. Owner and Finance get two-step sign-in turned on. The person's sessions are revoked and open sign-in
- * codes voided (sessions carry no two-step marker and the role is read on every request, so a session started under
- * the old role must not carry the new one) and the security epoch bumped (trusted devices need a code again). Audit
+ * 422 reason. Two-step sign-in stays as the person set it. The person's sessions are revoked and open sign-in codes
+ * voided (sessions carry no two-step marker and the role is read on every request, so a session started under the old
+ * role must not carry the new one) and the security epoch bumped (trusted devices need a code again). Audit
  * "Changed staff role", detail "Old → New · signed out of N sessions".
  */
 export async function changeStaffRole(
@@ -324,8 +325,8 @@ export async function changeStaffRole(
       targetId: id,
       target,
       targetType: "staff",
-      detail: (r: { from: StaffRole; twoStepOn: boolean; sessions: number }) =>
-        `${roleLabel(r.from)} \u2192 ${roleLabel(input.role)}${r.twoStepOn ? " \u00B7 two-step sign-in turned on" : ""}${
+      detail: (r: { from: StaffRole; sessions: number }) =>
+        `${roleLabel(r.from)} \u2192 ${roleLabel(input.role)}${
           r.sessions > 0 ? ` \u00B7 signed out of ${r.sessions} ${r.sessions === 1 ? "session" : "sessions"}` : ""
         }`,
       client,
@@ -334,16 +335,15 @@ export async function changeStaffRole(
       const user = await staffForUpdate(tx, id);
       if (user.staffRole === input.role) throw errors.conflict("role_unchanged", sameRoleMessage(staffDisplayName(user), input.role));
       if (user.staffRole === "OWNER" && user.staffStatus === "ACTIVE") await assertAnotherOwner(tx, id);
-      const twoStepOn = requiresTwoStep(input.role) && !user.twoStepEnabled;
       const { count } = await tx.user.updateMany({
         where: { id, kind: "STAFF", staffRole: user.staffRole, staffStatus: user.staffStatus },
         // A new security epoch invalidates their trusted devices (lib/auth/trusted-device.ts).
-        data: { staffRole: input.role, securityEpoch: { increment: 1 }, ...(twoStepOn ? { twoStepEnabled: true } : {}) },
+        data: { staffRole: input.role, securityEpoch: { increment: 1 } },
       });
       if (count !== 1) throw errors.conflict("staff_changed", STAFF_ERRORS.changed);
       const sessions = await tx.session.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: now } });
       await tx.authToken.updateMany({ where: { userId: id, usedAt: null, type: "LOGIN_OTP" }, data: { usedAt: now } });
-      return { from: user.staffRole, twoStepOn, sessions: sessions.count };
+      return { from: user.staffRole, sessions: sessions.count };
     },
   );
   log.info("staff_role_changed", { userId: id, role: input.role, by: by.staff.id });
@@ -401,8 +401,8 @@ export async function deactivateStaff(
 
 /**
  * POST /api/admin/staff/:id/reactivate { reason }. Only DEACTIVATED staff (409 `not_deactivated`); they sign in again
- * with their existing password (two-step on for Owner and Finance) and a code on every device: the security epoch is
- * bumped again. Audit "Reactivated staff".
+ * with their existing password (and a code on every device when they had two-step on: the security epoch is bumped
+ * again; the setting itself is unchanged). Audit "Reactivated staff".
  */
 export async function reactivateStaff(
   by: StaffActor,
@@ -422,7 +422,7 @@ export async function reactivateStaff(
       const { count } = await tx.user.updateMany({
         where: { id, kind: "STAFF", staffStatus: "DEACTIVATED", staffRole: user.staffRole },
         // Bumped again on reactivation, so no trusted device from before the deactivation skips the code.
-        data: { staffStatus: "ACTIVE", securityEpoch: { increment: 1 }, ...(requiresTwoStep(user.staffRole) ? { twoStepEnabled: true } : {}) },
+        data: { staffStatus: "ACTIVE", securityEpoch: { increment: 1 } },
       });
       if (count !== 1) throw errors.conflict("staff_changed", STAFF_ERRORS.changed);
       return user.staffRole;

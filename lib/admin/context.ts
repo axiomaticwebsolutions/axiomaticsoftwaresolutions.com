@@ -14,14 +14,14 @@ import "server-only";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
-import { OrderStatus, StaffStatus, TicketStatus, type StaffRole } from "@/generated/prisma/client";
+import { OrderStatus, TicketStatus, type StaffRole } from "@/generated/prisma/client";
 import {
   adminPathFrom,
   moduleViewsFor,
   type AdminBadgeCounts,
   type AdminModuleView,
 } from "@/components/admin/admin-nav";
-import { getCurrentAuth, type CurrentAuth, type StaffAuth } from "@/lib/auth/guards";
+import { getCurrentAuth, hasLiveStaffAccess, type CurrentAuth, type StaffAuth } from "@/lib/auth/guards";
 import { CUSTOMER_HOME, signInPath } from "@/lib/auth/redirect";
 import { db, type Db } from "@/lib/db";
 import { getEnv, type Env } from "@/lib/env";
@@ -71,7 +71,7 @@ export function adminRedirect(auth: CurrentAuth | null, path: string): string | 
 
 /** Staff whose console access is live: ACTIVE with a role (the same rule as requireStaff()). */
 export function isActiveStaff(user: CurrentAuth["user"]): user is CurrentAuth["user"] & { staffRole: StaffRole } {
-  return user.kind === "STAFF" && !!user.staffRole && user.staffStatus === StaffStatus.ACTIVE;
+  return hasLiveStaffAccess(user);
 }
 
 /** Sidebar badge counts for the modules this role can open (one count query each, in parallel). */

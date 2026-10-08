@@ -12,6 +12,7 @@ import { pageResult, searchWhere, toPrismaOrderBy, type ListPage, type ListQuery
 import { endOfDayIST, startOfDayIST } from "@/lib/dates";
 import type { Db } from "@/lib/db";
 import { errors } from "@/lib/http";
+import { TWO_STEP_OFF_ACTION, TWO_STEP_ON_ACTION } from "@/lib/portal/profile";
 import { STAFF_ROLE_LABELS } from "@/lib/rbac";
 import type { AUDIT_LIST_SPEC } from "./model";
 import {
@@ -43,6 +44,9 @@ const KNOWN_ACTIONS: readonly string[] = [
   "Updated settings",
   "Exported report",
   "Refunded duplicate payment",
+  // A staff member's own two-step change (Admin > My profile).
+  TWO_STEP_ON_ACTION,
+  TWO_STEP_OFF_ACTION,
   ...Object.values(SYSTEM_AUDIT_ACTIONS),
 ];
 

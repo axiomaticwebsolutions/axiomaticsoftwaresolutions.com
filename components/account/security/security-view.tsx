@@ -1,14 +1,12 @@
 "use client";
 
-import * as React from "react";
 import { PageHeader } from "@/components/account/page-header";
-import { toast } from "@/components/ui/sonner";
-import { ApiClientError, apiFetch, UNEXPECTED_ERROR_MESSAGE } from "@/lib/client/api";
 import { PasswordForm } from "./password-form";
 import { ProfileForm } from "./profile-form";
 import { ProtectionCard } from "./protection-card";
 import { SessionsCard } from "./sessions-card";
 import { SECURITY_COPY, type SessionView } from "./security-model";
+import { useSessionList } from "./use-session-list";
 
 export type SecurityViewProps = {
   profile: { name: string; phone: string | null; email: string; emailVerified: boolean; twoStepEnabled: boolean };
@@ -24,18 +22,7 @@ export type SecurityViewProps = {
  * auto-fit grid of 400px columns.
  */
 export function SecurityView({ profile, sessions: initialSessions, now: serverNow }: SecurityViewProps) {
-  const [sessions, setSessions] = React.useState(initialSessions);
-  const [now, setNow] = React.useState(() => new Date(serverNow));
-
-  const reloadSessions = React.useCallback(async () => {
-    try {
-      const body = await apiFetch<{ sessions: SessionView[] }>("/api/me/sessions");
-      setSessions(body.sessions);
-      setNow(new Date());
-    } catch (error) {
-      toast.error(error instanceof ApiClientError ? error.message : UNEXPECTED_ERROR_MESSAGE);
-    }
-  }, []);
+  const { sessions, now, reload: reloadSessions } = useSessionList(initialSessions, serverNow);
 
   return (
     <>

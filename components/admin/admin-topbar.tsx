@@ -14,9 +14,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ADMIN_PROFILE_PATH, PROFILE_COPY } from "@/lib/admin/profile/model";
 import { STAFF_ROLE_LABELS } from "@/lib/rbac";
 
-/** The signed-in staff member (prototype user chip) as a menu: name, email and role, View storefront, Sign out. */
+/**
+ * The signed-in staff member (prototype user chip) as a menu: name, email and role, View storefront, My profile
+ * (two-step sign-in, password, sessions; decisions.md 2026-10-08) and Sign out. Radix menu: Enter, Space or arrow
+ * keys open it and move between the items.
+ */
 function StaffMenu() {
   const { staff } = useAdmin();
   const { signOut, busy } = useStaffSignOut();
@@ -56,6 +61,12 @@ function StaffMenu() {
             View storefront
           </Link>
         </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href={ADMIN_PROFILE_PATH} className="no-underline">
+            <Icon name="person" size={18} />
+            {PROFILE_COPY.menuLabel}
+          </Link>
+        </DropdownMenuItem>
         <DropdownMenuItem
           onSelect={(event) => {
             event.preventDefault();
@@ -73,7 +84,8 @@ function StaffMenu() {
 /**
  * Admin top bar (prototype): 56px, sticky, white with a bottom border. Hamburger below 1040px, module search
  * (max 460px; Ctrl K / "/"), the "Test mode" pill while payments run in test mode (computed on the server; the key is
- * never sent) and the signed-in staff member (initials; name and role from 760px) with the sign-out menu.
+ * never sent) and the signed-in staff member (initials; name and role from 760px) with the account menu (My profile,
+ * Sign out).
  */
 export function AdminTopbar() {
   const { testMode } = useAdmin();
