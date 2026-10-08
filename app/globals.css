@@ -107,6 +107,30 @@
   .tabular {
     font-variant-numeric: tabular-nums;
   }
+
+  /* Thin scrollbar for dark surfaces (the admin sidebar): no arrow buttons, a faint thumb that brightens on hover.
+     Chromium and Safari use the ::-webkit-scrollbar rules; Firefox the standard properties. */
+  .scrollbar-dark::-webkit-scrollbar {
+    width: 8px;
+  }
+  .scrollbar-dark::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-dark::-webkit-scrollbar-thumb {
+    border: 2px solid transparent;
+    border-radius: 9999px;
+    background-color: rgb(255 255 255 / 0.16);
+    background-clip: padding-box;
+  }
+  .scrollbar-dark:hover::-webkit-scrollbar-thumb {
+    background-color: rgb(255 255 255 / 0.3);
+  }
+  @supports not selector(::-webkit-scrollbar) {
+    .scrollbar-dark {
+      scrollbar-width: thin;
+      scrollbar-color: rgb(255 255 255 / 0.24) transparent;
+    }
+  }
 }
 
 /*

@@ -23,6 +23,8 @@ export type AdminSidebarProps = {
  * Sidebar content (Admin Console.dc.html aside): logo row with "ADMIN CONSOLE", the grouped module nav (current
  * module highlighted, a lock on modules the role cannot open, count badges on Orders and Tickets) and the
  * "View storefront" link. Rendered in the 232px sticky column from 1040px and in the mobile drawer below that.
+ * Links are 31px tall so the whole menu fits a 900px-high window; shorter windows scroll the nav with a thin dark
+ * scrollbar (.scrollbar-dark in app/globals.css) instead of the light default one.
  * The prototype's demo "Signed in as" switcher is not built (staff sign in with their own accounts).
  */
 export function AdminSidebar({ onNavigate, closeButton }: AdminSidebarProps) {
@@ -43,12 +45,12 @@ export function AdminSidebar({ onNavigate, closeButton }: AdminSidebarProps) {
         </span>
         {closeButton}
       </div>
-      <nav aria-label="Admin" className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto px-2 py-2.5">
+      <nav aria-label="Admin" className="scrollbar-dark grid min-h-0 flex-1 content-start gap-2 overflow-y-auto px-2 py-2">
         {groups.map((group) => {
           const headingId = `${uid}-${group.group.toLowerCase()}`;
           return (
             <div key={group.group}>
-              <p id={headingId} className="m-0 px-2.5 py-1 text-[10.5px] font-extrabold tracking-[0.1em] text-admin-text/70">
+              <p id={headingId} className="m-0 px-2.5 pb-1 pt-0.5 text-[10.5px] font-extrabold tracking-[0.1em] text-admin-text/70">
                 {group.label}
               </p>
               <ul aria-labelledby={headingId} className="m-0 grid list-none p-0">
@@ -61,7 +63,7 @@ export function AdminSidebar({ onNavigate, closeButton }: AdminSidebarProps) {
                         aria-current={active ? "page" : undefined}
                         onClick={onNavigate}
                         className={cn(
-                          "flex items-center gap-2.5 rounded-9 px-2.5 py-[9px] text-[13.5px] font-semibold leading-[normal] no-underline transition-colors",
+                          "flex items-center gap-2.5 rounded-9 px-2.5 py-[6px] text-[13.5px] font-semibold leading-[normal] no-underline transition-colors",
                           active ? "bg-admin-active text-white hover:text-white" : "text-admin-text hover:bg-white/7 hover:text-white",
                         )}
                       >

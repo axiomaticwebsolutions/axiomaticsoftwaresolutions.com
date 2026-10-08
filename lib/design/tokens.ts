@@ -120,7 +120,7 @@ export const screens = {
 export const layout = {
   storeMax: "1240px",
   portalMax: "1240px",
-  adminMax: "1360px",
+  adminMax: "1760px", // fills a 1920px screen next to the 232px sidebar (the prototype's 1360px left wide gutters)
 } as const;
 
 export const fontSizes = {

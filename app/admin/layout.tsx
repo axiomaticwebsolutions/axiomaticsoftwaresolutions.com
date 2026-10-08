@@ -63,15 +63,18 @@ export default async function AdminLayout({ children }: Readonly<{ children: Rea
       <div className="min-h-dvh bg-bg-admin leading-[normal]">
         <SkipLink />
         <div className="grid min-h-dvh grid-cols-[minmax(0,1fr)] admin:grid-cols-[232px_minmax(0,1fr)]">
-          <aside aria-label="Admin navigation" className="sticky top-0 hidden h-dvh flex-col admin:flex">
-            <AdminSidebar />
-          </aside>
+          {/* The column carries the sidebar colour for the full page height; the menu itself stays in view (sticky). */}
+          <div className="hidden bg-admin-sidebar admin:block">
+            <aside aria-label="Admin navigation" className="sticky top-0 flex h-dvh flex-col">
+              <AdminSidebar />
+            </aside>
+          </div>
           <div className="flex min-w-0 flex-col">
             <AdminTopbar />
             <main
               id="main"
               tabIndex={-1}
-              className="mx-auto w-full max-w-admin flex-1 px-[clamp(12px,2vw,24px)] pb-20 pt-[clamp(16px,2.2vw,24px)] outline-none"
+              className="mx-auto w-full max-w-admin flex-1 px-[clamp(12px,2vw,32px)] pb-20 pt-[clamp(16px,2.2vw,24px)] outline-none"
             >
               {children}
             </main>
