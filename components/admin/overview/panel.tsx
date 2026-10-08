@@ -21,18 +21,18 @@ export type DashboardPanelProps = {
 
 /**
  * Overview / Reports panel (Admin Console.dc.html): white card, radius 14, 1px line, a 12x16px header with a
- * 14.5px/800 H2 and an optional aside, then the body. Server-safe.
+ * 14.5px/800 H2 and an optional aside, then the body, which grows so panels in a row end level. Server-safe.
  */
 export function DashboardPanel({ id, title, aside, wide = false, className, bodyClassName, children }: DashboardPanelProps) {
   return (
-    <section aria-labelledby={id} className={cn("min-w-0 rounded-14 border border-line-alt bg-surface", wide && "col-span-full", className)}>
+    <section aria-labelledby={id} className={cn("flex min-w-0 flex-col rounded-14 border border-line-alt bg-surface", wide && "col-span-full", className)}>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-line-subtle px-4 py-3">
         <h2 id={id} className="m-0 text-[14.5px] font-extrabold leading-[normal]">
           {title}
         </h2>
         {aside}
       </div>
-      <div className={bodyClassName}>{children}</div>
+      <div className={cn("flex-1", bodyClassName)}>{children}</div>
     </section>
   );
 }
@@ -47,7 +47,7 @@ export function PanelLink({ href, show, children }: { href: string; show: boolea
   );
 }
 
-/** Grid of panels (prototype: auto-fit, 460px minimum, 14px gap, top-aligned). */
+/** Grid of panels (prototype: auto-fit, 460px minimum, 14px gap). Panels in a row share one height (owner request 2026-10-08). */
 export function PanelGrid({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cn("grid grid-cols-[repeat(auto-fit,minmax(min(100%,460px),1fr))] items-start gap-3.5", className)}>{children}</div>;
+  return <div className={cn("grid grid-cols-[repeat(auto-fit,minmax(min(100%,460px),1fr))] items-stretch gap-3.5", className)}>{children}</div>;
 }
