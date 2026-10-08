@@ -7,7 +7,7 @@
 import { ItemKind, LicenseStatus, OrderStatus, PaymentStatus, PublishStatus } from "@/generated/prisma/enums";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { getEnv } from "@/lib/env";
-import { ApiError } from "@/lib/http";
+import { ApiError, errors } from "@/lib/http";
 import { log } from "@/lib/log";
 import {
   getPaymentProvider,
@@ -19,8 +19,9 @@ import {
 } from "@/lib/payments";
 import { readBillingSnapshot, type BillingSnapshot } from "@/lib/orders/billing";
 import { assertCanActOnOrder, type OrderAccess } from "@/lib/orders/access";
-import { orderStatusPath, signOrderToken } from "@/lib/orders/token";
+import { orderStatusPath, signOrderToken, type OrderTokenScope } from "@/lib/orders/token";
 import { SITE_NAME } from "@/lib/seo/metadata";
+import { CHECKOUT_ERRORS } from "@/lib/validation/checkout";
 import type { Db } from "@/lib/db";
 import { COUPON_HOLD_AWAITING_MS, couponAvailability, lockCoupon } from "./coupon-hold";
 
@@ -103,15 +104,20 @@ export async function createProviderOrder(
   }
 }
 
-/** The 201 body for a provider order: a fresh order link token, the order page URL and the client payload. */
+/**
+ * The 201 body for a provider order: a fresh order link token, the order page URL and the client payload. A payment
+ * started from a pay-only link (`scope: "pay"`, a staff-shared payment link) gets a pay-only token back, so holding
+ * the shared link never yields a token that delivers the one-time license key.
+ */
 export function checkoutStart(
   order: PayableOrder,
   providerKey: PaymentProviderKey,
   providerOrder: Parameters<typeof checkoutPayload>[1],
   email: string,
   now: Date,
+  scope: OrderTokenScope = "full",
 ): CheckoutStart {
-  const token = signOrderToken(order.id, email, now);
+  const token = signOrderToken(order.id, email, now, { scope });
   return {
     orderId: order.id,
     orderToken: token,
@@ -174,31 +180,64 @@ async function assertCouponStillUsable(client: Db, order: { id: string; couponCo
 }
 
 /**
- * "Try again" / "Return to payment" (decisions.md Phase 3): FAILED or CANCELED -> AWAITING_PAYMENT with a new
- * Payment(CREATED) for the same order and amount. An AWAITING_PAYMENT order whose latest attempt is still CREATED
- * reopens that attempt instead of creating another provider order, unless the order has a coupon and that attempt is
- * older than the coupon hold (then it gets a fresh attempt, which re-checks the coupon). Anything else, and any order
- * with an AUTHORIZED or CAPTURED attempt (a payment is being confirmed), is 409 `not_retryable`; a new attempt whose
- * coupon is paused, outside its dates or used up is 409 `order_unavailable`.
+ * The terms version an order created by staff records when its customer accepts the terms before paying (D11). Kept in
+ * sync with lib/checkout/create-order.ts CHECKOUT_TERMS_VERSION by the caller (the retry route passes it).
+ */
+export type RetryTerms = { acceptTerms: boolean; version: string };
+
+/** An order staff created that the customer has not yet accepted the terms for (Admin > Orders, D11). */
+export function needsTermsAcceptance(order: { createdByStaffId: string | null; termsAcceptedAt: Date | null }): boolean {
+  return order.createdByStaffId !== null && order.termsAcceptedAt === null;
+}
+
+/**
+ * "Try again" / "Return to payment" / "Pay now" (decisions.md Phase 3; admin records D11, D14, D15): FAILED or CANCELED
+ * -> AWAITING_PAYMENT with a new Payment(CREATED) for the same order and amount. An AWAITING_PAYMENT order whose latest
+ * attempt is still CREATED reopens that attempt instead of creating another provider order, unless the order has a
+ * coupon and that attempt is older than the coupon hold, or the attempt's amount is not the order's total (a staff edit
+ * changed it): then it gets a fresh attempt, which re-checks the coupon. An order staff created needs the customer's
+ * acceptance of the terms first (422 `acceptTerms`; recorded with the attempt). An order cancelled by staff, anything
+ * else, and any order with an AUTHORIZED or CAPTURED attempt (a payment is being confirmed), is 409 `not_retryable`;
+ * a new attempt whose coupon is paused, outside its dates or used up is 409 `order_unavailable`.
  */
 export async function retryPayment(
   db: PrismaClient,
   access: OrderAccess,
-  opts: { now?: Date; provider?: PaymentProvider } = {},
+  opts: { now?: Date; provider?: PaymentProvider; terms?: RetryTerms } = {},
 ): Promise<CheckoutStart> {
   assertCanActOnOrder(access);
   const now = opts.now ?? new Date();
   const order = access.order;
   const billing = readBillingSnapshot(order.billing);
   const payable: PayableOrder = { id: order.id, totalPaise: order.totalPaise, billing };
+  // A payment started from a pay-only link answers with a pay-only token (no key delivery from it).
+  const scope: OrderTokenScope = access.tokenScope === "pay" ? "pay" : "full";
 
+  if (order.canceledByStaffAt !== null) throw notRetryable(order.status);
   if (order.status !== OrderStatus.AWAITING_PAYMENT && !RETRYABLE.has(order.status)) throw notRetryable(order.status);
+  const termsNeeded = needsTermsAcceptance(order);
+  if (termsNeeded && opts.terms?.acceptTerms !== true) throw errors.validation({ acceptTerms: CHECKOUT_ERRORS.acceptTerms });
   await assertNothingSettling(db, order.id, order.status);
+  const recordTerms = async (client: Pick<PrismaClient, "order">) => {
+    if (!termsNeeded || !opts.terms) return;
+    await client.order.updateMany({
+      where: { id: order.id, termsAcceptedAt: null },
+      data: { termsAcceptedAt: now, termsVersion: opts.terms.version },
+    });
+  };
   if (order.status === OrderStatus.AWAITING_PAYMENT) {
     const latest = await db.payment.findFirst({ where: { orderId: order.id }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
     const holdLapsed = order.couponCode !== null && latest !== null && now.getTime() - latest.createdAt.getTime() > COUPON_HOLD_AWAITING_MS;
-    if (latest && latest.status === PaymentStatus.CREATED && isPaymentProviderKey(latest.provider) && !holdLapsed) {
-      return checkoutStart(payable, latest.provider, { providerOrderId: latest.providerOrderId }, order.email, now);
+    if (
+      latest &&
+      latest.status === PaymentStatus.CREATED &&
+      isPaymentProviderKey(latest.provider) &&
+      !holdLapsed &&
+      latest.amountPaise === order.totalPaise &&
+      latest.supersededAt === null
+    ) {
+      await recordTerms(db);
+      return checkoutStart(payable, latest.provider, { providerOrderId: latest.providerOrderId }, order.email, now, scope);
     }
   }
 
@@ -215,8 +254,13 @@ export async function retryPayment(
   await db.$transaction(async (tx) => {
     // Same lock as the webhook handler, so a late payment.captured and a retry never interleave.
     await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${order.id} FOR UPDATE`;
-    const current = await tx.order.findUniqueOrThrow({ where: { id: order.id }, select: { status: true } });
+    const current = await tx.order.findUniqueOrThrow({
+      where: { id: order.id },
+      select: { status: true, canceledByStaffAt: true, totalPaise: true },
+    });
     if (!RETRYABLE.has(current.status) && current.status !== OrderStatus.AWAITING_PAYMENT) throw notRetryable(current.status);
+    // A staff cancel or edit since this request read the order: never open an attempt at a stale amount.
+    if (current.canceledByStaffAt !== null || current.totalPaise !== order.totalPaise) throw notRetryable(current.status);
     await assertNothingSettling(tx, order.id, current.status);
     if (order.couponCode) {
       // Same lock order as the webhook (order, then coupon); concurrent checkouts queue on the coupon row.
@@ -234,9 +278,10 @@ export async function retryPayment(
       },
     });
     await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.AWAITING_PAYMENT, failReason: null } });
+    await recordTerms(tx);
   });
 
   log.info("payment_attempt_created", { orderId: order.id, provider: provider.key, retry: true });
-  return checkoutStart(payable, provider.key, providerOrder, order.email, now);
+  return checkoutStart(payable, provider.key, providerOrder, order.email, now, scope);
 }
 

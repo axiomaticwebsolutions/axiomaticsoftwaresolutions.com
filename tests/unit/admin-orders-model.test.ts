@@ -98,14 +98,20 @@ describe("order list filters", () => {
   it("classifies the search so common lookups hit an index", () => {
     expect(orderSearchWhere("")).toBeUndefined();
     expect(orderSearchWhere("ax-10294")).toEqual({ id: { startsWith: "AX-10294" } });
-    expect(orderSearchWhere("axs/26-27/1058")).toEqual({ invoice: { is: { number: "AXS/26-27/1058" } } });
+    // Admin records: also an invoice a billing correction cancelled, or the correction's credit note.
+    expect(orderSearchWhere("axs/26-27/1058")).toEqual({
+      OR: [
+        { invoice: { is: { number: "AXS/26-27/1058" } } },
+        { invoiceCorrections: { some: { OR: [{ originalInvoiceNo: "AXS/26-27/1058" }, { creditNoteNo: "AXS/26-27/1058" }] } } },
+      ],
+    });
     expect(orderSearchWhere("pay_1cd7c4efe3df62")).toEqual({
       payments: { some: { OR: [{ providerPaymentId: "pay_1cd7c4efe3df62" }, { providerOrderId: "pay_1cd7c4efe3df62" }] } },
     });
     expect(orderSearchWhere("27abcde1234f1z5")).toEqual({ billing: { path: ["gstin"], equals: "27ABCDE1234F1Z5" } });
     expect(orderSearchWhere("Priya@Example.com")).toEqual({ email: { contains: "Priya@Example.com", mode: "insensitive" } });
     const generic = orderSearchWhere("Rahman") as { OR: unknown[] };
-    expect(generic.OR).toHaveLength(7);
+    expect(generic.OR).toHaveLength(8);
     expect(generic.OR).toContainEqual({ billing: { path: ["business"], string_contains: "Rahman", mode: "insensitive" } });
   });
 

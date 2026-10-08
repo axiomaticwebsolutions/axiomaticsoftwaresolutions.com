@@ -343,4 +343,19 @@ export const RATE_LIMITS = {
   // ---- Admin console (Phase 6) ----
   /** Admin CSV exports (each up to 10,000 rows; lib/admin/export.ts): 60 / 10 min per staff member. */
   adminExport: (staffId: string) => rule(`admin-export:user:${hashedId(staffId)}`, 60, 10 * MINUTE),
+  /** Admin > Customers "New customer": 30 / hour per staff member. */
+  adminCustomerCreate: (staffId: string) => rule(`admin-customer-create:user:${hashedId(staffId)}`, 30, HOUR),
+  /** Customer edits, "Mark email as verified" and set-password links: 60 / 10 min per staff member. */
+  adminCustomerWrite: (staffId: string) => rule(`admin-customer-write:user:${hashedId(staffId)}`, 60, 10 * MINUTE),
+  /**
+   * Set-password links for one customer: 5 / hour (attempt after the target checks; a refused try is not counted).
+   * Separate from forgotEmail, which anyone can fill through /forgot and would stop staff from helping the customer.
+   */
+  adminSetPasswordLink: (userId: string) => rule(`admin-set-password:user:${hashedId(userId)}`, 5, HOUR),
+  /** Admin > Orders live quote while staff build an order: 120 / 10 min per staff member. */
+  adminOrderQuote: (staffId: string) => rule(`admin-order-quote:user:${hashedId(staffId)}`, 120, 10 * MINUTE),
+  /** Admin > Orders "New order" (payment link or offline payment): 30 / hour per staff member. */
+  adminOrderCreate: (staffId: string) => rule(`admin-order-create:user:${hashedId(staffId)}`, 30, HOUR),
+  /** Order edits, cancels, payment links and billing corrections: 60 / 10 min per staff member. */
+  adminOrderWrite: (staffId: string) => rule(`admin-order-write:user:${hashedId(staffId)}`, 60, 10 * MINUTE),
 } as const;

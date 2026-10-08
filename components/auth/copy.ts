@@ -102,10 +102,23 @@ export const AUTH_COPY = {
     cta: "Update password",
     back: "Back to sign in",
     mismatch: "Passwords don’t match.",
-    /** new: invalid, used or expired link. */
-    invalidSubtitle: "Reset links work once and expire 30 minutes after they are sent.",
+    /** new: invalid, used or expired link (reset links last 30 minutes, staff-issued set-password links 7 days). */
+    invalidSubtitle: "Links work once and expire after a while. Ask for a new one below.",
     requestNew: "Request a new link",
+  },
+  /** new: the same page for an account without a password (a set-password link staff created in Admin > Customers). */
+  setPassword: {
+    title: "Set your password",
+    subtitle: (email: string | null) => `For ${email || "your account"}. Choose a password to sign in to Axiomatic.`,
+    password: "Password",
+    cta: "Set password",
   },
   /** new: resend cooldown label, e.g. "Resend code in 27s". */
   resendIn: (seconds: number) => `Resend code in ${seconds}s`,
 } as const;
+
+/** /reset copy for the link's mode: "set" (no password yet) reads "Set your password", "reset" the prototype copy. */
+export function resetFormCopy(mode: "set" | "reset"): { title: string; subtitle: (email: string | null) => string; password: string; cta: string } {
+  const copy = mode === "set" ? AUTH_COPY.setPassword : AUTH_COPY.reset;
+  return { title: copy.title, subtitle: copy.subtitle, password: copy.password, cta: copy.cta };
+}

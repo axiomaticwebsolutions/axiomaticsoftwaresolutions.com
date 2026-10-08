@@ -5,6 +5,7 @@ import {
   orderStatusPath,
   orderTokenMatchesEmail,
   ORDER_TOKEN_TTL_MS,
+  signOrderPayToken,
   signOrderToken,
   verifyOrderToken,
 } from "@/lib/orders/token";
@@ -61,6 +62,26 @@ describe("order link tokens", () => {
     expect(inspectOrderToken(token, "AX-10312", after, { secret: other })).toEqual({ ok: false, reason: "invalid" });
     const short = signOrderToken("AX-1", email, NOW, { secret, ttlMs: 60_000 });
     expect(verifyOrderToken(short, "AX-1", new Date(NOW.getTime() + 61_000), { secret })).toBeNull();
+  });
+
+  it("says which scope a token has: full order links and pay-only links (admin records review fix)", () => {
+    const full = signOrderToken("AX-10312", email, NOW, { secret });
+    expect(verifyOrderToken(full, "AX-10312", NOW, { secret, email })?.scope).toBe("full");
+    const pay = signOrderPayToken("AX-10312", email, NOW, { secret });
+    expect(pay).toMatch(/^p1[.][0-9a-z]+[.][A-Za-z0-9_-]{16}[.][A-Za-z0-9_-]{43}$/);
+    expect(verifyOrderToken(pay, "AX-10312", NOW, { secret, email })).toMatchObject({ orderId: "AX-10312", scope: "pay" });
+    expect(signOrderToken("AX-10312", email, NOW, { secret, scope: "pay" })).toBe(pay);
+  });
+
+  it("never lets a pay-only link pass as a full one, or the reverse (separate signatures)", () => {
+    const full = signOrderToken("AX-10312", email, NOW, { secret });
+    const pay = signOrderPayToken("AX-10312", email, NOW, { secret });
+    expect(pay.slice(2)).not.toBe(full.slice(2));
+    expect(inspectOrderToken(`o1${pay.slice(2)}`, "AX-10312", NOW, { secret })).toEqual({ ok: false, reason: "invalid" });
+    expect(inspectOrderToken(`p1${full.slice(2)}`, "AX-10312", NOW, { secret })).toEqual({ ok: false, reason: "invalid" });
+    expect(verifyOrderToken(pay, "AX-10313", NOW, { secret })).toBeNull();
+    expect(inspectOrderToken(pay, "AX-10312", NOW, { secret, email: "someone@else.example" })).toEqual({ ok: false, reason: "invalid" });
+    expect(inspectOrderToken(pay, "AX-10312", new Date(NOW.getTime() + ORDER_TOKEN_TTL_MS + 1000), { secret })).toEqual({ ok: false, reason: "expired" });
   });
 
   it("builds the order page path", () => {

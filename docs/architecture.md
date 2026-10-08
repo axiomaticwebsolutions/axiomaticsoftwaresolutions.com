@@ -31,7 +31,10 @@ Scheduler (cron) --http 127.0.0.1-----------> start)  |    browsers upload and d
 - **No file passes through the app.** Installers and ticket attachments go straight between the browser and the
   private bucket through presigned URLs (at most 10 minutes); the app only signs and checks.
 - **Payments are confirmed server to server.** The browser never marks an order paid: only the signed webhook (or
-  reconciliation asking the provider) does, and only that path issues paid licenses.
+  reconciliation asking the provider) does, and only that path issues paid licenses. The one documented exception is an
+  offline payment (cash, UPI, bank transfer, cheque) that Owner or Finance record in Admin > Orders: it runs the same
+  fulfilment code (`lib/payments/fulfilment.ts` `fulfilPaidOrder()`) in one audited, idempotent transaction, and the
+  amount must equal the server total (docs/security.md "Offline payments").
 
 ## Code layout
 
@@ -137,7 +140,8 @@ Browser                      App                                         Razorpa
    order row (`SELECT ... FOR UPDATE`), inserts `WebhookEvent(provider, eventId)` with `ON CONFLICT DO NOTHING` (a
    duplicate or replay changes nothing), checks amount, currency and provider order, and marks Payment CAPTURED and
    Order PAID (`paidAt` = the event time).
-5. **Fulfilment** (`lib/licensing/fulfil.ts`), in the same transaction: NEW items issue licenses through
+5. **Fulfilment** (`lib/payments/fulfilment.ts` `fulfilPaidOrder()`, shared with offline payments recorded in Admin >
+   Orders; licenses in `lib/licensing/fulfil.ts`), in the same transaction: NEW items issue licenses through
    `issueLicense()` (the only way any license is created: paid orders, trials and staff manual issue); RENEWAL,
    MAINTENANCE, ADDON and UPGRADE items change the target license, storing its terms before and after for a later
    refund; a lowered device limit deactivates the least recently seen devices. Then the invoice number

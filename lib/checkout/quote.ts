@@ -7,7 +7,7 @@ import { ItemKind, type PlanType } from "@/generated/prisma/enums";
 import type { Db } from "@/lib/db";
 import { quote, type Quote } from "@/lib/pricing";
 import type { CheckoutItem } from "@/lib/validation/checkout";
-import type { CheckoutBuyer } from "./buyer";
+import type { PricingBuyer } from "./buyer";
 import { validateCheckoutLines, type LineIssue, type ValidLine } from "./lines";
 import { loadPricingContext, type PricingContext } from "./pricing-context";
 
@@ -59,11 +59,18 @@ export type PriceCartInput = {
   items: readonly CheckoutItem[];
   couponCode?: string | null;
   billingState?: string | null;
+  /** An unpaid order being re-priced (Admin > Orders edit): its own coupon slot is not counted as held. */
+  excludeOrderId?: string | null;
 };
 
 /** Validates and prices a cart from server data only. */
-export async function priceCart(db: Db, input: PriceCartInput, buyer: CheckoutBuyer, now: Date): Promise<PricedCart> {
-  const ctx = await loadPricingContext(db, { planIds: input.items.map((i) => i.planId), couponCode: input.couponCode, now });
+export async function priceCart(db: Db, input: PriceCartInput, buyer: PricingBuyer, now: Date): Promise<PricedCart> {
+  const ctx = await loadPricingContext(db, {
+    planIds: input.items.map((i) => i.planId),
+    couponCode: input.couponCode,
+    now,
+    excludeOrderId: input.excludeOrderId ?? null,
+  });
   const { lines, issues } = await validateCheckoutLines(db, input.items, buyer, ctx, now);
   const priced = quote({
     lines,

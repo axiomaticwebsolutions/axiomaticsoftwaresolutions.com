@@ -1,7 +1,9 @@
 /**
  * One order for the admin drawer (GET /api/admin/orders/:id): facts, billing snapshot, totals with the GST split,
  * items with their licenses, payment attempts, refunds with credit notes, webhook deliveries (replayable when the
- * signature-valid event is stored), licenses issued (masked keys only), the audit history and the refund state.
+ * signature-valid event is stored), licenses issued (masked keys only), the audit history and the refund state, plus
+ * the admin-records state (who created the order, offline payment details, billing corrections, and whether it can be
+ * edited, cancelled, shared as a payment link or corrected).
  */
 import "server-only";
 import { ItemKind, LicenseStatus } from "@/generated/prisma/client";
@@ -11,8 +13,10 @@ import { errors } from "@/lib/http";
 import { maskLicenseKey } from "@/lib/licensing/keys";
 import { deriveLicenseStatus } from "@/lib/licensing/status";
 import { readBillingSnapshot } from "@/lib/orders/billing";
+import { OFFLINE_PROVIDER } from "@/lib/payments/types";
 import { customerName, productLabel, statusValue } from "./list";
 import type { AdminOrderDetail, AdminOrderHistoryEntry, AdminOrderWebhook } from "./model";
+import { ORDER_RECORD_MESSAGES, orderCorrectionState, orderEditState, paymentLinkAllowed } from "./records-model";
 import { isRefundableStatus, pickPayingPayment, refundableAmount, reversalOrder } from "./refund-rules";
 
 const HISTORY_LIMIT = 50;
@@ -44,7 +48,8 @@ export async function getAdminOrderDetail(db: Db, id: string, now: Date = new Da
     include: {
       account: { select: { legalName: true } },
       invoice: { select: { number: true, issuedAt: true } },
-      items: { include: { plan: { select: { name: true, product: { select: { name: true, shortName: true } } } } }, orderBy: { id: "asc" } },
+      items: { include: { plan: { select: { name: true, productId: true, product: { select: { name: true, shortName: true } } } } }, orderBy: { id: "asc" } },
+      invoiceCorrections: { orderBy: [{ issuedAt: "asc" }, { id: "asc" }] },
       payments: { include: { refunds: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
     },
   });
@@ -73,7 +78,14 @@ export async function getAdminOrderDetail(db: Db, id: string, now: Date = new Da
     select: { id: true, action: true, actorId: true, actorRole: true, reason: true, detail: true, createdAt: true },
   });
   const refunds = order.payments.flatMap((p) => p.refunds);
-  const names = await namesOf(db, [...refunds.map((r) => r.createdById), ...deliveries.map((d) => d.replayedById), ...audits.map((a) => a.actorId)]);
+  const names = await namesOf(db, [
+    ...refunds.map((r) => r.createdById),
+    ...deliveries.map((d) => d.replayedById),
+    ...audits.map((a) => a.actorId),
+    order.createdByStaffId,
+    ...order.payments.map((p) => p.recordedById),
+    ...order.invoiceCorrections.map((c) => c.createdById),
+  ]);
 
   const stored = new Set(events.map((e) => `${e.provider}\u0000${e.id}`));
   const webhooks: AdminOrderWebhook[] = deliveries.map((d) => ({
@@ -110,6 +122,8 @@ export async function getAdminOrderDetail(db: Db, id: string, now: Date = new Da
   const issuedIds = new Set(order.items.filter((i) => i.kind === ItemKind.NEW && i.issuedLicenseId).map((i) => i.issuedLicenseId));
   const licenseCount = licenses.filter((l) => issuedIds.has(l.id) && l.status !== LicenseStatus.REVOKED).length;
   const allowed = isRefundableStatus(order.status) && paying !== null && paying.providerPaymentId !== null && amountPaise > 0;
+  // Offline payments have no provider payment to refund (docs/decisions.md "Admin records" D20).
+  const unavailableReason = paying?.provider === OFFLINE_PROVIDER && isRefundableStatus(order.status) ? ORDER_RECORD_MESSAGES.offlineRefund : null;
 
   const billing = readBillingSnapshot(order.billing);
   const history: AdminOrderHistoryEntry[] = audits.map((a) => ({
@@ -153,6 +167,8 @@ export async function getAdminOrderDetail(db: Db, id: string, now: Date = new Da
     invoice: order.invoice ? { number: order.invoice.number, issuedAt: order.invoice.issuedAt.toISOString() } : null,
     items: order.items.map((i) => ({
       id: i.id,
+      planId: i.planId,
+      productId: i.plan.productId,
       product: productLabel(i.plan.product),
       plan: i.plan.name,
       kind: i.kind,
@@ -178,6 +194,10 @@ export async function getAdminOrderDetail(db: Db, id: string, now: Date = new Da
         failureReason: p.failureReason,
         duplicate,
         refundablePaise: duplicate ? refundableAmount(p, p.refunds) : 0,
+        offline: p.provider === OFFLINE_PROVIDER,
+        reference: p.reference,
+        receivedAt: p.receivedAt?.toISOString() ?? null,
+        recordedBy: p.recordedById ? (names.get(p.recordedById) ?? "Staff") : null,
       };
     }),
     refunds: refunds.map((r) => ({
@@ -199,6 +219,23 @@ export async function getAdminOrderDetail(db: Db, id: string, now: Date = new Da
       status: deriveLicenseStatus(l, now),
     })),
     history,
-    refund: { allowed, amountPaise, licenseCount, changeCount: reversalOrder(order.items).length },
+    refund: { allowed, amountPaise, licenseCount, changeCount: reversalOrder(order.items).length, unavailableReason },
+    createdBy: order.createdByStaffId ? { id: order.createdByStaffId, name: names.get(order.createdByStaffId) ?? "Staff" } : null,
+    canceledByStaffAt: order.canceledByStaffAt?.toISOString() ?? null,
+    termsAcceptedAt: order.termsAcceptedAt?.toISOString() ?? null,
+    billingEmail: billing.email || order.email,
+    corrections: order.invoiceCorrections.map((c) => ({
+      id: c.id,
+      creditNoteNo: c.creditNoteNo,
+      originalInvoiceNo: c.originalInvoiceNo,
+      originalIssuedAt: c.originalIssuedAt.toISOString(),
+      newInvoiceNo: c.newInvoiceNo,
+      issuedAt: c.issuedAt.toISOString(),
+      changedFields: [...c.changedFields],
+      by: names.get(c.createdById) ?? "Staff",
+    })),
+    edit: orderEditState(order),
+    paymentLink: { allowed: paymentLinkAllowed(order) },
+    correction: orderCorrectionState({ status: order.status, hasInvoice: order.invoice !== null, refunds }),
   };
 }

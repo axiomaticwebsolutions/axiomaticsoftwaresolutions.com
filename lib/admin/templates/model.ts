@@ -44,9 +44,12 @@ export const TEMPLATE_TRIGGERS: Readonly<Partial<Record<EmailTemplateId, string>
   staff_invite: "The owner invites a staff member",
   refund_issued: "A refund is issued",
   release_available: "A new release is published",
+  account_email_changed: "Staff change a customer’s sign-in email (sent to the old address)",
+  order_payment_link: "Staff create an order or share its payment link",
   email_verification: "Sign-up and email verification",
   password_reset: "Forgot password",
   login_code: "Two-step sign-in",
+  set_password: "Staff create a customer or a set-password link",
 };
 
 export type TemplateDto = {

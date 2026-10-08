@@ -287,8 +287,8 @@ describe("content and settings", () => {
     });
   });
 
-  it("seeds the 16 templates with license_expired as a draft", () => {
-    expect(NOTIFICATION_TEMPLATES).toHaveLength(16);
+  it("seeds the 19 templates with license_expired as a draft", () => {
+    expect(NOTIFICATION_TEMPLATES).toHaveLength(19);
     expect(plan.templates.filter((t) => t.active === false).map((t) => t.id)).toEqual(["license_expired"]);
     expect(plan.templates[0]?.body).toBe(templateBody("Your order {{order_id}} is confirmed"));
     expect(templateBody("X")).toBe("Hi {{customer_name}},\n\nX.\n\nThanks,\nAxiomatic Software Solutions");

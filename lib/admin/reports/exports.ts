@@ -29,6 +29,7 @@ import {
   type ReportExportKey,
 } from "./model";
 import {
+  cancelledInvoicesInWindow,
   creditNotesInWindow,
   invoicedSalesByProduct,
   invoicesByMonth,
@@ -94,36 +95,90 @@ function aggTotals(rows: readonly InvoiceAggRow[]) {
 
 // ---------- Prototype export cards ----------
 
-/** Every tax invoice issued in the range (refunded orders included; their credit notes are in "Refunds"). */
+/**
+ * Every tax invoice issued in the range (refunded orders included; their credit notes are in "Refunds"), including
+ * invoices a billing correction cancelled (from InvoiceCorrection: their original number, date, customer and GSTIN).
+ * "Note" says "Cancelled by AXC/…" on a cancelled invoice and "Replaces AXS/…" on the invoice that replaced it.
+ */
 async function salesRegister(client: Db, win: RangeWindow, limit: number): Promise<ExportTable> {
-  const invoices = await client.invoice.findMany({
-    where: { issuedAt: { gte: win.from, lt: win.to } },
-    orderBy: [{ issuedAt: "asc" }, { id: "asc" }],
-    take: limit,
-    select: {
-      number: true,
-      issuedAt: true,
-      order: {
-        select: { id: true, email: true, billing: true, placeOfSupply: true, status: true, taxablePaise: true, cgstPaise: true, sgstPaise: true, igstPaise: true, totalPaise: true },
+  const orderSelect = { id: true, email: true, billing: true, placeOfSupply: true, status: true, taxablePaise: true, cgstPaise: true, sgstPaise: true, igstPaise: true, totalPaise: true } as const;
+  const [invoices, cancelled] = await Promise.all([
+    client.invoice.findMany({
+      where: { issuedAt: { gte: win.from, lt: win.to } },
+      orderBy: [{ issuedAt: "asc" }, { id: "asc" }],
+      take: limit,
+      select: { number: true, issuedAt: true, order: { select: orderSelect } },
+    }),
+    client.invoiceCorrection.findMany({
+      where: { originalIssuedAt: { gte: win.from, lt: win.to } },
+      orderBy: [{ originalIssuedAt: "asc" }, { id: "asc" }],
+      take: limit,
+      select: {
+        originalInvoiceNo: true,
+        originalIssuedAt: true,
+        originalBilling: true,
+        creditNoteNo: true,
+        taxablePaise: true,
+        cgstPaise: true,
+        sgstPaise: true,
+        igstPaise: true,
+        totalPaise: true,
+        order: { select: { id: true, email: true, placeOfSupply: true, status: true } },
       },
-    },
-  });
-  return {
-    header: ["Invoice", "Order", "Date", "Customer", "GSTIN", "State", "Taxable", "CGST", "SGST", "IGST", "Total", "Order status"],
-    rows: invoices.map(({ number, issuedAt, order: o }) => [
+    }),
+  ]);
+  const replacing = invoices.length
+    ? await client.invoiceCorrection.findMany({
+        where: { newInvoiceNo: { in: invoices.map((i) => i.number) } },
+        select: { newInvoiceNo: true, originalInvoiceNo: true },
+      })
+    : [];
+  const replaces = new Map(replacing.map((c) => [c.newInvoiceNo, c.originalInvoiceNo]));
+  type Row = { at: Date; number: string; cells: CsvValue[] };
+  const rows: Row[] = [
+    ...invoices.map(({ number, issuedAt, order: o }): Row => ({
+      at: issuedAt,
       number,
-      o.id,
-      day(issuedAt),
-      orderCustomer(o.billing, o.email),
-      readBillingSnapshot(o.billing).gstin ?? "",
-      o.placeOfSupply,
-      rupees(o.taxablePaise),
-      rupees(o.cgstPaise),
-      rupees(o.sgstPaise),
-      rupees(o.igstPaise),
-      rupees(o.totalPaise),
-      humanizeEnum(o.status),
-    ]),
+      cells: [
+        number,
+        o.id,
+        day(issuedAt),
+        orderCustomer(o.billing, o.email),
+        readBillingSnapshot(o.billing).gstin ?? "",
+        o.placeOfSupply,
+        rupees(o.taxablePaise),
+        rupees(o.cgstPaise),
+        rupees(o.sgstPaise),
+        rupees(o.igstPaise),
+        rupees(o.totalPaise),
+        humanizeEnum(o.status),
+        replaces.has(number) ? `Replaces ${replaces.get(number)}` : "",
+      ],
+    })),
+    ...cancelled.map((c): Row => ({
+      at: c.originalIssuedAt,
+      number: c.originalInvoiceNo,
+      cells: [
+        c.originalInvoiceNo,
+        c.order.id,
+        day(c.originalIssuedAt),
+        orderCustomer(c.originalBilling, c.order.email),
+        readBillingSnapshot(c.originalBilling).gstin ?? "",
+        c.order.placeOfSupply,
+        rupees(c.taxablePaise),
+        rupees(c.cgstPaise),
+        rupees(c.sgstPaise),
+        rupees(c.igstPaise),
+        rupees(c.totalPaise),
+        humanizeEnum(c.order.status),
+        `Cancelled by ${c.creditNoteNo}`,
+      ],
+    })),
+  ];
+  rows.sort((a, b) => a.at.getTime() - b.at.getTime() || a.number.localeCompare(b.number));
+  return {
+    header: ["Invoice", "Order", "Date", "Customer", "GSTIN", "State", "Taxable", "CGST", "SGST", "IGST", "Total", "Order status", "Note"],
+    rows: rows.slice(0, limit).map((r) => r.cells),
   };
 }
 
@@ -157,7 +212,7 @@ async function gstByState(client: Db, win: RangeWindow, limit: number): Promise<
   return { header: ["State", "Document", "Count", "Taxable", "CGST", "SGST", "IGST", "Total"], rows };
 }
 
-/** Credit notes issued in the range (pending or processed refunds). */
+/** Credit notes issued in the range (pending or processed refunds, and billing corrections). */
 async function refundsRegister(client: Db, win: RangeWindow, limit: number): Promise<ExportTable> {
   const notes = await creditNotesInWindow(client, win, limit);
   return {
@@ -167,7 +222,7 @@ async function refundsRegister(client: Db, win: RangeWindow, limit: number): Pro
       n.order.id,
       n.order.invoiceNumber ?? "",
       day(n.issuedAt),
-      humanizeEnum(n.status),
+      n.kind === "correction" ? "Billing correction" : humanizeEnum(n.status),
       day(n.processedAt),
       orderCustomer(n.order.billing, n.order.email),
       n.order.placeOfSupply,
@@ -349,13 +404,14 @@ async function gstByMonth(client: Db, win: RangeWindow): Promise<ExportTable> {
 }
 
 async function salesByProduct(client: Db, win: RangeWindow): Promise<ExportTable> {
-  const [sales, notes, products, invoiceCount] = await Promise.all([
+  const [sales, notes, products, invoiceCount, cancelledCount] = await Promise.all([
     invoicedSalesByProduct(client, win),
     creditNotesInWindow(client, win),
     productDirectory(client),
     client.invoice.count({ where: { issuedAt: { gte: win.from, lt: win.to } } }),
+    cancelledInvoicesInWindow(client, win),
   ]);
-  const { rows, total } = productSalesRows(products, sales, notes, invoiceCount);
+  const { rows, total } = productSalesRows(products, sales, notes, invoiceCount + cancelledCount);
   const line = (r: (typeof rows)[number]): CsvValue[] => [r.name, r.orders, rupees(r.taxablePaise), rupees(r.creditPaise), rupees(r.netPaise)];
   return { header: ["Product", "Invoiced orders", "Taxable", "Credit notes", "Net taxable"], rows: [...rows.map(line), line(total)] };
 }

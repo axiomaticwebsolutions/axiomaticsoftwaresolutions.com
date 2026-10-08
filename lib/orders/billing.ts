@@ -1,6 +1,8 @@
 /**
  * The billing snapshot stored on Order.billing at checkout (name, email, phone, business, address, city, state, pin,
- * gstin). It is what the tax invoice prints, so it is never rewritten after the order is placed.
+ * gstin). It is what the tax invoice prints. Staff may change it on an unpaid order (Admin > Orders edit); on a paid
+ * order it changes only through an audited billing correction, which keeps the original in InvoiceCorrection
+ * (lib/admin/orders/correction.ts).
  */
 import type { Billing } from "@/lib/validation/billing";
 

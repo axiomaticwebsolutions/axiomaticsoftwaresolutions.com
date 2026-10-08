@@ -45,6 +45,9 @@ export type OrderStatusLicense = {
   deviceLimit: number;
 };
 
+/** A credit note of a billing correction (Admin > Orders "Correct billing"), downloadable from the order page. */
+export type OrderStatusCreditNote = { id: string; number: string; issuedAt: string; cancelsInvoice: string };
+
 export type OrderStatusDto = {
   id: string;
   status: OrderStatus;
@@ -65,7 +68,16 @@ export type OrderStatusDto = {
     totalPaise: number;
   };
   items: OrderStatusItem[];
-  invoice: { number: string; issuedAt: string } | null;
+  /** The current tax invoice; `replaces` names the invoice a billing correction cancelled. */
+  invoice: { number: string; issuedAt: string; replaces: { invoiceNo: string; creditNoteNo: string } | null } | null;
+  /** Credit notes of billing corrections, oldest first. */
+  creditNotes: OrderStatusCreditNote[];
+  /** Our team prepared this order (Admin > Orders): the page reads "Ready for payment", without "Edit order". */
+  placedByStaff: boolean;
+  /** Our team cancelled it: it can't be paid. */
+  canceledByStaff: boolean;
+  /** An unpaid order staff created whose terms the customer must accept before "Pay now". */
+  termsRequired: boolean;
   licenses: OrderStatusLicense[];
   /** "Try again" / "Return to payment" is available to this viewer. */
   canRetry: boolean;
@@ -108,6 +120,10 @@ export async function buildOrderStatus(
       },
       invoice: { select: { number: true, issuedAt: true } },
       payments: { orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 1, select: { provider: true } },
+      invoiceCorrections: {
+        orderBy: [{ issuedAt: "asc" }, { id: "asc" }],
+        select: { id: true, creditNoteNo: true, originalInvoiceNo: true, newInvoiceNo: true, issuedAt: true },
+      },
     },
   });
   const licenses = await db.license.findMany({
@@ -142,6 +158,8 @@ export async function buildOrderStatus(
     if (delivered.size > 0) log.info("order_keys_delivered", { orderId, licenses: delivered.size, byOrderLink: access.viaToken });
   }
 
+  const replaced = order.invoice ? order.invoiceCorrections.find((c) => c.newInvoiceNo === order.invoice?.number) : undefined;
+  const unpaid = RETRY_STATUSES.has(order.status);
   const canClaim =
     order.accountId === null &&
     (await db.user.count({ where: { email: order.email, emailVerifiedAt: { not: null } } })) === 0;
@@ -177,7 +195,22 @@ export async function buildOrderStatus(
       taxPaise: item.taxPaise,
       targetLicenseId: item.targetLicenseId,
     })),
-    invoice: order.invoice ? { number: order.invoice.number, issuedAt: order.invoice.issuedAt.toISOString() } : null,
+    invoice: order.invoice
+      ? {
+          number: order.invoice.number,
+          issuedAt: order.invoice.issuedAt.toISOString(),
+          replaces: replaced ? { invoiceNo: replaced.originalInvoiceNo, creditNoteNo: replaced.creditNoteNo } : null,
+        }
+      : null,
+    creditNotes: order.invoiceCorrections.map((c) => ({
+      id: c.id,
+      number: c.creditNoteNo,
+      issuedAt: c.issuedAt.toISOString(),
+      cancelsInvoice: c.originalInvoiceNo,
+    })),
+    placedByStaff: order.createdByStaffId !== null,
+    canceledByStaff: order.canceledByStaffAt !== null,
+    termsRequired: order.createdByStaffId !== null && order.termsAcceptedAt === null && unpaid && order.canceledByStaffAt === null,
     licenses: licenses.map((license) => {
       const key = delivered.get(license.id);
       return {
@@ -193,7 +226,7 @@ export async function buildOrderStatus(
         deviceLimit: license.deviceLimit,
       };
     }),
-    canRetry: access.canAct && RETRY_STATUSES.has(order.status),
+    canRetry: access.canAct && unpaid && order.canceledByStaffAt === null,
     canClaim,
     provider: order.payments[0]?.provider ?? null,
   };

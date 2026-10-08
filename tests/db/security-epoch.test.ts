@@ -1,11 +1,12 @@
 /**
  * User.securityEpoch (docs/decisions.md Phase 7): a trusted-device cookie skips the emailed sign-in code only while the
  * epoch it carries is current. Each event that bumps the epoch (password reset, password change, turning two-step off,
- * staff deactivation and reactivation, staff role change) makes an old cookie ask for a code again, while a cookie
- * trusted afterwards works.
+ * staff deactivation and reactivation, staff role change, a staff change of a customer's email in Admin > Customers)
+ * makes an old cookie ask for a code again, while a cookie trusted afterwards works.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { User } from "@/generated/prisma/client";
+import { updateCustomer } from "@/lib/admin/customers/records";
 import { changeStaffRole, deactivateStaff, reactivateStaff, type StaffActor } from "@/lib/admin/staff/service";
 import { actorFromStaff } from "@/lib/audit";
 import { changePassword } from "@/lib/auth/flows/change-password";
@@ -19,7 +20,7 @@ import type * as emailModule from "@/lib/email";
 import { ApiError } from "@/lib/http";
 import { setTwoStep } from "@/lib/portal/profile";
 import { makeStaff } from "../support/admin-fixtures";
-import { codeIn, lastMail, makeUser, OTHER_PASSWORD, PASSWORD, randomIp, resetTokenIn, type SentMail } from "./auth-fixtures";
+import { codeIn, lastMail, makeUser, OTHER_PASSWORD, PASSWORD, randomIp, resetTokenIn, uniqueEmail, type SentMail } from "./auth-fixtures";
 
 const mail = vi.hoisted(() => ({ sent: [] as SentMail[] }));
 vi.mock("@/lib/email", async (importOriginal) => ({
@@ -98,6 +99,25 @@ describe("customer events", () => {
     await setTwoStep(auth, { enabled: true }, { client: db, now: at(3) });
     expect(await epochOf(user.id)).toBe(user.securityEpoch + 1);
     expect(await skipsCode(user.email, cookie, PASSWORD, at(4))).toBe(false);
+  });
+
+  it("a staff email change (Admin > Customers): the old trusted device asks for a code again, the new address signs in", async () => {
+    const { user, accountId } = await makeUser({ twoStep: true });
+    const cookie = await trustDevice(user.email);
+    expect(await skipsCode(user.email, cookie)).toBe(true);
+
+    const support = await makeStaff("SUPPORT");
+    const newEmail = uniqueEmail("moved");
+    const result = await updateCustomer(
+      accountId ?? "",
+      { email: newEmail, emailVerified: true, reason: "Customer asked on a call" },
+      { staff: { id: support.id, role: "SUPPORT" }, actor: actorFromStaff(support), now: at(2) },
+    );
+    expect(result.changed).toBe(true);
+    expect(await epochOf(user.id)).toBe(user.securityEpoch + 1);
+    expect(await skipsCode(newEmail, cookie, PASSWORD, at(3))).toBe(false);
+    const fresh = await trustDevice(newEmail, PASSWORD, at(4));
+    expect(await skipsCode(newEmail, fresh, PASSWORD, at(5))).toBe(true);
   });
 
   it("a wrong password when turning two-step off changes nothing", async () => {

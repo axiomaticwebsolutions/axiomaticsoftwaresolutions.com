@@ -2,16 +2,20 @@
 
 import * as React from "react";
 import { clearCartForPaidOrder } from "@/components/checkout/cart-order";
+import { TermsField } from "@/components/checkout/checkout-sections";
+import { checkoutFieldId } from "@/components/checkout/checkout-form";
 import { startHostedCheckout } from "@/components/checkout/hosted-checkout";
 import { toast } from "@/components/ui/sonner";
 import type { CheckoutStart } from "@/lib/checkout/payment-attempt";
 import { ApiClientError, apiFetch, UNEXPECTED_ERROR_MESSAGE } from "@/lib/client/api";
 import { buildInvoiceModel } from "@/lib/invoice/model";
 import type { OrderStatusDto, OrderStatusLicense } from "@/lib/orders/status";
+import { CHECKOUT_ERRORS } from "@/lib/validation/checkout";
 import { InvoiceSummary } from "./invoice-summary";
 import { LicenseCard } from "./license-card";
 import { OrderHero } from "./order-hero";
 import {
+  creditNoteLabel,
   expiredKeyIds,
   heroActions,
   heroFor,
@@ -67,6 +71,9 @@ export function OrderView({ data }: { data: OrderPageData }) {
   const [keys, setKeys] = React.useState<Record<string, ShownKey>>({});
   const [now, setNow] = React.useState(() => Date.now());
   const [copied, setCopied] = React.useState<string | null>(null);
+  /** Orders our team prepared: the customer accepts the terms before "Pay now" (admin records D11). */
+  const [termsAccepted, setTermsAccepted] = React.useState(false);
+  const [termsError, setTermsError] = React.useState<string | null>(null);
 
   const statusRef = React.useRef<OrderStatusName>(dto.status);
   const timer = React.useRef<number | undefined>(undefined);
@@ -169,10 +176,15 @@ export function OrderView({ data }: { data: OrderPageData }) {
   const tokenBody = data.token ? { t: data.token } : {};
 
   async function retry() {
+    if (dto.termsRequired && !termsAccepted) {
+      setTermsError(CHECKOUT_ERRORS.acceptTerms);
+      document.getElementById(checkoutFieldId("agree"))?.focus();
+      return;
+    }
     setBusy("retry");
     setError(null);
     try {
-      const start = await apiFetch<CheckoutStart>(paths.retry, { body: tokenBody });
+      const start = await apiFetch<CheckoutStart>(paths.retry, { body: { ...tokenBody, ...(dto.termsRequired ? { acceptTerms: true } : {}) } });
       // Mock: the dev checkout page. Razorpay: the modal; its return or cancel then reloads this page (statusUrl).
       await startHostedCheckout(start);
     } catch (e) {
@@ -251,6 +263,18 @@ export function OrderView({ data }: { data: OrderPageData }) {
         onAction={onAction}
         error={error}
         bank={showBank ? { busy: bankBusy, onAnswer: (ok) => void answerBank(ok) } : null}
+        beforeActions={
+          dto.termsRequired && dto.canRetry ? (
+            <TermsField
+              checked={termsAccepted}
+              error={termsError ?? undefined}
+              onChange={(checked) => {
+                setTermsAccepted(checked);
+                if (checked) setTermsError(null);
+              }}
+            />
+          ) : null
+        }
       />
       {paid && dto.licenses.length > 0 ? (
         <section aria-labelledby="lic-h" className="mt-6">
@@ -284,6 +308,28 @@ export function OrderView({ data }: { data: OrderPageData }) {
       ) : null}
       {paid ? <OrderNextSteps orderId={dto.id} email={dto.email} viewer={data.viewer} canClaim={dto.canClaim} /> : null}
       <InvoiceSummary model={invoice} pdfHref={paths.invoicePdf} />
+      {dto.creditNotes.length > 0 ? (
+        <section aria-labelledby="cn-h" className="mt-4 rounded-22 border border-line bg-surface p-6 print:hidden">
+          <h2 id="cn-h" className="text-lg font-extrabold">
+            Credit notes
+          </h2>
+          <p className="mt-1 text-sm text-ink-2">We corrected the billing details on your invoice. Each credit note cancels the invoice it names.</p>
+          <ul className="mt-3 grid list-none gap-2 p-0">
+            {dto.creditNotes.map((note) => (
+              <li key={note.id} className="flex flex-wrap items-center justify-between gap-2 border-t border-line-subtle pt-2 text-[14.5px]">
+                <span>{creditNoteLabel(note)}</span>
+                <a
+                  href={paths.creditNotePdf(note.id)}
+                  download
+                  className="rounded-6 font-bold text-primary-link underline underline-offset-2 hover:text-primary-link-hover"
+                >
+                  Download<span className="sr-only"> credit note {note.number}</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }

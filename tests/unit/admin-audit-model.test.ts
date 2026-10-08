@@ -81,6 +81,8 @@ describe("audit model", () => {
     expect(auditDetailText({ detail: null, reason: " " })).toBe("\u2014");
     expect(targetTypeLabel("credit_note")).toBe("Credit note");
     expect(targetHref({ targetType: "order", targetId: "AX-10288" })).toEqual({ module: "orders", href: "/admin/orders?id=AX-10288" });
+    // Customer rows carry the business account id (admin records): they open the customer drawer.
+    expect(targetHref({ targetType: "customer", targetId: "cmacct123" })).toEqual({ module: "customers", href: "/admin/customers?id=cmacct123" });
     expect(targetHref({ targetType: "plan", targetId: "plan_1" })).toBeNull();
     expect(targetHref({ targetType: "license", targetId: "bad id" })).toBeNull();
   });

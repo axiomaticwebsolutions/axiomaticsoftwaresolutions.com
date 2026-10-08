@@ -7,7 +7,7 @@
  */
 import { formatDateIST, istParts, MONTHS_SHORT } from "@/lib/dates";
 import { formatINR } from "@/lib/money";
-import { PAYMENT_PROVIDER_KEYS, type PaymentProviderKey } from "@/lib/payments/types";
+import { OFFLINE_PROVIDER, PAYMENT_PROVIDER_KEYS } from "@/lib/payments/types";
 import { defineListState, listStateToParams, type ListState } from "@/lib/url-state";
 
 export const ADMIN_ORDERS_PATH = "/admin/orders";
@@ -45,10 +45,32 @@ export const ORDER_STATUS_FILTER_LABELS: Record<OrderStatusFilter, string> = {
   review: "In review",
 };
 
-/** Payment.method values (display labels; no instrument details are stored) and their URL values. */
-export const ORDER_METHOD_FILTERS = ["upi", "card", "netbanking"] as const;
+/** How an offline payment was received (Admin > Orders "Record a payment we've received"); stored as its label. */
+export const OFFLINE_METHODS = ["cash", "upi", "bank_transfer", "cheque", "other"] as const;
+export type OfflineMethod = (typeof OFFLINE_METHODS)[number];
+export const OFFLINE_METHOD_LABELS: Record<OfflineMethod, string> = {
+  cash: "Cash",
+  upi: "UPI",
+  bank_transfer: "Bank transfer",
+  cheque: "Cheque",
+  other: "Other",
+};
+
+/**
+ * Payment.method values (display labels; no instrument details are stored) and their URL values. The offline methods
+ * (cash, bank transfer, cheque, other) filter payments staff recorded; "UPI" covers online and offline UPI.
+ */
+export const ORDER_METHOD_FILTERS = ["upi", "card", "netbanking", "cash", "bank_transfer", "cheque", "other"] as const;
 export type OrderMethodFilter = (typeof ORDER_METHOD_FILTERS)[number];
-export const ORDER_METHOD_LABELS: Record<OrderMethodFilter, string> = { upi: "UPI", card: "Card", netbanking: "Net banking" };
+export const ORDER_METHOD_LABELS: Record<OrderMethodFilter, string> = {
+  upi: "UPI",
+  card: "Card",
+  netbanking: "Net banking",
+  cash: OFFLINE_METHOD_LABELS.cash,
+  bank_transfer: OFFLINE_METHOD_LABELS.bank_transfer,
+  cheque: OFFLINE_METHOD_LABELS.cheque,
+  other: OFFLINE_METHOD_LABELS.other,
+};
 
 /** Date range presets (created in the last N days, IST "today"). The API also takes filter[from] / filter[to]. */
 export const ORDER_DATE_FILTERS = ["today", "7d", "30d", "90d", "12m"] as const;
@@ -66,8 +88,10 @@ export const COUPON_FILTER_ANY = "any";
 export const COUPON_FILTER_NONE = "none";
 export const COUPON_CODE_RE = /^[A-Z0-9][A-Z0-9_-]{1,39}$/;
 
-export const ORDER_PROVIDER_FILTERS = PAYMENT_PROVIDER_KEYS;
-export const PROVIDER_LABELS: Record<PaymentProviderKey, string> = { razorpay: "Razorpay", cashfree: "Cashfree", mock: "Mock" };
+/** Provider filter values: the payment adapters plus "offline" (payments Owner or Finance recorded). */
+export const ORDER_PROVIDER_FILTERS = [...PAYMENT_PROVIDER_KEYS, OFFLINE_PROVIDER] as const;
+export type OrderProviderFilter = (typeof ORDER_PROVIDER_FILTERS)[number];
+export const PROVIDER_LABELS: Record<OrderProviderFilter, string> = { razorpay: "Razorpay", cashfree: "Cashfree", mock: "Mock", offline: "Offline" };
 
 /** Sortable columns (column ids of the table and `sort` values of the API). */
 export const ORDER_SORTS = ["createdAt", "id", "customer", "status", "totalPaise"] as const;
@@ -129,7 +153,7 @@ export type AdminOrderFilters = {
   from?: string;
   to?: string;
   coupon?: string;
-  provider?: PaymentProviderKey;
+  provider?: OrderProviderFilter;
   /** Export selected rows (API only). */
   ids?: readonly string[];
 };
@@ -183,6 +207,13 @@ export const orderResendPath = (id: string) => `${orderApiPath(id)}/resend-invoi
 export const orderReviewPath = (id: string) => `${orderApiPath(id)}/review`;
 export const orderInvoicePdfPath = (id: string) => `${orderApiPath(id)}/invoice.pdf`;
 export const ORDERS_RESEND_BULK_PATH = `${ADMIN_ORDERS_API}/resend-invoices`;
+/** Admin records (2026-10-08): live quote, offline payments, payment links, cancel, billing corrections, credit notes. */
+export const ORDER_QUOTE_PATH = `${ADMIN_ORDERS_API}/quote`;
+export const ORDER_OFFLINE_PATH = `${ADMIN_ORDERS_API}/offline`;
+export const orderPaymentLinkPath = (id: string) => `${orderApiPath(id)}/payment-link`;
+export const orderCancelPath = (id: string) => `${orderApiPath(id)}/cancel`;
+export const orderCorrectBillingPath = (id: string) => `${orderApiPath(id)}/correct-billing`;
+export const orderCreditNotePath = (id: string, noteId: string) => `${orderApiPath(id)}/credit-notes/${encodeURIComponent(noteId)}`;
 export const webhookReplayPath = (eventId: string) => `/api/admin/webhooks/${encodeURIComponent(eventId)}/replay`;
 
 // ---------- DTOs ----------
@@ -216,11 +247,13 @@ export type AdminOrderStats = { paid: number; pending: number; failed: number; r
 export type AdminOrderFilterOptions = {
   products: { value: string; label: string }[];
   coupons: string[];
-  providers: PaymentProviderKey[];
+  providers: OrderProviderFilter[];
 };
 
 export type AdminOrderItem = {
   id: string;
+  planId: string;
+  productId: string;
   product: string;
   plan: string;
   kind: "NEW" | "RENEWAL" | "UPGRADE" | "ADDON";
@@ -250,6 +283,14 @@ export type AdminOrderPayment = {
   duplicate: boolean;
   /** What "Refund duplicate payment" returns now (0 when it is not a duplicate or nothing is left). */
   refundablePaise: number;
+  /** A payment Owner or Finance recorded (cash, UPI, bank transfer, cheque): no provider ids. */
+  offline: boolean;
+  /** Offline: UTR / cheque number / receipt reference. */
+  reference: string | null;
+  /** Offline: the day the money was received. */
+  receivedAt: string | null;
+  /** Offline: who recorded it. */
+  recordedBy: string | null;
 };
 
 export type AdminOrderRefund = {
@@ -291,6 +332,20 @@ export type AdminOrderRefundState = {
   licenseCount: number;
   /** Renewal, add-on and upgrade lines a full refund reverses. */
   changeCount: number;
+  /** Why the refund action is off for a paid order (offline payments), or null. */
+  unavailableReason: string | null;
+};
+
+/** One billing correction: credit note cancelling an invoice, and the invoice that replaced it. */
+export type AdminOrderCorrection = {
+  id: string;
+  creditNoteNo: string;
+  originalInvoiceNo: string;
+  originalIssuedAt: string;
+  newInvoiceNo: string;
+  issuedAt: string;
+  changedFields: string[];
+  by: string;
 };
 
 export type AdminOrderDetail = {
@@ -322,6 +377,20 @@ export type AdminOrderDetail = {
   licenses: AdminOrderLicense[];
   history: AdminOrderHistoryEntry[];
   refund: AdminOrderRefundState;
+  /** The staff member who created the order in Admin > Orders, or null for checkout orders. */
+  createdBy: { id: string; name: string } | null;
+  /** Set when staff cancelled the order: it can't be paid again. */
+  canceledByStaffAt: string | null;
+  termsAcceptedAt: string | null;
+  /** The billing snapshot's email (the order email). */
+  billingEmail: string;
+  corrections: AdminOrderCorrection[];
+  /** "Edit order" (orders.edit): unpaid orders only. */
+  edit: { allowed: boolean; reason: string | null };
+  /** "Payment link" (orders.create): unpaid orders that staff did not cancel. */
+  paymentLink: { allowed: boolean };
+  /** "Correct billing" (invoices.correct): paid orders with an invoice and no refunds. */
+  correction: { allowed: boolean; reason: string | null };
 };
 
 // ---------- Formatting ----------
@@ -379,9 +448,10 @@ export function itemLabel(product: string, plan: string, quantity: number): stri
   return `${product} \u00B7 ${plan}${quantity > 1 ? ` \u00D7${quantity}` : ""}`;
 }
 
-/** "Razorpay", "Razorpay (test)", "Mock (test)". */
+/** "Razorpay", "Razorpay (test)", "Mock (test)", "Offline" (never a test payment: staff recorded real money). */
 export function providerLabel(provider: string, testMode: boolean): string {
   const name = (PROVIDER_LABELS as Record<string, string>)[provider] ?? provider;
+  if (provider === OFFLINE_PROVIDER) return name;
   return provider === "mock" || testMode ? `${name} (test)` : name;
 }
 

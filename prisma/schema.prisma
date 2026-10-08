@@ -49,16 +49,17 @@ model User {
   email             String       @unique // stored lower-case
   name              String
   phone             String?
-  passwordHash      String? // argon2id; null for invited users and sample users who cannot sign in
+  passwordHash      String? // argon2id; null for invited users, sample users who cannot sign in and staff-created customers until they set one
   emailVerifiedAt   DateTime?
   twoStepEnabled    Boolean      @default(false)
-  securityEpoch     Int          @default(0) // bumped on password reset, deactivation and role changes; invalidates trusted-device cookies
+  securityEpoch     Int          @default(0) // bumped on password reset, deactivation, role changes and staff email changes; invalidates trusted-device cookies
   staffRole         StaffRole? // only for kind = STAFF
   staffStatus       StaffStatus? // only for kind = STAFF
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
   lastActiveAt      DateTime?
   notificationPrefs Json? // { renewals, updates, tickets, offers, offersConsentAt } - email preferences (portal)
+  createdByStaffId  String? // staff user id when Admin > Customers created this customer (never a placeholder; /forgot sends set-password links)
 
   sessions        Session[]
   memberships     AccountMember[]
@@ -339,33 +340,37 @@ enum ItemKind {
 }
 
 model Order {
-  id              String           @id // human id from Counter "order", e.g. "AX-10301"
-  accountId       String?
-  account         BusinessAccount? @relation(fields: [accountId], references: [id])
-  placedByUserId  String?
-  placedBy        User?            @relation("OrderPlacedBy", fields: [placedByUserId], references: [id])
-  email           String // guest orders are claimed by matching verified email
-  billing         Json // snapshot: name, business, address, city, state, pin, gstin, phone
-  status          OrderStatus      @default(AWAITING_PAYMENT)
-  couponCode      String?
-  subtotalPaise   Int
-  discountPaise   Int              @default(0)
-  taxablePaise    Int
-  cgstPaise       Int              @default(0)
-  sgstPaise       Int              @default(0)
-  igstPaise       Int              @default(0)
-  totalPaise      Int
-  placeOfSupply   String
-  failReason      String?
-  termsAcceptedAt DateTime?
-  termsVersion    String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  paidAt          DateTime?
-  refundedAt      DateTime?
-  items           OrderItem[]
-  payments        Payment[]
-  invoice         Invoice?
+  id                 String              @id // human id from Counter "order", e.g. "AX-10301"
+  accountId          String?
+  account            BusinessAccount?    @relation(fields: [accountId], references: [id])
+  placedByUserId     String?
+  placedBy           User?               @relation("OrderPlacedBy", fields: [placedByUserId], references: [id])
+  email              String // guest orders are claimed by matching verified email
+  billing            Json // snapshot: name, business, address, city, state, pin, gstin, phone
+  status             OrderStatus         @default(AWAITING_PAYMENT)
+  couponCode         String?
+  subtotalPaise      Int
+  discountPaise      Int                 @default(0)
+  taxablePaise       Int
+  cgstPaise          Int                 @default(0)
+  sgstPaise          Int                 @default(0)
+  igstPaise          Int                 @default(0)
+  totalPaise         Int
+  placeOfSupply      String
+  failReason         String?
+  termsAcceptedAt    DateTime?
+  termsVersion       String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  paidAt             DateTime?
+  refundedAt         DateTime?
+  createdByStaffId   String? // staff user id for orders created in Admin > Orders (payment link or offline payment)
+  staffRequestId     String?             @unique // client-generated id of the admin create request (double-submit guard)
+  canceledByStaffAt  DateTime? // set by the admin cancel: the order can't be paid again (retryPayment refuses it)
+  items              OrderItem[]
+  payments           Payment[]
+  invoice            Invoice?
+  invoiceCorrections InvoiceCorrection[]
 
   @@index([email])
   @@index([status, createdAt])
@@ -410,7 +415,7 @@ model Payment {
   id                String        @id @default(cuid())
   orderId           String
   order             Order         @relation(fields: [orderId], references: [id])
-  provider          String // "razorpay" | "cashfree" | "mock" (adapter key)
+  provider          String // "razorpay" | "cashfree" | "mock" (adapter key), or "offline" for a payment staff recorded
   providerOrderId   String        @unique
   providerPaymentId String?       @unique
   method            String? // UPI | Card | Net banking (no card numbers / VPAs stored)
@@ -419,6 +424,10 @@ model Payment {
   failureReason     String?
   createdAt         DateTime      @default(now())
   capturedAt        DateTime?
+  reference         String? // offline: UTR / cheque number / receipt reference (not unique: one transfer can pay two orders)
+  receivedAt        DateTime? // offline: the day the money was received (IST midnight); capturedAt is when staff recorded it
+  recordedById      String? // offline: the staff user who recorded it
+  supersededAt      DateTime? // a staff edit replaced this attempt; a late capture of it sends the order to REVIEW
   refunds           Refund[]
 
   @@index([orderId])
@@ -479,15 +488,47 @@ model Refund {
   @@index([paymentId])
 }
 
+// The order's CURRENT tax invoice. A billing correction renumbers it; earlier numbers live in InvoiceCorrection.
 model Invoice {
   id       String   @id @default(cuid())
-  number   String   @unique // e.g. AXS/26-27/1181, allocated inside the payment transaction
+  number   String   @unique // e.g. AXS/26-27/1181, allocated inside the payment transaction (or a billing correction)
   orderId  String   @unique
   order    Order    @relation(fields: [orderId], references: [id])
   sac      String   @default("997331")
   seller   Json // snapshot of the business settings at issue time: legalName, gstin, address, city, state
   issuedAt DateTime @default(now())
   pdfKey   String? // generated PDF in private storage
+}
+
+/// One billing correction of a paid order: credit note AXC/.. cancels the then-current invoice in full and a new
+/// invoice (Invoice.number = newInvoiceNo) is issued with the corrected billing. Append-only.
+model InvoiceCorrection {
+  id                String   @id @default(cuid())
+  orderId           String
+  order             Order    @relation(fields: [orderId], references: [id])
+  creditNoteNo      String   @unique // "AXC/26-27/0004", from the shared credit note counter (refunds use it too)
+  originalInvoiceNo String   @unique // the invoice this cancelled, as issued
+  originalIssuedAt  DateTime
+  originalBilling   Json // Order.billing printed on the cancelled invoice (also the credit note's recipient)
+  originalSeller    Json // Invoice.seller of the cancelled invoice
+  newInvoiceNo      String   @unique // the replacement invoice
+  billing           Json // the corrected billing snapshot (printed on the new invoice)
+  seller            Json // seller snapshot of the credit note and the new invoice
+  sac               String
+  taxablePaise      Int // the cancelled invoice's amounts (= order totals; amounts never change)
+  cgstPaise         Int
+  sgstPaise         Int
+  igstPaise         Int
+  totalPaise        Int
+  changedFields     String[] // ["gstin", "address"]: names only
+  reason            String
+  createdById       String // staff user id
+  issuedAt          DateTime // date of the credit note and of the new invoice
+  createdAt         DateTime @default(now())
+
+  @@index([orderId, issuedAt])
+  @@index([issuedAt])
+  @@index([originalIssuedAt])
 }
 
 // Gap-free counters, allocated with UPDATE ... RETURNING inside the caller's transaction.

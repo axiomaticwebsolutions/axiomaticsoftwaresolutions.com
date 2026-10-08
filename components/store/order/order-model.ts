@@ -146,13 +146,50 @@ export const HERO_TONE_CLASSES: Readonly<Record<HeroTone, { card: string; fg: st
 
 const DEFAULT_FAIL_REASON = "The payment didn’t go through.";
 
+/** Who prepared or cancelled the order (Admin > Orders); absent in older payloads means "the customer". */
+type StaffFlags = Partial<Pick<OrderStatusDto, "placedByStaff" | "canceledByStaff">>;
+
+/** Orders our team prepared or cancelled (admin records, docs/admin-records-design.md B9.2). New copy. */
+export const STAFF_ORDER_HERO = {
+  ready: {
+    tone: "blue",
+    icon: "receipt_long",
+    spinning: false,
+    title: "Ready for payment",
+    body: "Our team prepared this order for you. Check the items and billing details, then pay securely. We issue your licenses as soon as the payment is confirmed.",
+    checklist: false,
+  },
+  canceled: {
+    tone: "slate",
+    icon: "cancel",
+    spinning: false,
+    title: "Order cancelled",
+    body: "Our team cancelled this order, so it can’t be paid. Contact us if you still want to buy.",
+    checklist: false,
+  },
+  closed: {
+    tone: "slate",
+    icon: "cancel",
+    spinning: false,
+    title: "Payment canceled",
+    body: "You closed the payment page before paying. Nothing was charged. You can pay whenever you’re ready.",
+    checklist: false,
+  },
+} as const satisfies Record<string, HeroView>;
+
 /**
  * Hero copy per status (Order.dc.html, verbatim unless noted):
  * - PAID: says the order confirmation was emailed, not the key (emails never carry keys, decisions.md Phase 3).
  * - CONFIRMING after the 2-minute polling window: "Still confirming" (decisions.md Phase 3; new copy).
  * - REFUNDED / PARTIALLY_REFUNDED: not designed; new copy from the refund policy.
  */
-export function heroFor(dto: Pick<OrderStatusDto, "status" | "email" | "failReason" | "licenses">, opts: { timedOut?: boolean } = {}): HeroView {
+export function heroFor(
+  dto: Pick<OrderStatusDto, "status" | "email" | "failReason" | "licenses"> & StaffFlags,
+  opts: { timedOut?: boolean } = {},
+): HeroView {
+  if (dto.canceledByStaff) return STAFF_ORDER_HERO.canceled;
+  if (dto.placedByStaff && dto.status === "AWAITING_PAYMENT") return STAFF_ORDER_HERO.ready;
+  if (dto.placedByStaff && dto.status === "CANCELED") return STAFF_ORDER_HERO.closed;
   switch (dto.status) {
     case "CONFIRMING":
       return opts.timedOut
@@ -261,13 +298,23 @@ export type HeroAction =
   | { id: "refresh"; label: string; primary: false }
   | { id: "invoice" | "checkout" | "cart" | "support"; label: string; primary: boolean; href: string };
 
-/** Hero buttons per status (Order.dc.html `actions`), plus "Refresh status" once polling has timed out. */
+/**
+ * Hero buttons per status (Order.dc.html `actions`), plus "Refresh status" once polling has timed out. Orders our team
+ * prepared pay through "Pay now" and offer "Contact support" instead of the cart (the cart never held them); orders our
+ * team cancelled offer only "Contact support".
+ */
 export function heroActions(
-  dto: Pick<OrderStatusDto, "status" | "canRetry" | "invoice">,
+  dto: Pick<OrderStatusDto, "status" | "canRetry" | "invoice"> & StaffFlags,
   links: { invoicePdf: string },
   opts: { timedOut?: boolean } = {},
 ): HeroAction[] {
   const refresh: HeroAction[] = opts.timedOut ? [{ id: "refresh", label: "Refresh status", primary: false }] : [];
+  const support: HeroAction = { id: "support", label: "Contact support", primary: false, href: "/support" };
+  if (dto.canceledByStaff) return [support];
+  if (dto.placedByStaff && (dto.status === "AWAITING_PAYMENT" || dto.status === "CANCELED" || dto.status === "FAILED")) {
+    const label = dto.status === "FAILED" ? "Try again" : "Pay now";
+    return [...(dto.canRetry ? [{ id: "retry", label, primary: true } as const] : []), support];
+  }
   switch (dto.status) {
     case "PAID":
     case "PARTIALLY_REFUNDED":
@@ -306,6 +353,8 @@ export function orderPaths(orderId: string, token: string | null) {
     status: `/api/orders/${id}/status`,
     statusHeaders,
     invoicePdf: `/api/orders/${id}/invoice.pdf${t}`,
+    /** A billing correction's credit note (InvoiceCorrection id), carrying `?t=` like the invoice PDF. */
+    creditNotePdf: (noteId: string) => `/api/orders/${id}/credit-notes/${encodeURIComponent(noteId)}${t}`,
     retry: `/api/checkout/orders/${id}/retry`,
     returnUrl: `/api/checkout/orders/${id}/return`,
     cancel: `/api/checkout/orders/${id}/cancel`,
@@ -357,5 +406,11 @@ export function invoiceInputFrom(dto: OrderStatusDto, data: Pick<OrderPageData, 
       targetLicenseId: item.targetLicenseId,
     })),
     fallbackGstRatePct: data.fallbackGstRatePct,
+    document: { kind: "invoice", replaces: dto.invoice?.replaces ?? null },
   };
+}
+
+/** "Credit note AXC/26-27/0004 · cancels invoice AXS/26-27/0012 · 8 Oct 2026" (order page, under the invoice). */
+export function creditNoteLabel(note: { number: string; cancelsInvoice: string; issuedAt: string }): string {
+  return `Credit note ${note.number} · cancels invoice ${note.cancelsInvoice} · ${formatDateIST(new Date(note.issuedAt))}`;
 }

@@ -127,7 +127,9 @@ export type SeedTemplate = { id: string; name: string; subject: string; active: 
  * Admin seed order. license_expired is a draft in the prototype, i.e. inactive. Phase 3 adds login_code (two-step
  * sign-in) and the lead emails (lead_received to the visitor, lead_new to the sales address); Phase 5 adds team_invite
  * (portal team invitations); Phase 6 adds refund_issued (admin refunds), staff_invite (admin staff invitations)
- * and release_available (update emails when a release is published).
+ * and release_available (update emails when a release is published). Admin records (2026-10-08) add set_password
+ * (staff-issued set-password links), account_email_changed (a staff email change, to the old address) and
+ * order_payment_link (an order staff created, ready for the customer to pay).
  * Their copy matches the code defaults in lib/email/defaults.ts.
  */
 export const NOTIFICATION_TEMPLATES: readonly SeedTemplate[] = [
@@ -193,6 +195,36 @@ export const NOTIFICATION_TEMPLATES: readonly SeedTemplate[] = [
     body:
       "Hi {{customer_name}},\n\nVersion {{version}} of {{product_name}} is ready to download. Your license includes it, " +
       "so you can update whenever it suits you.\n\nThanks,\nAxiomatic Software Solutions",
+    active: true,
+  },
+  {
+    id: "set_password",
+    name: "Set password",
+    subject: "Set your Axiomatic password",
+    body:
+      "Hi {{customer_name}},\n\nWe’ve set up an Axiomatic account for you. Choose a password with the button below to " +
+      "sign in, download your software and manage your licenses. The link works once and expires in {{expires_in}}.\n\n" +
+      "Thanks,\nAxiomatic Software Solutions",
+    active: true,
+  },
+  {
+    id: "account_email_changed",
+    name: "Sign-in email changed",
+    subject: "Your Axiomatic sign-in email was changed",
+    body:
+      "Hi {{customer_name}},\n\nOur support team changed the email address of your Axiomatic account to {{new_email_hint}}, " +
+      "and signed you out on every device.\n\nIf you didn’t ask for this, reply to this email straight away.\n\n" +
+      "Thanks,\nAxiomatic Software Solutions",
+    active: true,
+  },
+  {
+    id: "order_payment_link",
+    name: "Order ready to pay",
+    subject: "Your order {{order_id}} is ready to pay",
+    body:
+      "Hi {{customer_name}},\n\nOrder {{order_id}} is ready to pay. Check the items, then pay securely from the " +
+      "order page. We issue your licenses as soon as the payment is confirmed.\n\n" +
+      "Thanks,\nAxiomatic Software Solutions",
     active: true,
   },
 ];

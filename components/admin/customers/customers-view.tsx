@@ -11,6 +11,7 @@ import { CUSTOMER_GST_OPTIONS, CUSTOMERS_LIST, CUSTOMERS_SEARCH_PLACEHOLDER, typ
 import { withAll } from "@/lib/admin/licenses/list-state";
 import { CUSTOMER_COLUMNS, customerCard } from "./customer-columns";
 import { CustomerDrawer } from "./customer-drawer";
+import { NEW_CUSTOMER_PARAM, NewCustomerDrawer } from "./new-customer";
 
 export type CustomersViewProps = {
   data: { items: AdminCustomerRow[]; total: number } | null;
@@ -20,11 +21,16 @@ export type CustomersViewProps = {
 const getRowId = (row: AdminCustomerRow) => row.id;
 const getRowLabel = (row: AdminCustomerRow) => row.ownerName ? `${row.ownerName}, ${row.legalName}` : row.legalName;
 
-/** Customers & business accounts (Admin Console.dc.html mods.customers): server-paged table and the customer drawer. */
+/**
+ * Customers & business accounts (Admin Console.dc.html mods.customers): server-paged table, the customer drawer (?id=)
+ * and the "New customer" drawer (?new=1).
+ */
 export function CustomersView({ data, states }: CustomersViewProps) {
   const router = useRouter();
   const list = useListState(CUSTOMERS_LIST);
   const drawer = useDrawerParam();
+  const create = useDrawerParam(NEW_CUSTOMER_PARAM);
+  const refresh = React.useCallback(() => router.refresh(), [router]);
   const stateOptions = React.useMemo(() => withAll(states.map((s) => ({ value: s, label: s }))), [states]);
   return (
     <>
@@ -59,7 +65,8 @@ export function CustomersView({ data, states }: CustomersViewProps) {
           )
         }
       />
-      <CustomerDrawer id={drawer.id} open={drawer.isOpen} onOpenChange={drawer.onOpenChange} />
+      <CustomerDrawer id={drawer.id} open={drawer.isOpen} onOpenChange={drawer.onOpenChange} onChanged={refresh} />
+      <NewCustomerDrawer open={create.isOpen && !drawer.isOpen} onOpenChange={create.onOpenChange} onCreated={refresh} />
     </>
   );
 }

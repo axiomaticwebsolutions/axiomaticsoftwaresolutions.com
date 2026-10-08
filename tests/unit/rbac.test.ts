@@ -35,7 +35,11 @@ import {
 
 const ALL: StaffRole[] = ["OWNER", "ADMIN", "SUPPORT", "FINANCE"];
 
-/** Expected map, written out independently from lib/rbac.ts (handoff PERMS + decisions.md section 7 + Phase 6 leads). */
+/**
+ * Expected map, written out independently from lib/rbac.ts (handoff PERMS + decisions.md section 7 + Phase 6 leads +
+ * admin records 2026-10-08: customer create / edit / verify for Owner, Administrator and Support; order create / edit,
+ * offline payments and billing corrections for Owner and Finance).
+ */
 const EXPECTED: Record<Permission, StaffRole[]> = {
   "products.manage": ["OWNER", "ADMIN"],
   "pricing.manage": ["OWNER", "ADMIN"],
@@ -59,6 +63,13 @@ const EXPECTED: Record<Permission, StaffRole[]> = {
   "orders.resend_invoice": ALL,
   "renewals.remind": ["OWNER", "ADMIN", "SUPPORT"],
   "leads.view": ["OWNER", "ADMIN", "SUPPORT"],
+  "customers.create": ["OWNER", "ADMIN", "SUPPORT"],
+  "customers.edit": ["OWNER", "ADMIN", "SUPPORT"],
+  "customers.verify_email": ["OWNER", "ADMIN", "SUPPORT"],
+  "orders.create": ["OWNER", "FINANCE"],
+  "orders.edit": ["OWNER", "FINANCE"],
+  "payments.record_offline": ["OWNER", "FINANCE"],
+  "invoices.correct": ["OWNER", "FINANCE"],
 };
 
 describe("staff roles", () => {
@@ -71,7 +82,7 @@ describe("staff roles", () => {
 describe("PERMS", () => {
   it("defines exactly the expected permissions", () => {
     expect([...PERMISSIONS].sort()).toEqual(Object.keys(EXPECTED).sort());
-    expect(PERMISSIONS).toHaveLength(22);
+    expect(PERMISSIONS).toHaveLength(29);
     expect(Object.keys(PERMS)).toEqual(PERMISSIONS);
     for (const perm of PERMISSIONS) expect(new Set(PERMS[perm]).size).toBe(PERMS[perm].length);
   });
@@ -97,11 +108,29 @@ describe("PERMS", () => {
     expect(permissionsFor(null)).toEqual([]);
   });
 
-  it("per-role permission counts (prototype: Owner 17, Administrator 13, Support 4, Finance 6, plus the five additions)", () => {
-    expect(permissionsFor("OWNER")).toHaveLength(22);
-    expect(permissionsFor("ADMIN")).toHaveLength(18);
-    expect(permissionsFor("SUPPORT")).toHaveLength(8);
-    expect(permissionsFor("FINANCE")).toHaveLength(8);
+  it("per-role permission counts (prototype: Owner 17, Administrator 13, Support 4, Finance 6, plus the five additions, the three customer record and the four order record permissions)", () => {
+    expect(permissionsFor("OWNER")).toHaveLength(29);
+    expect(permissionsFor("ADMIN")).toHaveLength(21);
+    expect(permissionsFor("SUPPORT")).toHaveLength(11);
+    expect(permissionsFor("FINANCE")).toHaveLength(12);
+  });
+
+  it("order records: Owner and Finance create and edit orders, record offline payments and correct billing", () => {
+    for (const perm of ["orders.create", "orders.edit", "payments.record_offline", "invoices.correct"] as const) {
+      expect(rolesFor(perm)).toEqual(["OWNER", "FINANCE"]);
+      expect(can("ADMIN", perm)).toBe(false);
+      expect(can("SUPPORT", perm)).toBe(false);
+    }
+    expect(requiresLabel("payments.record_offline")).toBe("Requires Owner / Finance");
+  });
+
+  it("customer records: Owner, Administrator and Support create, edit and verify; Finance only views", () => {
+    for (const perm of ["customers.create", "customers.edit", "customers.verify_email"] as const) {
+      expect(rolesFor(perm)).toEqual(["OWNER", "ADMIN", "SUPPORT"]);
+      expect(can("FINANCE", perm)).toBe(false);
+    }
+    expect(can("FINANCE", "customers.view")).toBe(true);
+    expect(requiresLabel("customers.create")).toBe("Requires Owner / Administrator / Support");
   });
 
   it("Support cannot refund, revoke, change prices, view settings or audit", () => {
@@ -235,6 +264,10 @@ describe("DESTRUCTIVE_ACTIONS", () => {
     expect(DESTRUCTIVE_ACTIONS["releases.delete"].perm).toBe("releases.manage");
     expect(DESTRUCTIVE_ACTIONS["releases.remove_installer"].perm).toBe("releases.manage");
     expect(DESTRUCTIVE_ACTIONS["staff.revoke_invite"].perm).toBe("staff.manage");
+    // Admin records: one-click confirmations with a reason, no typed id.
+    expect(DESTRUCTIVE_ACTIONS["customers.verify_email"]).toEqual({ perm: "customers.verify_email", reason: true, typedId: false, label: "Mark verified" });
+    expect(DESTRUCTIVE_ACTIONS["customers.set_password_link"]).toEqual({ perm: "customers.manage", reason: true, typedId: false, label: "Create link" });
+    expect(DESTRUCTIVE_ACTIONS["orders.cancel"]).toEqual({ perm: "orders.edit", reason: true, typedId: false, label: "Cancel order" });
     expect(can("SUPPORT", DESTRUCTIVE_ACTIONS["orders.refund"].perm)).toBe(false);
     expect(can("FINANCE", DESTRUCTIVE_ACTIONS["orders.refund"].perm)).toBe(true);
   });

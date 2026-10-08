@@ -1,8 +1,9 @@
 /**
  * Destructive admin actions (DESTRUCTIVE_ACTIONS in lib/rbac.ts; decisions.md Phase 6): refund, revoke, suspend,
  * reinstate, extend, reset devices, deactivate a device, manual issue, archive/restore plans, hide/publish products,
- * delete coupons, FAQs, empty categories, draft releases and their installers, staff role changes, (de)activation and
- * revoking staff invitations.
+ * delete coupons, FAQs, empty categories, draft releases and their installers, staff role changes, (de)activation,
+ * revoking staff invitations, marking a customer email verified, creating a set-password link and cancelling an unpaid
+ * order (admin records).
  *
  * runDestructive() checks the action's permission, requires a reason (4-500 characters) and, for refund, revoke and
  * coupon delete, the typed id; then runs the change and writes exactly one AuditLog row in ONE transaction, so a
@@ -52,6 +53,9 @@ export const DESTRUCTIVE_AUDIT_ACTIONS: Record<DestructiveActionKey, string> = {
   "staff.deactivate": "Deactivated staff",
   "staff.reactivate": "Reactivated staff",
   "staff.revoke_invite": "Revoked staff invitation",
+  "customers.verify_email": "Marked email as verified",
+  "customers.set_password_link": "Created set-password link",
+  "orders.cancel": "Cancelled order",
 };
 
 /**

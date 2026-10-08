@@ -130,3 +130,35 @@ describe("download helpers", () => {
     expect(exportMeta(new Headers({ "x-row-count": "abc" }))).toEqual({ rows: 0, truncated: false });
   });
 });
+
+describe("billing corrections in the monthly rows (admin records, Option A)", () => {
+  it("keeps the original month and nets the correction month to zero", async () => {
+    const { monthlyRows } = await import("@/lib/admin/reports/service");
+    const split = { taxablePaise: 499_900, cgstPaise: 44_991, sgstPaise: 44_991, igstPaise: 0 };
+    // January: the original invoice (counted by its original date). February: the new invoice and the correction's credit note.
+    const invoices = [
+      { key: "2035-01", count: 1, ...split },
+      { key: "2035-02", count: 1, ...split },
+    ];
+    const notes = [
+      {
+        id: "c1",
+        kind: "correction" as const,
+        number: "AXC/34-35/0001",
+        status: "PROCESSED" as const,
+        issuedAt: new Date("2035-02-10T06:30:00.000Z"),
+        processedAt: new Date("2035-02-10T06:30:00.000Z"),
+        amountPaise: 589_882,
+        split,
+        byProduct: new Map([["med", 499_900]]),
+        order: { id: "AX-1", email: "a@example.test", billing: {}, placeOfSupply: "Maharashtra", invoiceNumber: "AXS/34-35/0001" },
+      },
+    ];
+    const { salesByMonth, gstByMonth } = monthlyRows(["2035-01", "2035-02"], invoices, notes);
+    const [jan, feb] = salesByMonth.rows;
+    expect([jan?.invoices, jan?.netTaxablePaise]).toEqual([1, 499_900]);
+    expect([feb?.invoices, feb?.creditNotes, feb?.netTaxablePaise]).toEqual([1, 1, 0]);
+    expect(gstByMonth.creditTotal.taxPaise).toBe(89_982);
+    expect(gstByMonth.netTaxPaise).toBe(89_982);
+  });
+});

@@ -13,11 +13,14 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   discountLabel,
   drawerItemLabel,
+  formatOrderDate,
   formatShortDateTimeIST,
   gstSplitLabel,
   itemKindLabel,
   money,
   orderApiPath,
+  orderCancelPath,
+  orderCreditNotePath,
   orderInvoicePdfPath,
   orderRefundPath,
   orderResendPath,
@@ -38,7 +41,9 @@ import {
   type ReplayResponse,
   type ResendResponse,
 } from "@/lib/admin/orders/model";
+import { ORDER_RECORD_COPY as RECORD_COPY, type AdminOrderPlanOption } from "@/lib/admin/orders/records-model";
 import { apiFetch } from "@/lib/client/api";
+import { CorrectBillingAction, PaymentLinkAction, useOrderEdit } from "./order-records";
 
 const LINK = "rounded-6 font-bold text-primary-link no-underline hover:text-primary-link-hover hover:underline";
 
@@ -102,6 +107,7 @@ function billedTo(order: AdminOrderDetail): React.ReactNode {
 function fieldsOf(order: AdminOrderDetail): AdminField[] {
   return [
     { label: "Customer", value: order.customer },
+    ...(order.createdBy ? [{ label: RECORD_COPY.createdBy, value: RECORD_COPY.staffSuffix(order.createdBy.name) }] : []),
     { label: "GSTIN", value: order.gstin ?? ORDERS_COPY.unregistered, mono: true },
     { label: "Place of supply", value: order.placeOfSupply },
     { label: "Invoice", value: order.invoice?.number ?? ORDERS_COPY.notIssued, mono: true },
@@ -124,6 +130,15 @@ type SectionOptions = {
 };
 
 function paymentDetail(order: AdminOrderDetail, p: AdminOrderPayment, opts: SectionOptions): React.ReactNode {
+  if (p.offline) {
+    // Recorded by staff (Admin > Orders): method, reference, the day the money arrived and who recorded it.
+    return RECORD_COPY.offlinePayment(
+      `${providerLabel(p.provider, opts.testMode)} ${p.method ?? ""}`.trim(),
+      p.reference,
+      p.receivedAt ? formatOrderDate(p.receivedAt) : null,
+      p.recordedBy,
+    );
+  }
   const line = [
     `Provider: ${providerLabel(p.provider, opts.testMode)}`,
     formatShortDateTimeIST(p.createdAt),
@@ -241,6 +256,32 @@ function sectionsOf(order: AdminOrderDetail, opts: SectionOptions): AdminDrawerS
       ),
     });
   }
+  if (order.corrections.length > 0) {
+    sections.push({
+      id: "corrections",
+      title: RECORD_COPY.correctionsTitle,
+      content: (
+        <SectionRows>
+          {order.corrections.map((c) => (
+            <SectionRow
+              key={c.id}
+              title={
+                <span className="font-mono text-[12.5px]">
+                  {RECORD_COPY.correctionRow(c.creditNoteNo, c.originalInvoiceNo, formatOrderDate(c.originalIssuedAt), c.newInvoiceNo)}
+                </span>
+              }
+              detail={`${c.by} \u00B7 ${formatShortDateTimeIST(c.issuedAt)} \u00B7 Changed: ${c.changedFields.join(", ")}`}
+              action={
+                <AdminAction size="xs" icon="description" href={orderCreditNotePath(order.id, c.id)} newTab aria-label={`${RECORD_COPY.creditNotePdf} ${c.creditNoteNo}`}>
+                  {RECORD_COPY.creditNotePdf}
+                </AdminAction>
+              }
+            />
+          ))}
+        </SectionRows>
+      ),
+    });
+  }
   sections.push({
     id: "webhooks",
     title: "Webhook events",
@@ -323,6 +364,8 @@ export type OrderDrawerProps = {
   onOpenChange: (open: boolean) => void;
   /** After a refund, review, resend or replay: refresh the list and stats. */
   onChanged: () => void;
+  /** Plans the "Edit order" card can sell (orders.edit). */
+  plans?: readonly AdminOrderPlanOption[];
 };
 
 /**
@@ -330,8 +373,11 @@ export type OrderDrawerProps = {
  * "Refund duplicate payment": refunds.issue, reason + typed order id, POST .../refund with `paymentId`), refunds,
  * webhook events with Replay (payments.replay), licenses issued, history; footer View invoice, Resend invoice, Issue
  * refund (refunds.issue, reason + typed order id) and, for orders in review, Mark reviewed (Owner / Finance, reason).
+ * Admin records (Owner / Finance): the "Edit order" card for unpaid orders (orders.edit), "Payment link"
+ * (orders.create), "Cancel order" (orders.edit, reason), "Correct billing" on paid orders (invoices.correct) and the
+ * "Invoice corrections" section with each credit note's PDF.
  */
-export function OrderDrawer({ id, open, onOpenChange, onChanged }: OrderDrawerProps) {
+export function OrderDrawer({ id, open, onOpenChange, onChanged, plans = [] }: OrderDrawerProps) {
   const { testMode } = useAdmin();
   const detail = useOrderDetail(open ? id : null);
   const order = detail.order && detail.order.id === id ? detail.order : null;
@@ -385,6 +431,15 @@ export function OrderDrawer({ id, open, onOpenChange, onChanged }: OrderDrawerPr
     changed();
   };
 
+  const cancel = async ({ reason }: DestructiveConfirmInput) => {
+    if (!order) return;
+    await apiFetch<{ status: string }>(orderCancelPath(order.id), { method: "POST", body: { reason } });
+    adminToast.success(RECORD_COPY.canceled);
+    changed();
+  };
+
+  const edit = useOrderEdit(order, plans, changed);
+
   const review = async ({ reason }: { reason: string }) => {
     if (!order) return;
     await apiFetch<{ status: string }>(orderReviewPath(order.id), { method: "POST", body: { reason } });
@@ -413,13 +468,19 @@ export function OrderDrawer({ id, open, onOpenChange, onChanged }: OrderDrawerPr
           {ORDERS_COPY.markReviewed}
         </AdminAction>
       ) : null}
-      {order.refund.allowed ? (
+      {order.paymentLink.allowed ? <PaymentLinkAction order={order} /> : null}
+      {order.correction.allowed || order.correction.reason ? <CorrectBillingAction order={order} onDone={changed} /> : null}
+      {order.edit.allowed ? (
+        <DestructiveAction actionKey="orders.cancel" targetId={order.id} consequence={RECORD_COPY.cancelConsequence} onConfirm={cancel} />
+      ) : null}
+      {order.refund.allowed || order.refund.unavailableReason ? (
         <DestructiveAction
           actionKey="orders.refund"
           targetId={order.id}
           title={refundTitle(order.refund.amountPaise, order.id)}
           consequence={refundConsequence(order.refund)}
           onConfirm={refund}
+          disabledReason={order.refund.allowed ? undefined : (order.refund.unavailableReason ?? undefined)}
         />
       ) : null}
     </>
@@ -432,11 +493,19 @@ export function OrderDrawer({ id, open, onOpenChange, onChanged }: OrderDrawerPr
         onOpenChange={onOpenChange}
         kind="Order"
         title={id ?? ""}
-        status={order ? <StatusBadge kind="order" status={order.status} /> : undefined}
+        status={
+          order ? (
+            <>
+              <StatusBadge kind="order" status={order.status} />
+              {order.canceledByStaffAt ? <span className="text-[12px] font-bold text-ink-2">{RECORD_COPY.canceledByStaff}</span> : null}
+            </>
+          ) : undefined
+        }
         subtitle={order ? `${formatShortDateTimeIST(order.createdAt)} \u00B7 ${order.email}` : undefined}
         loading={!order && detail.status !== "error"}
         error={detail.status === "error" ? (detail.error ?? ORDERS_COPY.detailError) : undefined}
         fields={order ? fieldsOf(order) : undefined}
+        edit={edit}
         sections={order ? sectionsOf(order, { testMode, replaying, onReplay: replay, onRefundDuplicate: refundDuplicate }) : undefined}
         footer={footer}
       />

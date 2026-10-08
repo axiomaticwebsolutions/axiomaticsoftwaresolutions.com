@@ -95,6 +95,7 @@ const ORDER_SELECT = {
   totalPaise: true,
   placeOfSupply: true,
   billing: true,
+  createdByStaffId: true,
   placedBy: { select: { name: true, email: true } },
   invoice: { select: { number: true, issuedAt: true, seller: true } },
   items: {
@@ -117,6 +118,8 @@ export function accountOrdersWhere(accountId: string, query: Pick<OrderListQuery
     where.OR = [
       { id: { contains: query.q, mode: "insensitive" } },
       { invoice: { is: { number: { contains: query.q, mode: "insensitive" } } } },
+      // An invoice a billing correction replaced still finds its order.
+      { invoiceCorrections: { some: { originalInvoiceNo: { contains: query.q, mode: "insensitive" } } } },
     ];
   }
   return where;
@@ -138,7 +141,11 @@ export function orderItemsSummary(items: readonly Pick<AccountOrderItem, "produc
   return items.map((i) => `${i.productShortName} \u00b7 ${i.planName}${i.qty > 1 ? ` \u00d7${i.qty}` : ""}`).join(", ");
 }
 
-export function placedByLabel(placedBy: { name: string } | null): string {
+/** Orders our team prepared in Admin > Orders. */
+export const STAFF_PLACED_LABEL = "by Axiomatic team";
+
+export function placedByLabel(placedBy: { name: string } | null, createdByStaff = false): string {
+  if (createdByStaff) return STAFF_PLACED_LABEL;
   if (!placedBy) return GUEST_CHECKOUT_LABEL;
   const name = placedBy.name.trim();
   return name ? `by ${name}` : "by account";
@@ -161,7 +168,7 @@ function toOrderRow(o: OrderRecord): AccountOrderRow {
     items,
     summary: orderItemsSummary(items),
     placedByName: o.placedBy ? o.placedBy.name.trim() || null : null,
-    placedByLabel: placedByLabel(o.placedBy),
+    placedByLabel: placedByLabel(o.placedBy, o.createdByStaffId !== null),
     invoiceNumber: o.invoice?.number ?? null,
     invoiceIssuedAt: o.invoice ? o.invoice.issuedAt.toISOString() : null,
     taxablePaise: o.taxablePaise,

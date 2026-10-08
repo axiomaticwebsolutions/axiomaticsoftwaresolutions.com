@@ -7,12 +7,12 @@
  * - Blocks: the code box, the call-to-action button, order details and small print. They are defined here only, so an
  *   edited body can never lose the verification code or the reset link. They are placed before the closing paragraph.
  *
- * Auth templates (verification code, reset link, sign-in code) and invitation emails (team and staff invitation links)
+ * Auth templates (verification code, reset link, sign-in code, staff-issued set-password link) and invitation emails (team and staff invitation links)
  * are sent directly and never stored (DIRECT_EMAIL_TEMPLATE_IDS); every other template goes through the outbox. Emails never contain full license keys (only the last 4 characters).
  * Pure module (no server imports), so admin previews and tests can use it.
  */
 
-export const AUTH_EMAIL_TEMPLATE_IDS = ["email_verification", "password_reset", "login_code"] as const;
+export const AUTH_EMAIL_TEMPLATE_IDS = ["email_verification", "password_reset", "login_code", "set_password"] as const;
 export type AuthEmailTemplateId = (typeof AUTH_EMAIL_TEMPLATE_IDS)[number];
 
 export const BUSINESS_EMAIL_TEMPLATE_IDS = [
@@ -29,6 +29,8 @@ export const BUSINESS_EMAIL_TEMPLATE_IDS = [
   "staff_invite",
   "refund_issued",
   "release_available",
+  "account_email_changed",
+  "order_payment_link",
 ] as const;
 export type BusinessEmailTemplateId = (typeof BUSINESS_EMAIL_TEMPLATE_IDS)[number];
 
@@ -383,6 +385,42 @@ const DEFAULTS: readonly EmailTemplateDefault[] = [
     },
   },
   {
+    id: "account_email_changed",
+    name: "Sign-in email changed",
+    subject: "Your Axiomatic sign-in email was changed",
+    body:
+      "Hi {{customer_name}},\n\nOur support team changed the email address of your Axiomatic account to {{new_email_hint}}, " +
+      "and signed you out on every device.\n\nIf you didn’t ask for this, reply to this email straight away.\n\n" +
+      SIGN_OFF,
+    required: ["customer_name", "new_email_hint"],
+    vars: ["customer_name", "new_email_hint"],
+    blocks: [],
+    sampleVars: { customer_name: "Priya Sharma", new_email_hint: "p•••@sharmamedicals.example" },
+  },
+  {
+    id: "order_payment_link",
+    name: "Order ready to pay",
+    subject: "Your order {{order_id}} is ready to pay",
+    body:
+      "Hi {{customer_name}},\n\nOrder {{order_id}} is ready to pay. Check the items, then pay securely from the " +
+      "order page. We issue your licenses as soon as the payment is confirmed.\n\n" +
+      SIGN_OFF,
+    required: ["customer_name", "order_id", "order_url", "total"],
+    vars: ["customer_name", "order_id", "order_url", "total"],
+    blocks: [
+      {
+        kind: "details",
+        rows: [
+          { label: "Order", var: "order_id" },
+          { label: "Total", var: "total" },
+        ],
+      },
+      { kind: "button", label: "Review and pay", urlVar: "order_url" },
+      { kind: "note", text: "This link works for 30 days." },
+    ],
+    sampleVars: { ...ORDER_SAMPLE, total: "₹5,898.82" },
+  },
+  {
     id: "email_verification",
     name: "Email verification",
     subject: "Your verification code: {{code}}",
@@ -429,6 +467,27 @@ const DEFAULTS: readonly EmailTemplateDefault[] = [
       },
     ],
     sampleVars: { customer_name: "Sneha Iyer", code: "071564" },
+  },
+  {
+    id: "set_password",
+    name: "Set password",
+    subject: "Set your Axiomatic password",
+    body:
+      "Hi {{customer_name}},\n\nWe’ve set up an Axiomatic account for you. Choose a password with the button below to " +
+      "sign in, download your software and manage your licenses. The link works once and expires in {{expires_in}}.\n\n" +
+      SIGN_OFF,
+    required: ["customer_name", "set_password_url", "expires_in"],
+    vars: ["customer_name", "set_password_url", "expires_in", "business_name"],
+    blocks: [
+      { kind: "button", label: "Set your password", urlVar: "set_password_url" },
+      { kind: "note", text: "If the link has expired, use “Forgot password” on the sign-in page to get a new one." },
+    ],
+    sampleVars: {
+      customer_name: "Priya Sharma",
+      set_password_url: "https://axiomaticsoftwaresolutions.com/reset?token=sample",
+      expires_in: "7 days",
+      business_name: "Sharma Medicals",
+    },
   },
 ];
 

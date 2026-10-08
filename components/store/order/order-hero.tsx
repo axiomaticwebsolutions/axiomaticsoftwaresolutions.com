@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type * as React from "react";
 import { Icon } from "@/components/icons/icon";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,8 @@ export type OrderHeroProps = {
   error: string | null;
   /** Dev-only "simulate the bank" controls for a pending mock payment. */
   bank: { busy: boolean; onAnswer: (ok: boolean) => void } | null;
+  /** Shown above the actions (the terms checkbox of an order our team prepared). */
+  beforeActions?: React.ReactNode;
 };
 
 const HERO_BUTTON = "rounded-12 px-[18px] py-3 text-base leading-[normal]";
@@ -22,7 +25,7 @@ const HERO_BUTTON = "rounded-12 px-[18px] py-3 text-base leading-[normal]";
  * Status hero (Order.dc.html): tone by state, icon tile (spinner while confirming), "ORDER {id}" overline, title and
  * body in a polite live region so state changes are announced, the confirming checklist, and the state's actions.
  */
-export function OrderHero({ orderId, hero, actions, busy, onAction, error, bank }: OrderHeroProps) {
+export function OrderHero({ orderId, hero, actions, busy, onAction, error, bank, beforeActions }: OrderHeroProps) {
   const tone = HERO_TONE_CLASSES[hero.tone];
   return (
     <div
@@ -45,6 +48,7 @@ export function OrderHero({ orderId, hero, actions, busy, onAction, error, bank 
           <p className="mt-2.5 max-w-[620px] text-base leading-[1.6] text-ink-soft">{hero.body}</p>
         </div>
         {hero.checklist ? <ConfirmingChecklist /> : null}
+        {beforeActions ? <div className="mt-5 print:hidden">{beforeActions}</div> : null}
         {actions.length > 0 ? (
           <div className="mt-5 flex flex-wrap gap-2.5 print:hidden">
             {actions.map((action) =>

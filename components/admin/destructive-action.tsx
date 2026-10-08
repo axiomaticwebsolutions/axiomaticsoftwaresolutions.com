@@ -16,6 +16,8 @@ type ActionCopy = {
   tone: ConfirmTone;
   /** Dialog title from the target label (prototype copy). */
   title: (target: string) => string;
+  /** The dismiss button, when "Cancel" would read like the action itself (default "Cancel"). */
+  dismiss?: string;
 };
 
 /** Trigger, icon, tone and title per action, from the prototype's ask() dialogs and drawer buttons. */
@@ -41,6 +43,9 @@ export const DESTRUCTIVE_COPY: Record<DestructiveActionKey, ActionCopy> = {
   "staff.deactivate": { trigger: "Deactivate", icon: "person_off", variant: "danger", tone: "danger", title: (t) => `Deactivate ${t}?` },
   "staff.reactivate": { trigger: "Reactivate", icon: "person_off", variant: "default", tone: "primary", title: (t) => `Reactivate ${t}?` },
   "staff.revoke_invite": { trigger: "Revoke invitation", icon: "person_off", variant: "danger", tone: "danger", title: (t) => `Revoke the invitation for ${t}?` },
+  "customers.verify_email": { trigger: "Mark email as verified", icon: "verified", variant: "default", tone: "primary", title: (t) => `Mark ${t} as verified?` },
+  "customers.set_password_link": { trigger: "Create set-password link", icon: "lock_reset", variant: "default", tone: "primary", title: (t) => `Create a set-password link for ${t}?` },
+  "orders.cancel": { trigger: "Cancel order", icon: "cancel", variant: "danger", tone: "danger", title: (t) => `Cancel ${t}?`, dismiss: "Keep order" },
 };
 
 export type DestructiveConfirmInput = {
@@ -148,6 +153,7 @@ export function DestructiveAction({
         title={title ?? copy.title(targetLabel ?? targetId)}
         description={consequence}
         confirmLabel={confirmLabel ?? rule.label}
+        cancelLabel={copy.dismiss}
         tone={tone ?? copy.tone}
         icon={icon ?? copy.icon}
         requireReason={rule.reason}

@@ -33,6 +33,10 @@ function dto(over: Partial<OrderStatusDto> = {}): OrderStatusDto {
     totals: { subtotalPaise: 499_900, discountPaise: 0, taxablePaise: 499_900, cgstPaise: 44_991, sgstPaise: 44_991, igstPaise: 0, totalPaise: 589_882 },
     items: [{ planName: "Annual license", productName: "Medical Store Billing Software", productId: "medical-billing", kind: "NEW", qty: 1, unitPricePaise: 499_900, discountPaise: 0, taxablePaise: 499_900, taxPaise: 89_982, targetLicenseId: null }],
     invoice: null,
+    creditNotes: [],
+    placedByStaff: false,
+    canceledByStaff: false,
+    termsRequired: false,
     licenses: [],
     canRetry: false,
     canClaim: true,
@@ -43,7 +47,7 @@ function dto(over: Partial<OrderStatusDto> = {}): OrderStatusDto {
 
 const LICENSE = { id: "LIC-24100", productId: "medical-billing", productName: "Medical Store Billing Software", planName: "Annual license", keyMasked: "MED-••••-••••-••••-K8NM", status: "active" as const, expiresAt: "2027-10-06T22:33:00.000Z", updatesUntil: "2027-10-06T22:33:00.000Z", deviceLimit: 1 };
 const links = { invoicePdf: "/api/orders/AX-10312/invoice.pdf?t=x" };
-const INVOICE = { number: "AXS/26-27/1181", issuedAt: "2026-10-06T22:33:00.000Z" };
+const INVOICE = { number: "AXS/26-27/1181", issuedAt: "2026-10-06T22:33:00.000Z", replaces: null };
 
 class MemoryStorage {
   map = new Map<string, string>();
@@ -149,6 +153,24 @@ describe("order page labels and paths", () => {
     );
     expect(m).toMatchObject({ title: "Order summary", isInvoice: false, totalLabel: "Total" });
     expect(m.lines[0]).toMatchObject({ shortName: "Medical Store Billing", detail: "Annual license", grossPaise: 499_900 });
+  });
+
+  it("gives a corrected invoice the note naming the invoice it replaces, for the printable invoice card (review fix)", () => {
+    const data = {
+      products: {},
+      seller: { legalName: "X", gstin: "27AAAAA0000A1Z5", address: "", city: "Pune", state: "Maharashtra", pin: "411001", sample: true },
+      sac: "997331",
+      fallbackGstRatePct: 18,
+    };
+    const corrected = buildInvoiceModel(
+      invoiceInputFrom(
+        dto({ status: "PAID", paidAt: INVOICE.issuedAt, invoice: { ...INVOICE, number: "AXS/26-27/1190", replaces: { invoiceNo: "AXS/26-27/1181", creditNoteNo: "AXC/26-27/0004" } } }),
+        data,
+      ),
+    );
+    expect(corrected.isInvoice).toBe(true);
+    expect(corrected.extraNotes).toEqual([expect.stringContaining("This invoice replaces AXS/26-27/1181, cancelled by credit note AXC/26-27/0004")]);
+    expect(buildInvoiceModel(invoiceInputFrom(dto({ status: "PAID", paidAt: INVOICE.issuedAt, invoice: INVOICE }), data)).extraNotes).toEqual([]);
   });
 });
 

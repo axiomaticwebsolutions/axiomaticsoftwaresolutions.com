@@ -1,7 +1,8 @@
 /**
  * Payment event processing (docs/api-contracts.md section 4, docs/decisions.md Phase 1 refinements + Phase 3 Payments).
  * The webhook route, the reconciliation job and admin replays all call processPaymentEvent() with a signature-verified
- * NormalizedEvent; licenses are issued nowhere else for paid orders.
+ * NormalizedEvent; licenses are issued nowhere else for paid orders, except an offline payment Owner or Finance record in
+ * Admin > Orders, which runs the same fulfilPaidOrder() (docs/security.md, "Offline payments").
  *
  * One transaction per event:
  * 1. Find the Payment by provider order id (and provider), then `SELECT ... FOR UPDATE` the order row, so every event
@@ -9,11 +10,12 @@
  * 2. INSERT WebhookEvent(provider, id) with ON CONFLICT DO NOTHING: the primary key is the idempotency guard. A
  *    conflict (sequential or concurrent redelivery, admin replay) answers `duplicate_ignored` and changes nothing.
  * 3. Apply the event:
- *    - payment.captured: already PAID -> `already_paid`; REVIEW -> `order_in_review`; amount, currency or payment
- *      amount mismatch -> order REVIEW + `amount_mismatch` (no licenses); otherwise Payment CAPTURED, Order PAID
- *      (paidAt = event time, never in the future), fulfilment, tax invoice (seller snapshot), coupon redemption, audit,
- *      account activity, member notifications and outbox emails -> `fulfilled`. Captured after FAILED/CANCELED still
- *      pays the order (the money was taken).
+ *    - payment.captured: already PAID -> `already_paid`; REVIEW -> `order_in_review`; a capture of an attempt a
+ *      staff edit replaced (Payment.supersededAt), or an amount, currency or payment amount mismatch -> order REVIEW +
+ *      `amount_mismatch` (no licenses); otherwise Payment CAPTURED, then fulfilPaidOrder() (lib/payments/fulfilment.ts:
+ *      Order PAID with paidAt = event time, never in the future, licenses, tax invoice with the seller snapshot, coupon
+ *      redemption, account activity, member notifications and outbox emails) and the audit row -> `fulfilled`.
+ *      Captured after FAILED/CANCELED still pays the order (the money was taken).
  *    - payment.failed: FAILED only for the latest attempt of an unpaid order (+ payment_failed email) ->
  *      `marked_failed`; never downgrades PAID (`already_paid`); older attempts, failures of another payment inside
  *      the same provider order than the one recorded, and attempts settling elsewhere -> `stale_attempt` (onFailed).
@@ -36,26 +38,25 @@ import {
   OrderStatus,
   PaymentStatus,
   RefundStatus,
-  type Order,
   type Payment,
   type Prisma,
   type Refund,
 } from "@/generated/prisma/client";
 import { SYSTEM_AUDIT_ACTIONS } from "@/lib/admin/audit/model";
 import { audit, SYSTEM_ACTOR } from "@/lib/audit";
-import { getSettings, type BusinessSettings, type SiteSettings } from "@/lib/config";
-import { DocumentSeriesExhaustedError, nextInvoiceNumber } from "@/lib/counters";
+import { DocumentSeriesExhaustedError } from "@/lib/counters";
 import { db, type Db, type Tx } from "@/lib/db";
 import { isTransientDatabaseError } from "@/lib/db-errors";
 import { enqueueEmail, kickEmailDispatch } from "@/lib/email";
 import { greetingName } from "@/lib/email/greeting";
-import { getEnv } from "@/lib/env";
-import { FulfilmentError, fulfilOrderItems, type FulfilResult } from "@/lib/licensing/fulfil";
+import { FulfilmentError } from "@/lib/licensing/fulfil";
 import { LicenseTermsError } from "@/lib/licensing/terms";
 import { log } from "@/lib/log";
 import { formatINR } from "@/lib/money";
-import { orderStatusPath, signOrderToken } from "@/lib/orders/token";
+import { billingName, fulfilPaidOrder, orderUrl, plural, type PaidOrderRow } from "./fulfilment";
 import type { NormalizedEvent } from "./types";
+
+export { sellerSnapshot } from "./fulfilment";
 
 export const WEBHOOK_RESULTS = [
   "fulfilled",
@@ -104,6 +105,8 @@ export function externalRefundReviewReason(refund: string, amount: string): stri
 }
 
 export const AMOUNT_MISMATCH_REASON = "The amount paid doesn\u2019t match the order total. Our team will review it.";
+/** REVIEW reason for a capture of a payment attempt that a staff edit replaced (Payment.supersededAt). */
+export const SUPERSEDED_ATTEMPT_REASON = "This payment was made for an earlier version of the order. Our team will review it.";
 /**
  * payment_failed emails wait this long, and a payment that succeeds meanwhile (Razorpay's checkout lets the customer
  * retry inside the same window) deletes them. The mock checkout has no in-window retry, so its emails go at once.
@@ -117,7 +120,7 @@ const CAPTURED_STATES: ReadonlySet<PaymentStatus> = new Set([PaymentStatus.CAPTU
 /** Orders a refund of their paying payment moves to PARTIALLY_REFUNDED / REFUNDED. */
 const REFUNDABLE_ORDER_STATES: ReadonlySet<OrderStatus> = new Set([OrderStatus.PAID, OrderStatus.PARTIALLY_REFUNDED]);
 
-type OrderRow = Order & { placedBy: { name: string } | null };
+type OrderRow = PaidOrderRow;
 type Ctx = { tx: Tx; provider: string; event: NormalizedEvent; now: Date; order: OrderRow; payment: Payment };
 type Outcome = { result: WebhookResult; orderId: string | null; kick: boolean };
 type ProcessState = { orderId: string | null; fulfilling: boolean };
@@ -175,12 +178,6 @@ export function paidAtFor(event: Pick<NormalizedEvent, "occurredAt">, now: Date)
   return at;
 }
 
-/** Seller details as printed on the invoice; later settings edits never change a stored snapshot. */
-export function sellerSnapshot(business: BusinessSettings): Prisma.InputJsonObject {
-  const { legalName, gstin, address, city, state, pin, sample } = business;
-  return { legalName, gstin, address, city, state, pin, sample };
-}
-
 /** A short, stable label for why fulfilment failed (REVIEW reason, audit). Never a message that could hold data. */
 export function fulfilmentErrorCode(error: unknown): string {
   if (error instanceof FulfilmentError) return error.code;
@@ -194,26 +191,8 @@ function failedEmailDelayMs(provider: string): number {
   return provider === "mock" ? 0 : PAYMENT_FAILED_EMAIL_DELAY_MS;
 }
 
-function billingName(order: OrderRow): string | null {
-  const billing = order.billing;
-  if (billing && typeof billing === "object" && !Array.isArray(billing)) {
-    const name = (billing as Record<string, unknown>).name;
-    if (typeof name === "string" && name.trim() !== "") return name.trim();
-  }
-  return null;
-}
-
 function amountLabel(paise: number, currency: string): string {
   return currency === "INR" && Number.isSafeInteger(paise) ? formatINR(paise, { exact: true }) : `${paise} (${currency})`;
-}
-
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
-}
-
-/** Absolute order page link with a fresh 30-day order token (guests open it from the email). */
-function orderUrl(order: Pick<Order, "id" | "email">, now: Date): string {
-  return `${getEnv().APP_URL}${orderStatusPath(order.id, signOrderToken(order.id, order.email, now))}`;
 }
 
 /** Payment CAPTURED with the provider payment id (unless another row already holds it), method and capture time. */
@@ -253,131 +232,6 @@ async function markAttemptFailed(ctx: Ctx): Promise<void> {
   });
 }
 
-async function ensureInvoice(tx: Tx, orderId: string, paidAt: Date, settings: SiteSettings): Promise<{ number: string }> {
-  const existing = await tx.invoice.findUnique({ where: { orderId }, select: { number: true } });
-  if (existing) return existing;
-  // Allocated late: the per-FY counter row stays locked until commit.
-  const number = await nextInvoiceNumber(tx, paidAt, settings.tax.invoicePrefix);
-  return tx.invoice.create({
-    data: { number, orderId, sac: settings.tax.sac, seller: sellerSnapshot(settings.business), issuedAt: paidAt },
-    select: { number: true },
-  });
-}
-
-/** CouponRedemption once per order and Coupon.redemptions + 1. An exhausted coupon never blocks a paid order. */
-async function redeemCoupon(tx: Tx, order: OrderRow): Promise<void> {
-  const code = order.couponCode;
-  if (!code) return;
-  const coupon = await tx.coupon.findUnique({ where: { code }, select: { code: true } });
-  if (!coupon) {
-    log.warn("coupon_missing_at_payment", { orderId: order.id, coupon: code });
-    return;
-  }
-  const created = await tx.couponRedemption.createMany({
-    data: [{ couponCode: code, orderId: order.id, accountId: order.accountId }],
-    skipDuplicates: true,
-  });
-  if (created.count === 0) return;
-  const updated = await tx.coupon.update({
-    where: { code },
-    data: { redemptions: { increment: 1 } },
-    select: { redemptions: true, maxRedemptions: true },
-  });
-  if (updated.maxRedemptions !== null && updated.redemptions > updated.maxRedemptions) {
-    log.warn("coupon_redemptions_exceeded", {
-      orderId: order.id,
-      coupon: code,
-      redemptions: updated.redemptions,
-      maxRedemptions: updated.maxRedemptions,
-    });
-  }
-}
-
-type IssuedLicense = { id: string; keyLast4: string; productName: string };
-
-async function issuedLicenses(tx: Tx, results: FulfilResult[]): Promise<IssuedLicense[]> {
-  const ids = results.filter((r) => r.action === "issued").map((r) => r.licenseId);
-  if (ids.length === 0) return [];
-  const rows = await tx.license.findMany({
-    where: { id: { in: ids } },
-    select: { id: true, keyLast4: true, product: { select: { name: true } } },
-    orderBy: { id: "asc" },
-  });
-  return rows.map((r) => ({ id: r.id, keyLast4: r.keyLast4, productName: r.product.name }));
-}
-
-/** Account activity, member notifications and the outbox emails of a paid order (same transaction). */
-async function announcePaidOrder(ctx: Ctx, invoiceNumber: string, issued: IssuedLicense[]): Promise<void> {
-  const { tx, order, now } = ctx;
-  const customerName = billingName(order) ?? order.placedBy?.name ?? null;
-  if (order.accountId) {
-    await tx.accountActivity.create({
-      data: {
-        accountId: order.accountId,
-        actorId: order.placedByUserId ?? null,
-        actorName: order.placedBy?.name ?? customerName ?? "Customer",
-        action: "Placed order",
-        target: order.id,
-        kind: "billing",
-        createdAt: now,
-      },
-    });
-    const members = await tx.accountMember.findMany({
-      where: { accountId: order.accountId, status: "ACTIVE" },
-      select: { userId: true },
-    });
-    const body =
-      issued.length > 0
-        ? `${issued.length === 1 ? "Your new license is" : `Your ${plural(issued.length, "new license")} are`} ready. Invoice ${invoiceNumber}.`
-        : `Your licenses have been updated. Invoice ${invoiceNumber}.`;
-    if (members.length > 0) {
-      await tx.notification.createMany({
-        data: members.map((m) => ({
-          userId: m.userId,
-          kind: "billing",
-          title: `Payment confirmed for ${order.id}`,
-          body,
-          href: `/orders/${encodeURIComponent(order.id)}`,
-          createdAt: now,
-        })),
-      });
-    }
-  }
-
-  const url = orderUrl(order, now);
-  const name = greetingName(customerName);
-  await enqueueEmail(tx, {
-    to: order.email,
-    templateId: "order_confirmation",
-    vars: {
-      customer_name: name,
-      order_id: order.id,
-      order_url: url,
-      total: formatINR(order.totalPaise, { exact: true }),
-      invoice_number: invoiceNumber,
-    },
-    dedupeKey: `order_confirmation:${order.id}`,
-  });
-  for (const license of issued) {
-    await enqueueEmail(tx, {
-      to: order.email,
-      templateId: "license_issued",
-      vars: {
-        customer_name: name,
-        product_name: license.productName,
-        order_id: order.id,
-        order_url: url,
-        key_last4: license.keyLast4,
-      },
-      dedupeKey: `license_issued:${license.id}`,
-    });
-  }
-  // A failure notice for an earlier attempt that has not gone out yet is now wrong.
-  await tx.outboxEmail.deleteMany({
-    where: { status: "PENDING", templateId: "payment_failed", dedupeKey: { startsWith: `payment_failed:${order.id}:` } },
-  });
-}
-
 /** A capture for an order that is already paid: bookkeeping only, and a flag for finance when it is a second payment. */
 async function onCapturedAfterPaid(ctx: Ctx): Promise<void> {
   const { tx, order, payment, event, now } = ctx;
@@ -414,6 +268,19 @@ async function onCaptured(ctx: Ctx, state: ProcessState): Promise<Outcome> {
   }
 
   await markPaymentCaptured(tx, payment, event, capturedAt);
+  if (payment.supersededAt !== null) {
+    // A staff edit replaced this attempt (Admin > Orders): its amount or items may no longer be the order's.
+    await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.REVIEW, failReason: SUPERSEDED_ATTEMPT_REASON } });
+    await audit(tx, SYSTEM_ACTOR, {
+      action: SYSTEM_AUDIT_ACTIONS.orderReview,
+      target: order.id,
+      targetType: "order",
+      targetId: order.id,
+      detail: `Payment for an attempt replaced by a staff edit: captured ${amountLabel(event.amountPaise, event.currency)} (${provider} ${event.providerPaymentId}). No licenses issued.`,
+    });
+    log.warn("payment_superseded_attempt", { orderId: order.id, paymentId: payment.id });
+    return outcome("amount_mismatch");
+  }
   const mismatch = event.currency !== "INR" || event.amountPaise !== order.totalPaise || event.amountPaise !== payment.amountPaise;
   if (mismatch) {
     await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.REVIEW, failReason: AMOUNT_MISMATCH_REASON } });
@@ -430,22 +297,15 @@ async function onCaptured(ctx: Ctx, state: ProcessState): Promise<Outcome> {
 
   // From here on an error is a fulfilment failure: processPaymentEvent() rolls back and marks the order REVIEW.
   state.fulfilling = true;
-  const paidAt = capturedAt;
-  await tx.order.update({ where: { id: order.id }, data: { status: OrderStatus.PAID, paidAt, failReason: null } });
-  const results = await fulfilOrderItems(tx, { id: order.id, accountId: order.accountId, paidAt });
-  const settings = await getSettings(tx);
-  const invoice = await ensureInvoice(tx, order.id, paidAt, settings);
-  await redeemCoupon(tx, order);
-  const issued = await issuedLicenses(tx, results);
+  const { invoiceNumber, results, issued } = await fulfilPaidOrder(tx, { order, paidAt: capturedAt, now });
   // The prototype's vocabulary: "Webhook processed" · target "payment.captured · AX-10294" · detail "fulfilled …".
   await audit(tx, SYSTEM_ACTOR, {
     action: SYSTEM_AUDIT_ACTIONS.webhookProcessed,
     target: `${event.type} \u00B7 ${order.id}`,
     targetType: "order",
     targetId: order.id,
-    detail: `fulfilled \u00B7 Invoice ${invoice.number} \u00B7 ${formatINR(order.totalPaise, { exact: true })} via ${provider} (${event.providerPaymentId}) \u00B7 ${plural(issued.length, "license")} issued, ${plural(results.length - issued.length, "license")} updated`,
+    detail: `fulfilled \u00B7 Invoice ${invoiceNumber} \u00B7 ${formatINR(order.totalPaise, { exact: true })} via ${provider} (${event.providerPaymentId}) \u00B7 ${plural(issued.length, "license")} issued, ${plural(results.length - issued.length, "license")} updated`,
   });
-  await announcePaidOrder(ctx, invoice.number, issued);
   return outcome("fulfilled", true);
 }
 
@@ -454,6 +314,7 @@ async function onCaptured(ctx: Ctx, state: ProcessState): Promise<Outcome> {
  * inside its checkout, and webhooks arrive in any order. A failure fails the order only when
  * - it concerns the payment this attempt recorded (from a verified return or a capture), or none was recorded yet;
  * - the attempt is the order's latest, and no other attempt holds a verified success (AUTHORIZED) or a capture;
+ * - the attempt was not superseded by a staff edit or cancel, and staff did not cancel the order (Admin > Orders);
  * - the order is not PAID/refunded or in REVIEW, and when it is CONFIRMING, the failure is about the very payment whose
  *   return was verified.
  * Otherwise the order is left alone (`stale_attempt`, `already_paid`, `order_in_review`).
@@ -473,6 +334,9 @@ async function onFailed(ctx: Ctx): Promise<Outcome> {
   await markAttemptFailed(ctx);
   if (PAID_STATES.has(order.status)) return outcome("already_paid");
   if (order.status === OrderStatus.REVIEW) return outcome("order_in_review");
+  // An attempt a staff edit or cancel replaced, or any attempt of an order staff cancelled (Admin > Orders): the failure
+  // is recorded on the attempt, but the order keeps its status and nobody is told to "try again".
+  if (payment.supersededAt !== null || order.canceledByStaffAt !== null) return outcome("stale_attempt");
   const latest = await tx.payment.findFirst({
     where: { orderId: order.id },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
