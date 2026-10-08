@@ -11,6 +11,7 @@
  * - Body paragraphs are separated by blank lines. Code-defined blocks go before the closing paragraph (the sign-off)
  *   when the body has at least three paragraphs, otherwise after the body.
  */
+import type { EmailLogo } from "@/lib/branding/model";
 import type { EmailBlock } from "./defaults";
 import {
   buttonHtml,
@@ -163,6 +164,8 @@ export type RenderEmailInput = {
   footer: EmailFooter;
   /** Absolute app URL (logo link, footer host). */
   appUrl: string;
+  /** The uploaded logo (Admin > Settings > Branding); null or missing = the built-in logo. */
+  logo?: EmailLogo | null;
   /** Default: "blank" in production, "keep" elsewhere. */
   unknownVars?: UnknownVarMode;
 };
@@ -246,6 +249,7 @@ export function renderEmail(input: RenderEmailInput): RenderedEmail {
     contentHtml,
     footer: input.footer,
     appUrl: input.appUrl,
+    logo: input.logo,
   });
   const text = emailDocumentText({ contentText, footer: input.footer, appUrl: input.appUrl });
   return { subject, html, text, unknownVars: [...ctx.unknown] };

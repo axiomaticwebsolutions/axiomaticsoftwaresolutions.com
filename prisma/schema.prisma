@@ -74,6 +74,7 @@ model User {
 
   integrationConfigsUpdated IntegrationConfig[] @relation("IntegrationConfigUpdatedBy")
   integrationSecretsUpdated IntegrationSecret[] @relation("IntegrationSecretUpdatedBy")
+  brandAssetsUpdated        BrandAsset[]        @relation("BrandAssetUpdatedBy")
 }
 
 model Session {
@@ -867,6 +868,33 @@ model IntegrationSecret {
   config      IntegrationConfig @relation(fields: [kind], references: [kind], onDelete: Cascade)
 
   @@id([kind, field])
+}
+
+// ---------- Branding (Admin > Settings > Branding; docs/decisions.md "Branding: logos and favicon") ----------
+enum BrandAssetSlot {
+  LOGO_LIGHT // logo for light backgrounds (storefront, auth pages, portal, admin, PDFs, emails)
+  LOGO_DARK // logo for dark backgrounds (dark sections, emails opened in dark mode)
+  FAVICON
+}
+
+// One row per uploaded slot; no row = the built-in logo or app/icon.svg. Stored in PostgreSQL (no bucket dependency).
+// `bytes` is the cleaned file the site serves: rasters decoded and re-encoded with sharp (metadata stripped), SVGs
+// rebuilt from an allowlist, ICOs validated (lib/branding/process.ts). Served by GET /brand/:file.
+model BrandAsset {
+  slot        BrandAssetSlot @id
+  mime        String // image/png | image/webp | image/svg+xml | image/x-icon
+  bytes       Bytes
+  sha256      String // hex of `bytes`; URLs carry its first 12 characters as ?v=
+  width       Int // pixels (SVG: from the viewBox / width and height; ICO: the largest entry)
+  height      Int
+  byteSize    Int
+  pngBytes    Bytes? // PNG rendition: logos at most 160 px tall (emails, PDFs), favicon 180 x 180 (apple-touch-icon)
+  pngWidth    Int?
+  pngHeight   Int?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  updatedById String?
+  updatedBy   User?          @relation("BrandAssetUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
 }
 
 model SiteSetting {

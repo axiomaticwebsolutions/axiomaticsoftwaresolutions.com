@@ -120,6 +120,19 @@ export function strictCspRoute(pathname: string): StrictCspRoute | null {
   return null;
 }
 
+/**
+ * Uploaded branding files (GET /brand/:file: logos and favicon from Admin > Settings > Branding). An SVG opened
+ * directly is a document, so it gets a policy that loads and runs nothing (inline styles only) inside a sandbox.
+ * middleware.ts sets it on every /brand response (a response header set there wins over the route's own), and the
+ * route sets it too.
+ */
+export const BRAND_ASSET_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+/** `/brand/...`: the uploaded branding files. */
+export function isBrandAssetPath(pathname: string): boolean {
+  return pathname.startsWith("/brand/");
+}
+
 /** 128 random bits, base64 (what Next.js accepts in `'nonce-...'`). Web Crypto, so it runs in the edge runtime. */
 export function generateNonce(): string {
   const bytes = new Uint8Array(16);

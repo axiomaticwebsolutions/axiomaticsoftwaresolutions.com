@@ -61,6 +61,14 @@ describe("Templates model", () => {
     expect(previewTemplate("order_confirmation", { subject: "{{nope}}", body: "x" }, ctx).subject).toBe("{{nope}}");
   });
 
+  it("previews the uploaded logo like real emails (Admin > Settings > Branding)", () => {
+    const content = { subject: "Order {{order_id}}", body: "Hi." };
+    expect(previewTemplate("order_confirmation", content, ctx).html).not.toContain("/brand/");
+    const logo = { alt: "Axiomatic", light: { src: "https://axiomatic.example/brand/logo-light.png?v=3f2a9c1b0d4e", width: 144, height: 36 }, dark: null };
+    const html = previewTemplate("order_confirmation", content, { ...ctx, logo }).html;
+    expect(html).toContain('<img src="https://axiomatic.example/brand/logo-light.png?v=3f2a9c1b0d4e" width="144" height="36"');
+  });
+
   it("filters by status and validates bodies", () => {
     const rows = [templateDto("order_confirmation", null), templateDto("renewal_7", { name: "R7", subject: "s", body: "b", active: true, updatedAt: new Date() })];
     expect(filterAndSortTemplates(rows, { q: "", filters: { status: "active" }, sort: { id: "order", desc: false } }).map((t) => t.id)).toEqual(["renewal_7"]);

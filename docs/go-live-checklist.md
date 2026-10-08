@@ -191,7 +191,8 @@ Tick an item only after you have done the check, not because the setting "should
   on), support / sales / legal / privacy emails are mailboxes you read, invoice prefix `AXS` and credit-note prefix
   `AXC` (or your choice, up to 3 characters), GST rate 18 % and SAC 997331 (to confirm with your CA). Integrations:
   payments, storage and email each say "Saved in Admin" (payments with Test mode), and "Test Razorpay keys", "Send
-  test email" and "Test bucket" each pass; Rate limits says Configured.
+  test email" and "Test bucket" each pass; Rate limits says Configured. Branding (optional): uploaded logos and favicon
+  show on the storefront header, an invoice PDF and a test email, or the built-in logo is used.
 - [ ] **The site says it is a test.** The sample notice strip shows on the home page.
 - [ ] **Installer uploads work.** Admin > Releases: a draft release takes an installer upload and publishes. Every
   page allows the bucket's origin in `connect-src`, taken at runtime from the storage settings saved in Admin: a CSP

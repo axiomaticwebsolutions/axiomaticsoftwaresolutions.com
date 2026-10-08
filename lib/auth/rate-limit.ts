@@ -350,6 +350,8 @@ export const RATE_LIMITS = {
   integrationPassword: (userId: string) => rule(`integration-password:user:${hashedId(userId)}`, 5, 15 * MINUTE),
   /** Integration test buttons (each reaches Razorpay, the SMTP server or the bucket): 10 / 10 min per Owner; never cleared. */
   integrationTest: (userId: string) => rule(`integration-test:user:${hashedId(userId)}`, 10, 10 * MINUTE),
+  /** Admin > Settings > Branding uploads (each decoded and re-encoded with sharp): 30 / hour per Owner. */
+  brandUpload: (staffId: string) => rule(`brand-upload:user:${hashedId(staffId)}`, 30, HOUR),
   /** Admin > Customers "New customer": 30 / hour per staff member. */
   adminCustomerCreate: (staffId: string) => rule(`admin-customer-create:user:${hashedId(staffId)}`, 30, HOUR),
   /** Customer edits, "Mark email as verified" and set-password links: 60 / 10 min per staff member. */

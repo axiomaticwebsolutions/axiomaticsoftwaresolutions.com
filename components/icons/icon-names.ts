@@ -15,7 +15,7 @@ export const ICON_NAMES = [
   "handshake", "help", "history", "hourglass_top", "info", "inventory", "inventory_2", "key", "keyboard_command_key",
   "laptop", "laptop_mac", "local_pharmacy", "local_shipping", "lock", "lock_reset", "logout", "mail", "manage_search",
   "mark_chat_unread", "mark_email_unread", "medication", "menu", "menu_book", "monitoring", "more_horiz", "more_time",
-  "more_vert", "new_releases", "notifications", "open_in_new", "outgoing_mail", "pause", "pause_circle", "payments",
+  "more_vert", "new_releases", "notifications", "open_in_new", "outgoing_mail", "palette", "pause", "pause_circle", "payments",
   "pending", "pending_actions", "percent", "person", "person_add", "person_off", "phone_android", "play_arrow",
   "play_circle", "policy", "print", "publish", "qr_code_2", "radio_button_unchecked", "receipt_long", "remove",
   "restart_alt", "restaurant", "rocket_launch", "room_service", "schedule", "search", "search_off", "sell", "send",

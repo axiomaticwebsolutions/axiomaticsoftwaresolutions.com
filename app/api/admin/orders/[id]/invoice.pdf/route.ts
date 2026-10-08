@@ -4,6 +4,7 @@
  * 404 unknown order, 409 invoice_unavailable before payment. no-store (billing details are personal).
  */
 import { adminRoute, idParam } from "@/lib/admin/http";
+import { invoiceLogo } from "@/lib/branding/store";
 import { db } from "@/lib/db";
 import { ApiError, errors } from "@/lib/http";
 import { loadInvoiceModel } from "@/lib/invoice/load";
@@ -21,7 +22,7 @@ export const GET = adminRoute<{ id: string }>("orders.view", async ({ params }) 
   if (!model || !model.number) {
     throw new ApiError(409, "invoice_unavailable", "The tax invoice is available once the payment is confirmed.");
   }
-  const pdf = await renderInvoicePdf(model);
+  const pdf = await renderInvoicePdf(model, { logo: await invoiceLogo(db) });
   return new Response(new Uint8Array(pdf), {
     status: 200,
     headers: {

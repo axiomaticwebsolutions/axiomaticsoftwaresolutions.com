@@ -10,6 +10,7 @@
  * Cache-Control: no-store (billing details are personal).
  */
 import { enforce, hit, RATE_LIMITS } from "@/lib/auth/rate-limit";
+import { invoiceLogo } from "@/lib/branding/store";
 import { orderTokenFrom } from "@/lib/checkout/request";
 import { db } from "@/lib/db";
 import { ApiError, clientIp, route } from "@/lib/http";
@@ -33,7 +34,7 @@ export const GET = route<Context>(async (req, { params }) => {
   const model = await loadInvoiceModel(db, access.order.id);
   if (!model || !model.number) throw new ApiError(409, "invoice_unavailable", INVOICE_UNAVAILABLE_MESSAGE);
 
-  const pdf = await renderInvoicePdf(model);
+  const pdf = await renderInvoicePdf(model, { logo: await invoiceLogo(db) });
   log.info("invoice_pdf_served", { orderId: access.order.id, byOrderLink: access.viaToken, bytes: pdf.length });
   return new Response(new Uint8Array(pdf), {
     status: 200,

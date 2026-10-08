@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
+import { UploadedLogo, useBrandLogo } from "@/components/brand/branding-context";
 import { LogoMark } from "@/components/brand/logo";
 import { Icon } from "@/components/icons/icon";
 import { useAdmin } from "@/components/admin/admin-context";
@@ -60,17 +61,29 @@ export function AdminSidebar({ onNavigate, closeButton }: AdminSidebarProps) {
   const uid = React.useId();
   const role = STAFF_ROLE_LABELS[staff.role];
   const onProfile = pathname === ADMIN_PROFILE_PATH;
+  // The logo uploaded for light backgrounds (Admin > Settings > Branding) replaces the mark and the name; the console
+  // label stays beside it and the 35 px link keeps the built-in header height.
+  const uploaded = useBrandLogo();
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-surface text-ink", SIDEBAR_FOCUS)}>
       <div className="flex items-center gap-2.5 px-3.5 pb-2.5 pt-4">
-        <Link href={ADMIN_HOME} aria-label="Admin overview" onClick={onNavigate} className="block h-[35px] flex-none rounded-9">
-          <LogoMark size={30} />
+        <Link
+          href={ADMIN_HOME}
+          aria-label="Admin overview"
+          onClick={onNavigate}
+          className={cn("h-[35px] flex-none rounded-9", uploaded ? "flex min-w-0 items-center" : "block")}
+        >
+          {uploaded ? <UploadedLogo image={uploaded} height={28} maxWidth={120} /> : <LogoMark size={30} />}
         </Link>
-        <span className="min-w-0 flex-1 leading-[1.1]">
-          <span className="block text-[16px] font-extrabold tracking-[-0.02em]">Axiomatic</span>
-          <span className="block text-[11px] font-bold tracking-[0.08em] text-ink-3">ADMIN CONSOLE</span>
-        </span>
+        {uploaded ? (
+          <span className="block min-w-0 flex-1 text-[11px] font-bold leading-[1.1] tracking-[0.08em] text-ink-3">ADMIN CONSOLE</span>
+        ) : (
+          <span className="min-w-0 flex-1 leading-[1.1]">
+            <span className="block text-[16px] font-extrabold tracking-[-0.02em]">Axiomatic</span>
+            <span className="block text-[11px] font-bold tracking-[0.08em] text-ink-3">ADMIN CONSOLE</span>
+          </span>
+        )}
         {closeButton}
       </div>
       <nav aria-label="Admin" className="scrollbar-subtle grid min-h-0 flex-1 content-start gap-3 overflow-y-auto px-2.5 py-1">

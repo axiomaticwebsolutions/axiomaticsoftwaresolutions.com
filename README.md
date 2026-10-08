@@ -48,6 +48,10 @@ webhooks), `EMAIL_TRANSPORT=console` (emails, codes and links at `/dev/mailbox`)
 `.storage/`); outside production these are also the defaults when the variables are unset. `lib/env.ts` refuses all
 three in production.
 
+Admin > Settings also has **Branding** (Owner): a logo for light backgrounds, a logo for dark backgrounds and the
+favicon, stored in PostgreSQL and served from `/brand/*` (decisions.md "Branding: logos and favicon"). Without uploads
+the built-in logo and `app/icon.svg` are used.
+
 Razorpay, SMTP and the storage bucket can also be saved by the Owner in Admin > Settings > Integrations
 (docs/admin-integrations-design.md). A configuration saved there wins over the env file for that integration, so a
 saved payment, email or storage setting replaces the development driver: remove it ("Remove saved settings") to get the

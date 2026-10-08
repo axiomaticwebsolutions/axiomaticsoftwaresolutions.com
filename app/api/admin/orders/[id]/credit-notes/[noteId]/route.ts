@@ -4,6 +4,7 @@
  * 404 for an unknown order or a note of another order. no-store (billing details are personal).
  */
 import { adminRoute, idParam } from "@/lib/admin/http";
+import { invoiceLogo } from "@/lib/branding/store";
 import { db } from "@/lib/db";
 import { errors } from "@/lib/http";
 import { loadCreditNoteModel } from "@/lib/invoice/load";
@@ -18,7 +19,7 @@ export const GET = adminRoute<{ id: string; noteId: string }>("orders.view", asy
   const noteId = idParam(params, "noteId", "Credit note");
   const model = await loadCreditNoteModel(db, orderId, noteId);
   if (!model || !model.number) throw errors.notFound("Credit note");
-  const pdf = await renderInvoicePdf(model);
+  const pdf = await renderInvoicePdf(model, { logo: await invoiceLogo(db) });
   return new Response(new Uint8Array(pdf), {
     status: 200,
     headers: {

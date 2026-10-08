@@ -1,9 +1,12 @@
 /**
  * Composes a ready-to-send email from a template id and variables: the copy comes from the NotificationTemplate row
  * when it is active, otherwise from the code defaults; blocks and required variables always come from the code
- * defaults; the footer comes from the business settings. Server-only (reads the database).
+ * defaults; the footer comes from the business settings and the logo from Admin > Settings > Branding (the uploaded
+ * light logo's PNG rendition by absolute URL, else the built-in one). Server-only (reads the database).
  */
 import "server-only";
+import type { EmailLogo } from "@/lib/branding/model";
+import { emailLogo } from "@/lib/branding/store";
 import { getSetting, SETTING_DEFAULTS, type BusinessSettings } from "@/lib/config";
 import type { Db } from "@/lib/db";
 import { getEnv } from "@/lib/env";
@@ -40,6 +43,8 @@ export type ComposeOptions = {
   content?: { subject: string; body: string };
   business?: BusinessSettings;
   appUrl?: string;
+  /** The header logo; default: the uploaded one from the database (none with `db: null`). */
+  logo?: EmailLogo | null;
   unknownVars?: UnknownVarMode;
 };
 
@@ -99,6 +104,8 @@ export async function composeEmail(
   const def = isEmailTemplateId(templateId) ? EMAIL_TEMPLATE_DEFAULTS[templateId] : null;
   const blocks: readonly EmailBlock[] = def?.blocks ?? [];
   const business = options.business ?? (db ? await getSetting(db, "business") : structuredClone(SETTING_DEFAULTS.business));
+  const appUrl = options.appUrl ?? getEnv().APP_URL;
+  const logo = options.logo !== undefined ? options.logo : db ? await emailLogo(db, appUrl) : null;
 
   const rendered = renderEmail({
     subject: content.subject,
@@ -106,7 +113,8 @@ export async function composeEmail(
     blocks,
     vars,
     footer: footerFromBusiness(business),
-    appUrl: options.appUrl ?? getEnv().APP_URL,
+    appUrl,
+    logo,
     unknownVars: options.unknownVars,
   });
   if (rendered.unknownVars.length > 0) {

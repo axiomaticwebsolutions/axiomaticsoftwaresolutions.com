@@ -18,7 +18,9 @@
  * 404; source and env files (/.env, /package.json, ...) are not served; cron routes refuse requests without the
  * secret; a webhook with a bad signature is 401; the device API answers a junk token or key with 4xx, never 5xx (a
  * 503 there means Redis or the database is unreachable); unknown pages are 404; a /_next/static asset is served
- * through the proxy with the app's long-lived Cache-Control (no second expiry added by the proxy).
+ * through the proxy with the app's long-lived Cache-Control (no second expiry added by the proxy); the branding files
+ * (/brand/logo-light, /brand/logo-dark, /brand/favicon: 404 when nothing is uploaded, else an image) carry nosniff and
+ * the sandbox Content-Security-Policy, and other /brand names are 404.
  *
  * Never sends real data: no cookies, no sign-in, no form posts. The only writes it can cause are a
  * WebhookDelivery(invalid_signature) bookkeeping row and rate-limit counters. Prints a PASS/FAIL/WARN/SKIP table and
@@ -609,6 +611,34 @@ async function checkPrivateFiles() {
   else pass(g, name, `${PRIVATE_FILES.length} paths refused (404/403)`);
 }
 
+/** Admin > Settings > Branding files (docs/security.md "Branding uploads"). */
+const BRAND_ASSET_CSP = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+async function checkBranding() {
+  const g = "Branding";
+  for (const slot of ["logo-light", "logo-dark", "favicon"]) {
+    const res = await request(`/brand/${slot}`, { readBody: false });
+    const name = `GET /brand/${slot}`;
+    if (res.error || ![200, 404].includes(res.status)) {
+      fail(g, name, describe(res));
+      continue;
+    }
+    const problems = [];
+    if (res.headers.get("content-security-policy") !== BRAND_ASSET_CSP) problems.push(`CSP is "${res.headers.get("content-security-policy") ?? "missing"}"`);
+    if (res.headers.get("x-content-type-options") !== "nosniff") problems.push("no nosniff");
+    if (res.status === 200) {
+      const type = res.headers.get("content-type") ?? "";
+      if (!/^image\/(png|webp|svg\+xml|x-icon)$/.test(type)) problems.push(`Content-Type ${type || "missing"}`);
+      if (!(res.headers.get("content-disposition") ?? "").startsWith("inline")) problems.push("not inline");
+    }
+    if (problems.length > 0) fail(g, name, problems.join("; "));
+    else pass(g, name, res.status === 404 ? "404: nothing uploaded (built-in look)" : `200 ${res.headers.get("content-type")}, sandboxed`);
+  }
+  const junk = await request("/brand/logo-light.svg", { readBody: false });
+  if (junk.status === 404) pass(g, "Other /brand names are 404", "404");
+  else fail(g, "Other /brand names are 404", describe(junk));
+}
+
 async function checkCron() {
   const g = "Cron";
   for (const path of ["/api/cron/emails", "/api/cron/reconcile", "/api/cron/renewals", "/api/cron/maintenance"]) {
@@ -722,6 +752,7 @@ async function main() {
   await checkAuthGates();
   await checkDevRoutesHidden();
   await checkPrivateFiles();
+  await checkBranding();
   await checkCron();
   await checkWebhooks();
   await checkDeviceApi();

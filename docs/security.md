@@ -82,6 +82,9 @@ font-src 'self'; connect-src 'self' <storage bucket origin>; frame-src 'self'; f
 form-action 'self'; base-uri 'none'; object-src 'none'`, with Razorpay's frame, connect and image origins on
 `/checkout` and `/orders/:id`. Development adds `'unsafe-eval'` (React refresh) and `ws:` (hot reload).
 
+**Uploaded branding files** (`/brand/*`) get `default-src 'none'; style-src 'unsafe-inline'; sandbox` from the middleware
+instead of a page policy ("Branding uploads" below).
+
 **The bucket origin is a runtime value** (since 2026-10-08, decisions.md "Admin-configurable integrations"). The
 storage bucket can be changed in Admin > Settings > Integrations, so it cannot be baked in by `next build`.
 `middleware.ts` runs in the Node.js runtime (`config.runtime = "nodejs"`) and its matcher covers every page
@@ -278,6 +281,52 @@ amounts, so the GST split stays the same, and it is refused while a refund exist
 Settings no longer matches the original invoice (a credit note must come from the registration that issued the invoice
 it cancels). A late `payment.failed` for an attempt a staff edit or cancel replaced is recorded on the attempt only: the
 order keeps its status and no "try again" email goes out.
+
+## Branding uploads (Admin > Settings > Branding, 2026-10-08)
+
+The Owner can upload a logo for light backgrounds, a logo for dark backgrounds and a favicon (decisions.md "Branding:
+logos and favicon"). They are public files served by the app from PostgreSQL (`BrandAsset`), so every upload is
+treated as hostile:
+
+- **Who and how.** `PUT` / `DELETE /api/admin/settings/branding/:slot` are adminRoute handlers: `settings.manage`
+  (Owner) checked on the server, CSRF token and same origin, cross-site requests refused. The body is the raw file
+  (`application/octet-stream` or `image/*`, else 415). A `Content-Length` over the slot's limit (1 MB logos, 256 KB
+  favicon) is refused before anything is read, and the body is counted while streaming, so a missing or false length
+  gets no further. 30 uploads per hour per Owner (`brandUpload`, counted before the body is read).
+- **Type from the bytes.** `lib/branding/sniff.ts` reads the magic numbers; the declared type and the file name are
+  ignored. Logos accept PNG, SVG and WebP, the favicon PNG, SVG and ICO; JPEG, GIF, BMP, TIFF, HEIF, PDF and anything
+  unrecognised are 422 with a field error.
+- **Rasters are re-encoded.** PNG and WebP go through sharp with a pixel limit (5000 x 5000) and `failOn: "error"`,
+  are auto-rotated and re-encoded in their own format (WebP lossless). Every metadata chunk (EXIF, XMP, text, ICC
+  names) is dropped, transparency is kept, animations keep their first frame. Minimum and maximum sizes and the square
+  favicon are checked on the decoded size.
+- **ICO is validated and rebuilt.** Header, directory, every image inside the file, each a PNG (its own IHDR) or a
+  BITMAPINFOHEADER BMP, square, at most 1024 px, at most 64 x 256 x 256 px in all. The stored file is a new ICO made
+  from those images only: PNG images decoded and re-encoded by sharp (no text, EXIF or other metadata chunks), BMP
+  images cut to the bytes their header says they need. Bytes between or after the images (an appended HTML or ZIP
+  polyglot, hidden text) are dropped. Served as `image/x-icon` with nosniff.
+- **SVG is rebuilt, never passed through.** `lib/branding/svg.ts` parses with a strict XML parser and writes a new
+  document from an allowlist of elements and attributes. Refused (422, with the reason): a DOCTYPE or entity
+  declaration (no entity expansion, no external entities), processing instructions such as `xml-stylesheet`, entities
+  other than the five XML ones, `<script>` (any case, also inside dropped elements), `<foreignObject>`, `<image>`,
+  `<feImage>`, `<iframe>`, `<embed>`, `<object>`, `<audio>`, `<video>`, `<canvas>`, `<handler>`, `<listener>`, any
+  `on*` attribute, `javascript:` / `vbscript:` / `data:text/html` in any attribute (after decoding character references
+  and removing whitespace), `href` / `xlink:href` / `src` that is not a local `#id`, `url()` that is not `url(#id)`,
+  and CSS with `@import`, `image-set()` and similar, `src()`, `expression()`, `-moz-binding`, `behavior` or backslash
+  escapes. The CSS checks run on `<style>`, `style` and every other attribute that is kept (presentation attributes
+  such as `fill` or `filter` are CSS too; dropped editor attributes are still checked for `url()`), on the text as written: comments are not stripped first (a comment cannot join
+  CSS tokens, while stripping them without parsing strings let `"/*"` hide a `url()`), so a `url(` or `@import`
+  even inside a comment is refused. Every check is a linear scan (no backtracking regex), so a 1 MB SVG of
+  unterminated `url(` is refused in milliseconds instead of stalling the process. Dropped:
+  comments, editor metadata, animation elements, `data-*` and every attribute or element outside the allowlist.
+- **Served sandboxed.** `GET /brand/:file` answers with the stored type, `X-Content-Type-Options: nosniff`,
+  `Content-Disposition: inline` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`
+  (`BRAND_ASSET_CSP`). middleware.ts sets that policy on every `/brand/*` response instead of a page policy: Next.js
+  keeps a header set in middleware over the one the route returns, so relying on the route alone would leave an SVG
+  opened directly under the static page policy. Pages show the files with `<img>`, where SVG never runs scripts
+  anyway; the sandbox covers the file opened as a document.
+- **Audit.** "Uploaded / Replaced / Removed branding image" rows name the slot, MIME type, byte size and the first 12
+  hex characters of the SHA-256; the bytes are never logged or audited.
 
 ## Other controls (Phase 7 review)
 

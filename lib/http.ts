@@ -203,6 +203,14 @@ async function readLimited(req: Request, maxBytes: number): Promise<Uint8Array> 
   return out;
 }
 
+/**
+ * Reads a raw (non-JSON) request body of at most `maxBytes`: 413 `payload_too_large` past it, counted while streaming,
+ * so a missing or wrong Content-Length cannot get more through (branding uploads).
+ */
+export async function readRawBody(req: Request, maxBytes: number): Promise<Uint8Array> {
+  return readLimited(req, maxBytes);
+}
+
 function isJsonMediaType(contentType: string | null): boolean {
   const media = (contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
   return media === "application/json" || /^application\/[a-z0-9.+-]+\+json$/.test(media);
