@@ -28,6 +28,7 @@ otherwise turn a routine root command into root access on this shared server.
 | `shared/deploy.env` | `AXS_PORT=3210`, `AXS_NODE_DIR=/www/server/nodejs/v24.14.0/bin`, `AXS_APP_NAME=axiomatic-software` |
 | Database | aaPanel PostgreSQL 16.10 (shared server), database and role **`axs_store`**, UTF8 / collation C, 127.0.0.1:5432 |
 | Redis | the app's **own** instance on **127.0.0.1:6380** with a password: systemd `axsstore-redis`, config `/etc/axsstore-redis.conf` (root:axsstore, 640), binary `/usr/local/lib/axsstore-redis/redis-server` (a copy of aaPanel's Redis 8.2), no persistence, 128 MB. aaPanel's Redis on 6379 is not used. |
+| Integrations | Razorpay, SMTP and the bucket are set in Admin > Settings > Integrations and stored encrypted in the database (key derived from `LICENSE_KEY_ENC_KEY`); the server file is only a fallback. Redis stays in the server file. |
 | Nginx | site file `/www/server/panel/vhost/nginx/axiomaticsoftwaresolutions.com.conf` (aaPanel's static-file blocks and HSTS line removed, includes the proxy folder); proxy file `/www/server/panel/vhost/nginx/proxy/axiomaticsoftwaresolutions.com/axiomatic-app.conf` = `deploy/aapanel-nginx.conf` with port 3210; root-owned copy for repairs `/root/axs-nginx/axiomatic-app.conf` (5.5) |
 | Web root | Nginx `root` is still the checkout folder; it is only reached if the proxy include goes missing. 5.6 replaces it with an empty folder. |
 | TLS | Let's Encrypt wildcard `*.axiomaticsoftwaresolutions.com` + apex, imported in aaPanel ("Other certificate"). **Expires 21 Dec 2026 and aaPanel does not renew it** (5.4). |
@@ -49,7 +50,7 @@ otherwise turn a routine root command into root access on this shared server.
 | aaPanel's Reverse proxy form | Proxy file written by hand (8.1) | aaPanel's website-monitor lines inside the static-file blocks make the form fail with `"location" directive is not allowed here` |
 | Backups in `/www/backup/axiomatic` | `/home/axsstore/backups` | `/www/backup` is root-only (mode 600) and holds the other sites' backups |
 | PM2 process `axiomatic` | `axiomatic-software` (`AXS_APP_NAME`) | Owner's choice |
-| Real Razorpay, SMTP and bucket values | Stand-ins for now (5.1) | Accounts not ready on release day |
+| Razorpay, SMTP and bucket in the server file | Entered in Admin > Settings > Integrations (5.1); the release-day stand-ins in the file count as not configured | Owner decision 2026-10-08: editable, encrypted integrations |
 
 ---
 
@@ -64,7 +65,7 @@ sudo -iu axsstore bash -lc 'cd /www/wwwroot/axiomaticsoftwaresolutions.com && ./
 ```
 
 `./scripts/deploy.sh` always pulls the newest `main` (or the given tag) first. To rebuild exactly the code that is live
-(for example after a `STORAGE_*` change), check that the checkout is at the live commit, then build from it:
+(for example after an `APP_URL` change), check that the checkout is at the live commit, then build from it:
 
 ```bash
 sudo -iu axsstore git -C /www/wwwroot/axiomaticsoftwaresolutions.com log -1 --format=%H
@@ -123,8 +124,9 @@ node scripts/smoke-prod.mjs --base https://axiomaticsoftwaresolutions.com
 
 | You changed | Then |
 |---|---|
-| `PAYMENT_*`, `SMTP_*`, `EMAIL_FROM` or another secret in `shared/.env.production` | `restart.sh` |
-| `APP_URL` or any `STORAGE_*` value | Deploy again (the build bakes them into the pages and the Content-Security-Policy); see above to rebuild exactly the live code |
+| Razorpay, email or bucket settings | Change them in Admin > Settings > Integrations (5.1); they apply within 30 seconds, no restart |
+| A secret in `shared/.env.production` (session, license, database, Redis) | `restart.sh` |
+| `APP_URL` | Deploy again (the build bakes it into the pages); see above to rebuild exactly the live code |
 | Code (pushed to GitHub from the PC) | Deploy |
 | `AXS_PORT` | `restart.sh --recreate`; then put the new port into the root copy of the proxy file (`sed -i 's#127.0.0.1:3210;#127.0.0.1:<NEW>;#' /root/axs-nginx/axiomatic-app.conf`), run 8.1, and use the new port in this runbook's health checks. The site answers 502 between the two steps. |
 | `AXS_NODE_DIR` | 8.4 |
@@ -170,63 +172,63 @@ cd / && for job in emails reconcile renewals maintenance; do sudo -u axsstore en
 
 ## 5. Still to do
 
-### 5.1 Real Razorpay, email and bucket values
+### 5.1 Razorpay, email and bucket: enter them in Admin
 
-The release went live with stand-ins so the deploy could pass its checks. Until they are replaced: **checkout cannot
-take payments, no email is sent, and uploads/downloads fail.** Current values:
+Since the release with editable integrations, the real values are entered in **Admin > Settings > Integrations** (Owner
+only; every save asks for your password). They are stored encrypted in the database (key derived from
+`LICENSE_KEY_ENC_KEY`) and shown only as "Set (ends 1a2b)". A saved card wins over the server file, and the
+release-day stand-ins in `shared/.env.production` count as not configured. Until a card is saved: checkout says payments
+aren't available yet, emails wait in the outbox, uploads and downloads answer an error. Saved changes apply within 30
+seconds: no restart and no deploy, a bucket change included.
 
-| Setting | Stand-in now |
-|---|---|
-| `PAYMENT_KEY_ID`, `PAYMENT_KEY_SECRET` | `rzp_test_pending`, `pending-razorpay-secret` |
-| `SMTP_HOST`, `SMTP_USER`, `SMTP_PASSWORD` | `smtp-pending.invalid`, `pending`, `pending` |
-| `EMAIL_FROM` | `"Axiomatic Software <no-reply@axiomaticsoftwaresolutions.com>"` (real, but needs a provider allowed to send for this domain) |
-| `STORAGE_ENDPOINT`, `STORAGE_BUCKET`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | `https://r2-pending.invalid`, `axiomatic-files-pending`, `pending-r2`, `pending-r2-secret` |
-| `STORAGE_REGION`, `STORAGE_FORCE_PATH_STYLE` | `auto`, `true` (already right for Cloudflare R2) |
+1. **Payment provider (Razorpay):** Dashboard > **Test Mode** > Account & Settings > API Keys > Generate Test Key
+   (payment capture **automatic**). In Admin: Key ID, Key secret and a Webhook secret of your choice (a long random
+   string, kept in the password manager). **Save**, then **Test Razorpay keys**. Then add the webhook (5.2).
+2. **Email delivery:** SMTP host, port and security (STARTTLS on 587 or TLS on 465), username, password, From name and
+   From address. **Save**, then **Send test email** (it goes to your own address). Quickest for test mode: Gmail with an
+   app password (Google Account > Security > 2-Step Verification on > App passwords): host `smtp.gmail.com`, port 587,
+   STARTTLS, the Gmail address as username and From address. Use a Gmail account created only for this site's mail,
+   never a main mailbox (an app password opens the whole mailbox). Before real customers, move to a sender on the site's
+   own domain (Brevo, Zoho ZeptoMail or Amazon SES, with SPF and DKIM records in Cloudflare) and revoke the app password.
+3. **Installer storage (Cloudflare R2):** R2 > Create bucket `axiomatic-files` (Asia-Pacific; public access off: no
+   r2.dev URL, no custom domain). Bucket > Settings > CORS policy:
 
-Edit the file as in section 3, then: only Razorpay and/or email changed: `restart.sh`; any `STORAGE_*` changed: deploy
-again.
+   ```json
+   [
+     {
+       "AllowedOrigins": ["https://axiomaticsoftwaresolutions.com"],
+       "AllowedMethods": ["PUT", "GET", "HEAD"],
+       "AllowedHeaders": ["content-type"],
+       "ExposeHeaders": ["ETag"],
+       "MaxAgeSeconds": 3000
+     }
+   ]
+   ```
 
-**Email, quickest for test mode (Gmail):** use a Gmail account created only for this site's mail (no other service
-registered to it, its own recovery phone), never the owner's or the business's main mailbox: an app password opens the
-whole mailbox. Google Account > Security > 2-Step Verification on > App passwords > create "Axiomatic".
-`SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=587`, `SMTP_USER=<that Gmail address>`, `SMTP_PASSWORD=<the 16 letters, no
-spaces>`, `EMAIL_FROM="Axiomatic Software <the same Gmail address>"`. Check that the server reaches it:
-`timeout 5 bash -c '</dev/tcp/smtp.gmail.com/587' && echo reachable`. Before real customers, move to a sender on the
-site's own domain (Brevo, Zoho ZeptoMail or Amazon SES, with SPF and DKIM records in Cloudflare; deploy-today.md 0.4)
-and revoke the app password.
+   R2 > Manage API tokens > Create API token: Object Read & Write, this bucket only. In Admin: preset **Cloudflare R2**,
+   endpoint `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, region `auto`, the bucket, the token's access key ID and
+   secret access key, path-style on. **Save** (the page reloads itself), then **Test bucket**. Reload any other open
+   Admin tabs before uploading.
 
-**Razorpay:** Dashboard > **Test Mode** > Account & Settings > API Keys > Generate Test Key; payment capture **automatic**.
+Changing the SMTP server or the storage endpoint later asks for the password or secret key again. **Remove saved
+settings** on a card deletes it and falls back to the server file.
 
-**Cloudflare R2:** R2 > Create bucket `axiomatic-files` (Asia-Pacific; public access off: no r2.dev URL, no custom
-domain). Bucket > Settings > CORS policy:
+**Then remove the stand-ins from the server file** (as the app user; `DOWNLOAD_LINK_TTL_SECONDS` stays), restart, and
+let the preflight confirm the saved cards:
 
-```json
-[
-  {
-    "AllowedOrigins": ["https://axiomaticsoftwaresolutions.com"],
-    "AllowedMethods": ["PUT", "GET", "HEAD"],
-    "AllowedHeaders": ["content-type"],
-    "ExposeHeaders": ["ETag"],
-    "MaxAgeSeconds": 3000
-  }
-]
+```bash
+sudo -iu axsstore sed -i -E '/^(PAYMENT_[A-Z_]+|STORAGE_(DRIVER|ENDPOINT|REGION|BUCKET|ACCESS_KEY_ID|SECRET_ACCESS_KEY|FORCE_PATH_STYLE)|EMAIL_[A-Z_]+|SMTP_[A-Z_]+)=/d' /www/wwwroot/axiomatic/shared/.env.production
+sudo -iu axsstore grep -cE '^(PAYMENT_|STORAGE_|EMAIL_|SMTP_)' /www/wwwroot/axiomatic/shared/.env.production    # 0
+sudo -iu axsstore bash /www/wwwroot/axiomatic/current/deploy/restart.sh
+sudo -iu axsstore bash -lc 'cd /www/wwwroot/axiomatic/current && NODE_ENV=production node --import tsx deploy/preflight.mjs --db'
 ```
-
-R2 > Manage API tokens > Create API token: Object Read & Write, this bucket only. Then
-`STORAGE_ENDPOINT=https://<ACCOUNT_ID>.r2.cloudflarestorage.com`, `STORAGE_BUCKET=axiomatic-files`, the token's access key
-ID and secret, and deploy again.
 
 ### 5.2 Razorpay webhook (Test Mode)
 
-Show the webhook secret (on the server screen only, never in a chat or ticket), then run `clear`:
-
-```bash
-sudo -iu axsstore grep '^PAYMENT_WEBHOOK_SECRET=' /www/wwwroot/axiomatic/shared/.env.production | cut -d= -f2-
-```
-
-Razorpay > Test Mode > Account & Settings > Webhooks > Add new webhook: URL
-`https://axiomaticsoftwaresolutions.com/api/webhooks/payments/razorpay`, the secret above, events `payment.captured`,
-`payment.failed`, `refund.processed`, `refund.failed`, `order.paid`.
+The Payment provider card shows the webhook URL, `https://axiomaticsoftwaresolutions.com/api/webhooks/payments/razorpay`.
+Razorpay > Test Mode > Account & Settings > Webhooks > Add new webhook: that URL, the **same Webhook secret you saved in
+Admin**, events `payment.captured`, `payment.failed`, `refund.processed`, `refund.failed`, `order.paid`. After the next
+test payment, the card's test result shows when the last signed webhook arrived.
 
 ### 5.3 Owner sign-in and two-step verification
 
@@ -415,6 +417,8 @@ The counts match (or the live database is a little ahead).
 - Query the app's tables as the `postgres` superuser (a compromised app could plant a view that runs its code with
   superuser rights); only `CREATE DATABASE` / `DROP DATABASE` as in section 6.
 - Run `gen-prod-env.mjs --force` once a license exists: new license secrets make every issued key unverifiable.
+- Change `LICENSE_KEY_ENC_KEY`: it also encrypts the integration secrets saved in Admin, which would all have to be
+  entered again.
 - Edit code on the server: change it on the PC, push to GitHub, deploy (the deploy refuses a checkout with local edits).
 
 ---
@@ -497,6 +501,8 @@ grep -n proxy_pass /www/server/panel/vhost/nginx/proxy/axiomaticsoftwaresolution
 - The app is `errored` or not listed: `sudo -iu axsstore bash /www/wwwroot/axiomatic/current/deploy/restart.sh --recreate`.
 - 503: `systemctl restart axsstore-redis` (logs: `journalctl -u axsstore-redis`), or start PostgreSQL in aaPanel > App
   Store (shared with other sites).
+- Checkout says payments are not available and the API answers 503 `payments_unavailable`: the Payment provider card
+  in Admin > Settings > Integrations is not configured (5.1).
 - `proxy_pass` is not 3210, or the proxy file is missing: 8.1.
 - Storefront pages answer 404 and the app log shows `NoFallbackError`: a page uses `dynamicParams = false` again (decisions.md "No `dynamicParams = false` on ISR pages"). `restart.sh` is the stop-gap; the fix is in the code.
 - The app's own log files: `/www/wwwroot/axiomatic/shared/logs/app-out.log` and `app-error.log`. Never check this app on
