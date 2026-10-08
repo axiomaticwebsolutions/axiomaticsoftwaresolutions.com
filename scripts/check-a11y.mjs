@@ -15,7 +15,8 @@
  *            (focused; fields carry aria-invalid and a described message). axe runs in each open state.
  *   auth     Sign-in, register and forgot-password error states (summary focus, aria-invalid/aria-describedby), a
  *            refused password (alert banner, focus kept), and the two-step code step (focus on the labelled numeric
- *            one-time-code field) for a staff sign-in that is never completed.
+ *            one-time-code field) for a staff sign-in that is never completed. Two-step is opt-in, so the seeded
+ *            Owner's switch is turned on for that step only and put back as it was.
  *   orders   The order page in every state the data has (paid, awaiting payment, confirming, pending, failed,
  *            canceled, refunded) through a signed guest link (orders whose keys were already delivered only) or as
  *            the account Owner, at 1280 and 360px: one h1, the hero in a polite live region, no overflow, axe.
@@ -628,34 +629,42 @@ async function scenarioAuth() {
   check((await focused(page)).includes("Sign in"), "sign-in: focus stays on the submit button after a refusal", await focused(page));
   await axe(page, "sign-in with a refusal banner");
 
-  // Two-step step (seeded staff Owner, never completed): focus lands on the labelled one-time-code field.
+  // Two-step step (seeded staff Owner, never completed): focus lands on the labelled one-time-code field. Two-step is
+  // opt-in (off by default), so switch it on for this account for the step and restore the old value afterwards.
   if (PEOPLE.staffOwner.email && PEOPLE.staffOwner.password) {
-    await go(page, "/sign-in");
-    await hydrated(page, "#sign-in-email");
-    await page.locator("#sign-in-email").fill(PEOPLE.staffOwner.email);
-    await page.locator("#sign-in-password").fill(PEOPLE.staffOwner.password);
-    await page.locator("main form").getByRole("button", { name: "Sign in", exact: true }).click();
-    const code = page.locator("input[autocomplete='one-time-code']");
-    const reached = await code.waitFor({ timeout: 30_000 }).then(() => true, () => false);
-    if (check(reached, "two-step: the code step appears")) {
-      await sleep(300);
-      const facts = await code.evaluate((el) => ({
-        focused: document.activeElement === el,
-        label: el.labels?.[0]?.textContent?.trim() ?? "",
-        inputMode: el.getAttribute("inputmode"),
-        described: (el.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent ?? "").join(" ").trim(),
-        h1: document.querySelector("h1")?.textContent ?? "",
-      }));
-      check(facts.focused, "two-step: focus moves to the code field", await focused(page));
-      check(facts.label.length > 0 && facts.inputMode === "numeric", "two-step: the code field is labelled and numeric", JSON.stringify({ label: facts.label, inputMode: facts.inputMode }));
-      check(facts.described.length > 0, "two-step: the code field is described by the sent-to sentence", facts.described.replace(/\S+@\S+/g, "<email>"));
-      // An incomplete code: the error summary and the field error.
-      await code.fill("12");
-      await page.keyboard.press("Enter");
-      await sleep(400);
-      const fields = await invalidFields(page);
-      check(fields.length === 1 && fields[0].described, "two-step: a short code marks the field invalid with a described error", JSON.stringify(fields));
-      await axe(page, "two-step step with an error");
+    const ownerEmail = PEOPLE.staffOwner.email.trim().toLowerCase();
+    const before = await one('SELECT "twoStepEnabled" AS on FROM "User" WHERE lower(email) = $1', [ownerEmail]);
+    if (before && !before.on) await db.query('UPDATE "User" SET "twoStepEnabled" = true WHERE lower(email) = $1', [ownerEmail]);
+    try {
+      await go(page, "/sign-in");
+      await hydrated(page, "#sign-in-email");
+      await page.locator("#sign-in-email").fill(PEOPLE.staffOwner.email);
+      await page.locator("#sign-in-password").fill(PEOPLE.staffOwner.password);
+      await page.locator("main form").getByRole("button", { name: "Sign in", exact: true }).click();
+      const code = page.locator("input[autocomplete='one-time-code']");
+      const reached = await code.waitFor({ timeout: 30_000 }).then(() => true, () => false);
+      if (check(reached, "two-step: the code step appears")) {
+        await sleep(300);
+        const facts = await code.evaluate((el) => ({
+          focused: document.activeElement === el,
+          label: el.labels?.[0]?.textContent?.trim() ?? "",
+          inputMode: el.getAttribute("inputmode"),
+          described: (el.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent ?? "").join(" ").trim(),
+          h1: document.querySelector("h1")?.textContent ?? "",
+        }));
+        check(facts.focused, "two-step: focus moves to the code field", await focused(page));
+        check(facts.label.length > 0 && facts.inputMode === "numeric", "two-step: the code field is labelled and numeric", JSON.stringify({ label: facts.label, inputMode: facts.inputMode }));
+        check(facts.described.length > 0, "two-step: the code field is described by the sent-to sentence", facts.described.replace(/\S+@\S+/g, "<email>"));
+        // An incomplete code: the error summary and the field error.
+        await code.fill("12");
+        await page.keyboard.press("Enter");
+        await sleep(400);
+        const fields = await invalidFields(page);
+        check(fields.length === 1 && fields[0].described, "two-step: a short code marks the field invalid with a described error", JSON.stringify(fields));
+        await axe(page, "two-step step with an error");
+      }
+    } finally {
+      if (before && !before.on) await db.query('UPDATE "User" SET "twoStepEnabled" = false WHERE lower(email) = $1', [ownerEmail]);
     }
   }
   await close(s, "auth");
