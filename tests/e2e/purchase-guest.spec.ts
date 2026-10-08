@@ -88,6 +88,8 @@ test("guest buys Medical Store Billing annual with a GSTIN, registers with the s
   });
 
   await test.step("the buyer registers with the order's email and verifies it with the emailed code", async () => {
+    // The click hands the email over in sessionStorage, so wait for the link to hydrate (the page was just reloaded).
+    await waitForHydration(page, 'a[href^="/register?next="]');
     await page.getByRole("link", { name: "Create account" }).click();
     await page.waitForURL(/\/register\?/);
     await waitForHydration(page, "#register-email");

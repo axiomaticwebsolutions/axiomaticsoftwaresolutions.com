@@ -1690,8 +1690,8 @@ the secret inputs to `autocomplete="off"`, which Chrome ignores on password inpu
 
 ## Settings cards: one height per row (owner request, 2026-10-08)
 
-On Admin > Settings every row of the settings grid (business / tax / license, sample notice, the Integrations row of
-Payment provider / Installer storage / Email delivery, and the Rate limits row) shares one height: the grids stretch
+On Admin > Settings every row of the settings grid (business / tax / license, sample notice and branding, the
+Integrations row of Payment provider / Installer storage / Email delivery, and the Rate limits row) shares one height: the grids stretch
 their items, `SettingsCard` is a flex column whose body takes the extra height with its content packed at the top,
 and the footer (the Save / test bar) sits at the bottom, so the footers line up across a row. Precedent:
 `components/admin/overview/panel.tsx`. At 360 px the cards stack in one column with no horizontal scroll. The e2e spec

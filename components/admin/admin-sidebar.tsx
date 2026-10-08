@@ -62,7 +62,8 @@ export function AdminSidebar({ onNavigate, closeButton }: AdminSidebarProps) {
   const role = STAFF_ROLE_LABELS[staff.role];
   const onProfile = pathname === ADMIN_PROFILE_PATH;
   // The logo uploaded for light backgrounds (Admin > Settings > Branding) replaces the mark and the name; the console
-  // label stays beside it and the 35 px link keeps the built-in header height.
+  // label stays beside it on one line (the logo narrows instead, e.g. next to the drawer's close button) and the 35 px
+  // link keeps the built-in header height.
   const uploaded = useBrandLogo();
 
   return (
@@ -72,12 +73,12 @@ export function AdminSidebar({ onNavigate, closeButton }: AdminSidebarProps) {
           href={ADMIN_HOME}
           aria-label="Admin overview"
           onClick={onNavigate}
-          className={cn("h-[35px] flex-none rounded-9", uploaded ? "flex min-w-0 items-center" : "block")}
+          className={cn("h-[35px] rounded-9", uploaded ? "flex min-w-0 items-center" : "block flex-none")}
         >
           {uploaded ? <UploadedLogo image={uploaded} height={28} maxWidth={120} /> : <LogoMark size={30} />}
         </Link>
         {uploaded ? (
-          <span className="block min-w-0 flex-1 text-[11px] font-bold leading-[1.1] tracking-[0.08em] text-ink-3">ADMIN CONSOLE</span>
+          <span className="block min-w-fit flex-1 whitespace-nowrap text-[11px] font-bold leading-[1.1] tracking-[0.08em] text-ink-3">ADMIN CONSOLE</span>
         ) : (
           <span className="min-w-0 flex-1 leading-[1.1]">
             <span className="block text-[16px] font-extrabold tracking-[-0.02em]">Axiomatic</span>

@@ -25,6 +25,7 @@ const SETTINGS_CARDS = [
   "#settings-tax",
   "#settings-licensing",
   "#settings-sample-notice",
+  "#settings-branding",
   "#integration-payments",
   "#integration-storage",
   "#integration-email",
