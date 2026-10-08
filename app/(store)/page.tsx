@@ -34,7 +34,11 @@ export default async function HomePage() {
     // The prototype leaves line-height at "normal" unless a rule sets it; the store body default is 1.6.
     <div className="leading-[normal]">
       <JsonLd data={[organizationJsonLd(settings.business), websiteJsonLd()]} />
-      <HomeHero announcement={latest ? { text: announcementText(latest), href: announcementHref(latest) } : null} />
+      <HomeHero
+        announcement={latest ? { text: announcementText(latest), href: announcementHref(latest) } : null}
+        products={products}
+        ratePct={ratePct}
+      />
       <FeaturedProducts products={products} ratePct={ratePct} />
       <BusinessCategories categories={categories.filter((category) => category.productCount > 0)} />
       <WhyAxiomatic />

@@ -3,8 +3,10 @@ import { Icon } from "@/components/icons/icon";
 import { Button } from "@/components/ui/button";
 import { HOME_CTAS, HOME_HERO } from "@/content/home";
 import { demoHref } from "@/lib/storefront/derive";
+import type { StoreProduct } from "@/lib/storefront/types";
 import { cn } from "@/lib/utils";
 import { HeroIllustration } from "./hero-illustration";
+import { HeroProductTiles } from "./hero-products";
 import { ICON_LINE_BOX } from "./styles";
 
 export type HeroAnnouncement = { text: string; href: string };
@@ -12,13 +14,18 @@ export type HeroAnnouncement = { text: string; href: string };
 export type HomeHeroProps = {
   /** "{Product} {major.minor} is out", linking to the product's release notes; null hides the pill. */
   announcement: HeroAnnouncement | null;
+  /** Published products by rank; the first four become the hero tiles (design C). Empty -> the illustration. */
+  products: readonly StoreProduct[];
+  /** GST rate for the incl. prices (settings tax.gstRatePct). */
+  ratePct: number;
 };
 
 /**
- * Home hero (Home.dc.html section 1): announcement pill, display H1, body, the two CTAs and three check bullets on
- * the left; the illustrated UI composite on the right. Two columns from 2 x 460px + gap, stacked below. Server.
+ * Home hero (Home.dc.html section 1; design C chosen by the owner 2026-10-08): announcement pill, display H1, body, the
+ * two CTAs and three check bullets on the left; the products as pastel tiles with starting prices on the right (the
+ * illustrated UI composite when there are no products). Two columns from 2 x 460px + gap, stacked below. Server.
  */
-export function HomeHero({ announcement }: HomeHeroProps) {
+export function HomeHero({ announcement, products, ratePct }: HomeHeroProps) {
   return (
     <section aria-labelledby="hero-h" className="relative overflow-hidden">
       {/* 48px grid of hairlines, faded out with a radial mask (currentColor = the line-subtle token). */}
@@ -81,7 +88,7 @@ export function HomeHero({ announcement }: HomeHeroProps) {
             ))}
           </ul>
         </div>
-        <HeroIllustration />
+        {products.length > 0 ? <HeroProductTiles products={products} ratePct={ratePct} /> : <HeroIllustration />}
       </div>
     </section>
   );
