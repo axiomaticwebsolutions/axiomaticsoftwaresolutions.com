@@ -18,14 +18,16 @@
  *    /account, /account/*, /admin or /admin/* goes to <APP_URL>/sign-in?next=<path> (publicOrigin below). The cookie's
  *    presence proves nothing; every page and route still authorizes on the server. /accounting or /administrator are
  *    not signed-in areas.
- * 3. Production guard for the development API (/api/dev/*): every method answers 404 there, so a production server
+ * 3. Uploaded branding files (/brand/*, Admin > Settings > Branding) get BRAND_ASSET_CSP instead of a page policy: an SVG
+ *    opened directly then loads and runs nothing (sandbox). The route sets the same header, but a header set here wins.
+ * 4. Production guard for the development API (/api/dev/*): every method answers 404 there, so a production server
  *    never reveals that the routes exist (the handlers also refuse outside development; /dev/* pages 404 through
  *    app/dev/layout.tsx).
  * Other API routes and Next internals (/_next) never reach this (see `matcher`).
  */
 import { NextResponse, type NextRequest } from "next/server";
 import { uploadOriginForCsp } from "@/lib/integrations/csp-origin";
-import { contentSecurityPolicy, generateNonce, NONCE_HEADER, strictCspRoute } from "@/lib/security/csp";
+import { BRAND_ASSET_CSP, contentSecurityPolicy, generateNonce, isBrandAssetPath, NONCE_HEADER, strictCspRoute } from "@/lib/security/csp";
 import { inlineScriptHashSources } from "@/lib/security/inline-scripts";
 
 /** Must equal SESSION_COOKIE in lib/auth/cookies.ts (a unit test checks it; that module is server-only). */
@@ -84,6 +86,15 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
       { error: { code: "not_found", message: "Not found." } },
       { status: 404, headers: { "Cache-Control": "no-store" } },
     );
+  }
+
+  if (isBrandAssetPath(pathname)) {
+    const headers = new Headers(req.headers);
+    headers.delete("content-security-policy");
+    headers.delete(NONCE_HEADER);
+    const res = NextResponse.next({ request: { headers } });
+    res.headers.set("Content-Security-Policy", BRAND_ASSET_CSP);
+    return res;
   }
 
   const signedInArea = inSignedInArea(pathname, "/account") || inSignedInArea(pathname, "/admin");

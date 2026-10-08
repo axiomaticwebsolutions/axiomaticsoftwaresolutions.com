@@ -1,13 +1,15 @@
 import { SETTINGS_COPY, SETTINGS_SECTIONS, settingsSection, type AdminSettingsData } from "@/lib/admin/settings/model";
+import type { BrandingState } from "@/lib/branding/model";
+import { BrandingCard } from "./branding-card";
 import { IntegrationsPanel } from "./integrations-panel";
 import { SettingsForm, type SettingsFact } from "./settings-form";
 
 /**
  * Settings grid (prototype: cards auto-fit at 420px minimum, 14px gaps, aligned to the top): Business details, Tax &
- * invoicing, License policy and Sample notice as forms, then the Integrations section (forms for the Owner, status
+ * invoicing, License policy and Sample notice as forms, the Branding card (uploads), then the Integrations section (forms for the Owner, status
  * only otherwise, plus the read-only rate-limits card). Server component; each form is a client island.
  */
-export function SettingsView({ data }: { data: AdminSettingsData }) {
+export function SettingsView({ data, branding }: { data: AdminSettingsData; branding: BrandingState }) {
   const values = { business: data.business, tax: data.tax, licensing: data.licensing, "sample-notice": data.sampleNotice } as const;
   const facts: Partial<Record<keyof typeof values, SettingsFact[]>> = {
     tax: [
@@ -26,6 +28,7 @@ export function SettingsView({ data }: { data: AdminSettingsData }) {
       {SETTINGS_SECTIONS.map((def) => (
         <SettingsForm key={def.id} section={settingsSection(def.id)} value={values[def.id]} facts={facts[def.id]} />
       ))}
+      <BrandingCard initial={branding} />
       <IntegrationsPanel data={data.integrations} />
     </div>
   );

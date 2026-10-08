@@ -1615,3 +1615,67 @@ A security, money and UI review of the admin records build. Each fix is in the c
   says what is missing and clears a failed quote (no stale total or amount hint); quote issues describe the Plan select;
   re-share and email copy no longer assume a staff-prepared order; the printable invoice card shows "This invoice
   replaces …".
+
+## Branding: logos and favicon (owner request, 2026-10-08)
+
+Request: "add option to setup logo for dark and light mode, also option to add favicon in settings". Admin > Settings
+has a new **Branding** card (Owner only, `settings.manage`) with three slots: "Logo for light backgrounds", "Logo for
+dark backgrounds" and "Favicon". Each slot shows the current file (or the built-in look) on a swatch of its
+background with its type, size and pixel dimensions, short guidance, Upload / Replace (file picker; a file can also be
+dropped on the swatch) and Remove (confirmation; back to the built-in look). Without uploads nothing changes: the
+built-in LogoMark + wordmark and `app/icon.svg`.
+
+- **Storage in PostgreSQL, not the bucket.** `BrandAsset` (migration `20261008160000_brand_assets`, additive): one row
+  per slot with the cleaned file (`bytes`, `mime`, `sha256`, `width`, `height`, `byteSize`), a PNG rendition
+  (`pngBytes`, `pngWidth`, `pngHeight`) and who changed it when. Reasons: the bucket may not be configured (it is an
+  optional integration), the files are small (1 MB / 256 KB limits) and few (three rows), they belong with the
+  settings in the same backups, and serving them from the app needs no CORS, no presigned URLs and no CSP change
+  (`img-src 'self'` already allows them). `GET /brand/:file` serves them; each process caches a slot's bytes for 30
+  seconds, drops them on its own writes, and re-reads the database at most every 2 seconds per slot when asked for a
+  version it does not hold (how other PM2 processes learn of an upload).
+- **Versioned URLs.** Every URL carries `?v=` + the first 12 hex characters of the stored file's SHA-256. A matching
+  version is `Cache-Control: public, max-age=31536000, immutable`; no version gets 5 minutes; another version (an old
+  link, or a new upload this process has not read yet) gets `no-store`, so no browser or proxy keeps other bytes
+  under a versioned URL; an empty slot is 404 `no-store`. A new upload changes the version, so browsers fetch it at
+  once.
+- **Validation (server-side, from the bytes).** `lib/branding/process.ts`: the type comes from the magic bytes (never
+  the declared type or the name); logos take PNG, SVG or WebP (at least 200 x 16 px, up to 1 MB), the favicon PNG, SVG
+  or ICO (square, at least 48 x 48 px, up to 256 KB); rasters at most 5000 x 5000 px. PNG and WebP are decoded by sharp
+  (pixel limit, errors fail) and re-encoded in their own format (lossless WebP), which drops all metadata and keeps
+  transparency. ICO files are validated (header, directory, every image inside the file, PNG or BMP, a pixel budget)
+  and rebuilt from their images only: PNG images re-encoded without metadata, BMP images cut to the bytes they need,
+  anything between or after the images dropped (no polyglots, no hidden text). Anything else is a 422 with a message under the slot. sharp is now a direct dependency pinned to
+  0.35.5 (it was already installed through Next.js).
+- **SVG.** Parsed by a strict XML parser and rebuilt from an allowlist (`lib/branding/svg.ts`): refused with a message
+  are DOCTYPE and entity declarations, processing instructions, `<script>`, `<foreignObject>`, embedded files
+  (`<image>`, `<feImage>`, frames, objects), event-handler attributes, `javascript:`, links and `url()` to anything but
+  `#id`, and CSS imports or escapes (style sheets, `style` and every kept attribute are checked as written,
+  comments included, with linear scans that a 1 MB file cannot stall); editor metadata, comments, animation and unknown attributes are dropped. Served
+  with `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`. middleware.ts sets that policy
+  on every `/brand/*` response, because a header set in middleware wins over the route's own (Next.js keeps the first
+  value it has; the route sets it too). A PNG rendition is drawn with sharp (librsvg) for emails, PDFs and the
+  apple-touch-icon.
+- **Where each logo appears.** Light: the storefront header, mobile menu and footer, order pages (store header), the
+  auth pages (both lockups), the checkout header, the customer portal sidebar, the admin sidebar (beside "ADMIN
+  CONSOLE", 28 px), emails (PNG rendition by absolute APP_URL, 36 px tall) and invoice and credit note PDFs (PNG rendition,
+  28 pt tall). Dark: every `Logo onDark` (today only the dev UI gallery; the storefront has no dark theme) and emails
+  opened in dark mode: a `<picture>` source for `prefers-color-scheme: dark` plus a `<style>` rule that turns the logo
+  cell dark in the same clients, so the dark logo only shows on a dark backdrop; clients without either keep the light
+  logo (the rest of the email stays light). Each slot falls back to the built-in look on its own. Uploaded logos keep
+  the built-in height (34 px in headers and footers, 28 px in the admin sidebar, 30 to 36 elsewhere) with width and
+  height set from the stored size (no layout shift; an SVG's size is stored as whole numbers with its exact
+  proportions, e.g. a viewBox of 1 x 0.2 as 10 x 2), at most 180 px wide in the storefront header so the 360 px header stays on one row; alt text
+  is the brand name (`SITE_NAME`, the built-in logo's accessible name).
+- **Favicon.** The root layout's `generateMetadata` sets `icons` from an uploaded favicon (plus, for SVG or ICO, its
+  transparent 180 px PNG as a PNG icon, and `/brand/favicon-apple.png`, the same PNG flattened onto white, as
+  apple-touch-icon, because iOS fills transparent pixels of a home-screen icon with black); Next.js then leaves out `app/icon.svg`, which it adds only
+  when the metadata sets no icons. An ICO whose images cannot be decoded (other than PNG or 32/24-bit BMP) gets no
+  apple-touch-icon. The JSON-LD Organization logo still points at `/icon.svg`.
+- **Applies at once.** `lib/branding/server.ts` `getBranding()` is cached with `unstable_cache` under the storefront
+  `settings` tag (the same as `getStoreSettings`); an upload or removal calls `revalidateTag("settings")`, so dynamic
+  pages show it on the next request and static / ISR pages regenerate on their next request (safe since the
+  `dynamicParams = false` fix above). The root layout hands the logos to client islands through `BrandingProvider`.
+- **Security and audit.** `PUT` / `DELETE /api/admin/settings/branding/:slot` (adminRoute: settings.manage, CSRF and
+  same origin), the raw file as the body; a `Content-Length` over the slot's limit is refused before reading and the
+  body is counted while streaming. 30 uploads per hour per Owner. AuditLog "Uploaded / Replaced / Removed branding
+  image" with the slot, MIME type, byte size and SHA-256 prefix (never the bytes).

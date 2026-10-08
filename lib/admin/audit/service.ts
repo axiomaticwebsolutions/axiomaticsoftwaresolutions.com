@@ -12,6 +12,7 @@ import { pageResult, searchWhere, toPrismaOrderBy, type ListPage, type ListQuery
 import { endOfDayIST, startOfDayIST } from "@/lib/dates";
 import type { Db } from "@/lib/db";
 import { errors } from "@/lib/http";
+import { BRAND_AUDIT_ACTIONS } from "@/lib/branding/model";
 import { INTEGRATION_AUDIT_ACTIONS } from "@/lib/integrations/model";
 import { TWO_STEP_OFF_ACTION, TWO_STEP_ON_ACTION } from "@/lib/portal/profile";
 import { STAFF_ROLE_LABELS } from "@/lib/rbac";
@@ -43,6 +44,8 @@ const KNOWN_ACTIONS: readonly string[] = [
   "Revoked staff invitation",
   "Accepted staff invitation",
   "Updated settings",
+  // Admin > Settings > Branding (upload, replace, remove).
+  ...Object.values(BRAND_AUDIT_ACTIONS),
   // Admin > Settings > Integrations (save, clear a secret, remove, test).
   ...Object.values(INTEGRATION_AUDIT_ACTIONS),
   "Exported report",

@@ -1,6 +1,7 @@
 import type * as React from "react";
 import { palette } from "@/lib/design/tokens";
 import { cn } from "@/lib/utils";
+import { BrandLogoSwap } from "./branding-context";
 
 const BRAND_NAME = "Axiomatic Software Solutions";
 
@@ -42,16 +43,30 @@ export function LogoMark({ size = 34, className, ...props }: LogoMarkProps) {
 export type LogoProps = Omit<React.ComponentProps<"span">, "children" | "role"> & {
   /** full = mark + wordmark (headers, footers); compact = mark only (checkout header, collapsed sidebars). */
   variant?: "full" | "compact";
-  /** Light wordmark for dark surfaces such as the admin sidebar. */
+  /** For dark surfaces: the light wordmark, or the uploaded logo for dark backgrounds. */
   onDark?: boolean;
   markSize?: number;
+  /** Widest an uploaded logo may be (it gets shorter instead); 180 keeps the 360px storefront header on one row. */
+  maxWidth?: number;
 };
 
 /**
- * Brand lockup: mark + "Axiomatic" (18.5px/800/-0.025em) + "SOFTWARE SOLUTIONS" (9px/700/0.17em).
+ * The logo: the one uploaded in Admin > Settings > Branding for this background (light, or dark with `onDark`), shown
+ * `markSize` px tall with its stored proportions, else the built-in lockup. Server-safe (the swap is a client island).
+ */
+export function Logo({ variant = "full", onDark = false, markSize = 34, maxWidth = 180, className, ...props }: LogoProps) {
+  return (
+    <BrandLogoSwap onDark={onDark} height={markSize} maxWidth={maxWidth} className={className}>
+      <BuiltInLogo variant={variant} onDark={onDark} markSize={markSize} className={className} {...props} />
+    </BrandLogoSwap>
+  );
+}
+
+/**
+ * Built-in brand lockup: mark + "Axiomatic" (18.5px/800/-0.025em) + "SOFTWARE SOLUTIONS" (9px/700/0.17em).
  * Exposed as one image named "Axiomatic Software Solutions", so a wrapping link reads naturally. Server-safe.
  */
-export function Logo({ variant = "full", onDark = false, markSize = 34, className, ...props }: LogoProps) {
+export function BuiltInLogo({ variant = "full", onDark = false, markSize = 34, className, ...props }: Omit<LogoProps, "maxWidth">) {
   return (
     <span
       role="img"

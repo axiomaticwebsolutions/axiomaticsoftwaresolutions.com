@@ -6,6 +6,7 @@
  * order. Limited like the invoice PDF (30 / 10 min per IP). attachment; no-store; nosniff.
  */
 import { enforce, hit, RATE_LIMITS } from "@/lib/auth/rate-limit";
+import { invoiceLogo } from "@/lib/branding/store";
 import { orderTokenFrom } from "@/lib/checkout/request";
 import { db } from "@/lib/db";
 import { clientIp, errors, route } from "@/lib/http";
@@ -30,7 +31,7 @@ export const GET = route<Context>(async (req, { params }) => {
   const model = await loadCreditNoteModel(db, access.order.id, noteId);
   if (!model || !model.number) throw errors.notFound("Credit note");
 
-  const pdf = await renderInvoicePdf(model);
+  const pdf = await renderInvoicePdf(model, { logo: await invoiceLogo(db) });
   log.info("credit_note_pdf_served", { orderId: access.order.id, byOrderLink: access.viaToken, bytes: pdf.length });
   return new Response(new Uint8Array(pdf), {
     status: 200,

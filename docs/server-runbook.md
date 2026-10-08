@@ -125,6 +125,7 @@ node scripts/smoke-prod.mjs --base https://axiomaticsoftwaresolutions.com
 | You changed | Then |
 |---|---|
 | Razorpay, email or bucket settings | Change them in Admin > Settings > Integrations (5.1); they apply within 30 seconds, no restart |
+| Logos or favicon | Admin > Settings > Branding (Owner); they apply at once, no deploy (stored in the database, so backups include them) |
 | A secret in `shared/.env.production` (session, license, database, Redis) | `restart.sh` |
 | `APP_URL` | Deploy again (the build bakes it into the pages); see above to rebuild exactly the live code |
 | Code (pushed to GitHub from the PC) | Deploy |

@@ -8,6 +8,7 @@
  * order details and small print are code blocks the editor cannot remove.
  */
 import type { ListQuerySpec } from "@/lib/admin/list-query";
+import type { EmailLogo } from "@/lib/branding/model";
 import {
   EMAIL_TEMPLATE_DEFAULTS,
   EMAIL_TEMPLATE_IDS,
@@ -120,7 +121,8 @@ export const TEMPLATE_ERRORS = {
   nothingToSave: "Change the subject, the text or the status first.",
 } as const;
 
-export type TemplatePreviewContext = { footer: EmailFooter; appUrl: string };
+/** `logo`: the uploaded logo (Admin > Settings > Branding), as real emails show it; null or missing = the built-in one. */
+export type TemplatePreviewContext = { footer: EmailFooter; appUrl: string; logo?: EmailLogo | null };
 
 /**
  * The email as it would be sent with the template's sample data (lib/email/defaults sampleVars), through the same
@@ -135,6 +137,7 @@ export function previewTemplate(id: string, content: { subject: string; body: st
     vars: def?.sampleVars ?? {},
     footer: ctx.footer,
     appUrl: ctx.appUrl,
+    logo: ctx.logo,
     unknownVars: "keep",
   });
 }

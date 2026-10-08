@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
+import { UploadedLogo, useBrandLogo } from "@/components/brand/branding-context";
 import { LogoMark } from "@/components/brand/logo";
 import { Icon } from "@/components/icons/icon";
 import { BusinessSwitcher } from "@/components/account/business-switcher";
@@ -67,15 +68,26 @@ export function PortalSidebar({ onNavigate, closeButton }: PortalSidebarProps) {
   const { signOut, busy } = useSignOut();
   // Unique per instance: the drawer can be open while the (hidden) desktop column is still in the DOM.
   const uid = React.useId();
+  // The logo uploaded for light backgrounds (Admin > Settings > Branding) replaces the mark and the name.
+  const uploaded = useBrandLogo();
 
   return (
     <div className="flex min-h-full flex-col">
       <div className="flex items-center gap-2.5 px-3.5 pb-2.5 pt-4">
         {/* 35px tall like the prototype (an inline 30px mark plus the line box below it). */}
-        <Link href={PORTAL_PATHS.store} aria-label="Axiomatic home" onClick={onNavigate} className="block h-[35px] flex-none rounded-9">
-          <LogoMark size={30} />
+        <Link
+          href={PORTAL_PATHS.store}
+          aria-label="Axiomatic home"
+          onClick={onNavigate}
+          className={cn("h-[35px] flex-none rounded-9", uploaded ? "flex min-w-0 items-start" : "block")}
+        >
+          {uploaded ? <UploadedLogo image={uploaded} height={30} maxWidth={170} /> : <LogoMark size={30} />}
         </Link>
-        <span className="flex-1 text-[16px] font-extrabold tracking-[-0.02em]">Axiomatic</span>
+        {uploaded ? (
+          <span aria-hidden="true" className="flex-1" />
+        ) : (
+          <span className="flex-1 text-[16px] font-extrabold tracking-[-0.02em]">Axiomatic</span>
+        )}
         {closeButton}
       </div>
       <div className="relative px-3 pb-2">

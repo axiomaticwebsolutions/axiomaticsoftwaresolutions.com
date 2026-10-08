@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
+import { UploadedLogo, useBrandLogo } from "@/components/brand/branding-context";
 import { LogoMark } from "@/components/brand/logo";
 import { Icon } from "@/components/icons/icon";
 import { useAdmin } from "@/components/admin/admin-context";
@@ -54,15 +55,27 @@ export function AdminSidebar({ onNavigate, closeButton }: AdminSidebarProps) {
   const uid = React.useId();
   const role = STAFF_ROLE_LABELS[staff.role];
   const onProfile = pathname === ADMIN_PROFILE_PATH;
+  // The logo uploaded for light backgrounds (Admin > Settings > Branding), on one row with the console label so the
+  // header keeps the built-in height (the row is at least as tall as the 30 px built-in mark).
+  const uploaded = useBrandLogo();
 
   return (
     <div className={cn("flex h-full min-h-0 flex-col bg-surface text-ink", SIDEBAR_FOCUS)}>
       <div className="flex items-center gap-2.5 border-b border-line px-3.5 pb-2.5 pt-3.5">
-        <LogoMark size={30} />
-        <span className="flex-1 leading-[1.1]">
-          <span className="block text-[15.5px] font-extrabold text-ink">Axiomatic</span>
-          <span className="block text-[11px] font-bold tracking-[0.08em] text-ink-3">ADMIN CONSOLE</span>
-        </span>
+        {uploaded ? (
+          <span className="flex min-h-[30px] min-w-0 flex-1 items-center gap-2">
+            <UploadedLogo image={uploaded} height={28} maxWidth={120} />
+            <span className="block min-w-0 flex-1 text-[11px] font-bold leading-[1.1] tracking-[0.08em] text-ink-3">ADMIN CONSOLE</span>
+          </span>
+        ) : (
+          <>
+            <LogoMark size={30} />
+            <span className="flex-1 leading-[1.1]">
+              <span className="block text-[15.5px] font-extrabold text-ink">Axiomatic</span>
+              <span className="block text-[11px] font-bold tracking-[0.08em] text-ink-3">ADMIN CONSOLE</span>
+            </span>
+          </>
+        )}
         {closeButton}
       </div>
       <nav aria-label="Admin" className="scrollbar-subtle grid min-h-0 flex-1 content-start overflow-y-auto px-2 py-1.5">

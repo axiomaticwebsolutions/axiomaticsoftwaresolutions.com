@@ -17,6 +17,8 @@ export type ApiFetchOptions = {
   method?: HttpMethod;
   /** Sent as JSON. */
   body?: unknown;
+  /** A file sent as the raw body (Content-Type application/octet-stream), instead of `body`. */
+  file?: Blob;
   signal?: AbortSignal;
   headers?: Record<string, string>;
 };
@@ -134,10 +136,16 @@ export async function apiFetch<T>(path: string, opts: ApiFetchOptions = {}): Pro
   if (!path.startsWith("/") || path.startsWith("//")) {
     throw new TypeError("apiFetch only calls this site's own paths, such as /api/...");
   }
-  const method: HttpMethod = opts.method ?? (opts.body === undefined ? "GET" : "POST");
+  const method: HttpMethod = opts.method ?? (opts.body === undefined && opts.file === undefined ? "GET" : "POST");
   const headers: Record<string, string> = { accept: "application/json", ...opts.headers };
-  if (opts.body !== undefined) headers["content-type"] = "application/json";
-  const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);
+  let body: BodyInit | undefined;
+  if (opts.file !== undefined) {
+    headers["content-type"] = "application/octet-stream";
+    body = opts.file;
+  } else if (opts.body !== undefined) {
+    headers["content-type"] = "application/json";
+    body = JSON.stringify(opts.body);
+  }
 
   const request = (token: string | null) =>
     send(path, {

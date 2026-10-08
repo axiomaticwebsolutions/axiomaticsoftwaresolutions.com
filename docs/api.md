@@ -66,6 +66,7 @@ client: portal routes act on the session's active account (`POST /api/me/active-
 | `GET /api/catalog/products?q=&category=&os=&license=&price=&sort=` | Published products with facets: `{ items, facets, query, total }`; unknown filter values fall back to defaults | - |
 | `GET /api/catalog/products/:slug` | One published product: `{ product, plans, latestRelease, faqs, related }` | 404 for draft, hidden and unknown products |
 | `GET /api/catalog/compare?ids=a,b,c` | Up to 3 published products side by side: `{ ids, products }` | - |
+| `GET /brand/:file` | The files uploaded in Admin > Settings > Branding (not under /api): `logo-light`, `logo-dark`, `favicon` (the stored PNG, WebP, SVG or ICO), the same + `.png` (PNG rendition: logos at most 160 px tall, the favicon 180 x 180 with transparency) or `favicon-apple.png` (that favicon PNG on white, for apple-touch-icon). Stored type, `nosniff`, `Content-Disposition: inline`, `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`, ETag (304 on If-None-Match). `?v=` = first 12 hex of the SHA-256: matching -> `public, max-age=31536000, immutable`; no `v` -> `public, max-age=300`; another `v` -> `no-store` | 404 `no-store` for an empty slot or any other name |
 | `POST /api/contact` | Contact message or demo request (CSRF, "anon" binding when signed out); stores a Lead and queues the acknowledgement and the internal notice: `{ reference }` | 422, 429 (5 per hour per IP), 503 `unavailable` (asks the visitor to email sales). A filled honeypot gets a decoy 200 |
 
 ## Auth (`/api/auth/*`)
@@ -288,11 +289,25 @@ Catalog writes revalidate the storefront cache.
 | `POST .../staff/:id/deactivate`, `.../reactivate`, `.../resend-invite`, `DELETE .../:id/invite` | `staff.manage` | Reasons (not resend); deactivation signs them out everywhere; 409 `deactivate_self` / `not_invited` |
 | `GET /api/admin/audit`, `GET .../:id`, `GET .../export.csv` | `audit.view` | Append-only: no write routes |
 | `GET /api/admin/settings`, `PATCH .../settings/:section` | `settings.manage` | Sections `business`, `tax`, `licensing`, `sample-notice`; one audit row per changed field. GET also returns `integrations` (below): forms and secret hints only with `integrations.manage` |
+| `PUT /api/admin/settings/branding/:slot` | `settings.manage` | Branding (below): the image file as the raw body -> `{ slot, changed, branding }`; 404 unknown slot, 415 not a file body, 422 `validation_failed` with `fieldErrors.file`, 429 (30 per hour) |
+| `DELETE /api/admin/settings/branding/:slot` | `settings.manage` | Back to the built-in logo or icon -> `{ slot, changed, branding }` (`changed: false` when nothing was uploaded) |
 | `PUT /api/admin/settings/integrations/:kind` | `integrations.manage` | Save payments, email or storage (below); password re-entry; 404 unknown kind, 422 `validation_failed` / `incorrect_password`, 409 `integration_changed`, 429 |
 | `DELETE /api/admin/settings/integrations/:kind` | `integrations.manage` | `{ currentPassword }`: remove the saved settings (the env file is the fallback again); 409 `integration_not_saved` |
 | `DELETE /api/admin/settings/integrations/:kind/secrets/:field` | `integrations.manage` | `{ currentPassword }`: clear one saved secret; 409 `integration_not_saved`; a secret that is not set answers `cleared: false` |
 | `POST /api/admin/settings/integrations/:kind/test` | `integrations.manage` | `{}`: test the effective configuration; 409 `integration_not_configured`; 10 per 10 minutes |
 | `GET /api/admin/staff/export.csv` | `staff.manage` | |
+
+**Branding** (Admin > Settings > Branding; decisions.md "Branding: logos and favicon"). `:slot` is `logo-light`,
+`logo-dark` or `favicon`; anything else is 404 before the body is read. PUT sends the file itself
+(`Content-Type: application/octet-stream` or `image/*`); the type is decided from the bytes. Logos: PNG, SVG or WebP,
+at least 200 x 16 px, up to 1 MB; favicon: square PNG, SVG or ICO, at least 48 x 48 px, up to 256 KB; rasters at most
+5000 x 5000 px. A `Content-Length` over the limit is refused before reading (422 on `file`, like every other file
+problem: wrong type, damaged image, too small, not square, an SVG with scripts, event handlers, foreignObject,
+embedded files, `javascript:` or external links, a DOCTYPE or entities). PNG and WebP are re-encoded (metadata
+dropped), SVGs rebuilt from an allowlist, ICOs validated; uploading the same file again answers `changed: false`.
+Every change writes an audit row (slot, type, size, SHA-256 prefix) and revalidates the storefront `settings` cache.
+`branding` is `{ "logo-light" | "logo-dark" | "favicon": { slot, format, mime, width, height, byteSize, version, png:
+{ width, height } | null, updatedAt, updatedBy } | null }`; files are at `/brand/<slot>?v=<version>`.
 
 **Integrations** (Admin > Settings > Integrations; `docs/admin-integrations-design.md`). `:kind` is `payments`,
 `email` or `storage`; `:field` is `keySecret` or `webhookSecret` (payments), `password` (email) or `secretAccessKey`

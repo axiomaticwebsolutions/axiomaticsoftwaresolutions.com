@@ -1,8 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import { JetBrains_Mono, Manrope } from "next/font/google";
 import { unstable_rethrow } from "next/navigation";
+import { BrandingProvider } from "@/components/brand/branding-context";
 import { PriceDisplayScript } from "@/components/store/price";
 import { SiteBannerScript } from "@/components/store/site-banner";
+import { faviconIcons } from "@/lib/branding/model";
+import { getBranding } from "@/lib/branding/server";
 import { SETTING_DEFAULTS, type SiteSettings } from "@/lib/config";
 import { palette } from "@/lib/design/tokens";
 import { log } from "@/lib/log";
@@ -27,7 +30,7 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
-export const metadata: Metadata = {
+const BASE_METADATA: Metadata = {
   metadataBase: new URL(siteOrigin()),
   title: {
     default: SITE_NAME,
@@ -40,6 +43,15 @@ export const metadata: Metadata = {
   twitter: { card: "summary_large_image" },
   formatDetection: { telephone: false, email: false, address: false },
 };
+
+/**
+ * The favicon uploaded in Admin > Settings > Branding (plus its 180 px PNG as apple-touch-icon) replaces app/icon.svg:
+ * Next.js adds the file-based icon only when the metadata sets no `icons`. Without an upload, app/icon.svg as before.
+ */
+export async function generateMetadata(): Promise<Metadata> {
+  const icons = faviconIcons((await getBranding()).favicon);
+  return icons ? { ...BASE_METADATA, icons } : BASE_METADATA;
+}
 
 export const viewport: Viewport = {
   themeColor: palette.bg.DEFAULT,
@@ -58,7 +70,7 @@ async function rootSettings(): Promise<SiteSettings> {
 }
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const settings = await rootSettings();
+  const [settings, branding] = await Promise.all([rootSettings(), getBranding()]);
   const banner = settings["content.banner"];
   return (
     // data-price is the site default; PriceDisplayScript applies the visitor's cookie before paint (hence the
@@ -73,7 +85,9 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
         <PriceDisplayScript />
         {banner.enabled && banner.text ? <SiteBannerScript text={banner.text} /> : null}
       </head>
-      <body>{children}</body>
+      <body>
+        <BrandingProvider value={{ logoLight: branding.logoLight, logoDark: branding.logoDark }}>{children}</BrandingProvider>
+      </body>
     </html>
   );
 }

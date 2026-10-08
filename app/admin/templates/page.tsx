@@ -4,6 +4,7 @@ import { PageSkeletonTable } from "@/components/admin/coupons/table-skeleton";
 import { AdminModulePage } from "@/components/admin/module-page";
 import { TemplatesView } from "@/components/admin/templates/templates-view";
 import { loadTemplates } from "@/lib/admin/templates/service";
+import { emailLogo } from "@/lib/branding/store";
 import { getSetting } from "@/lib/config";
 import { db } from "@/lib/db";
 import { footerFromBusiness } from "@/lib/email/compose";
@@ -13,9 +14,11 @@ export const metadata = adminPageMetadata("templates");
 
 /** Rendered only for roles with templates.manage (AdminModulePage shows the locked page otherwise). */
 async function TemplatesSection() {
-  const [templates, business] = await Promise.all([loadTemplates(db), getSetting(db, "business")]);
-  // The preview footer uses the public business details only (what every email shows), never secrets.
-  const preview = { footer: footerFromBusiness(business), appUrl: getEnv().APP_URL };
+  const appUrl = getEnv().APP_URL;
+  const [templates, business, logo] = await Promise.all([loadTemplates(db), getSetting(db, "business"), emailLogo(db, appUrl)]);
+  // The preview footer uses the public business details only (what every email shows), never secrets; the header
+  // logo is the uploaded one (Admin > Settings > Branding) when there is one, as in real emails.
+  const preview = { footer: footerFromBusiness(business), appUrl, logo };
   return (
     <Suspense fallback={<PageSkeletonTable />}>
       <TemplatesView templates={templates} preview={preview} now={new Date().toISOString()} />

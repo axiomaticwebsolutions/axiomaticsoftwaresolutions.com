@@ -6,7 +6,9 @@
  * Fonts: Manrope 400/600/700/800 and JetBrains Mono 400, each registered twice, from the `latin` and the
  * `latin-ext` subsets, as two families listed together (fontFamily: [main, ext]). react-pdf substitutes per code
  * point, so the rupee sign (U+20B9, only in latin-ext) renders in Manrope instead of falling back to Helvetica.
- * Colours come from lib/design/tokens.ts.
+ * Colours come from lib/design/tokens.ts. The header shows the logo uploaded for light backgrounds in Admin > Settings >
+ * Branding (its PNG rendition, 28 pt tall; react-pdf draws PNG and JPEG only) when there is one, else the built-in mark
+ * and wordmark.
  */
 import "server-only";
 import { existsSync } from "node:fs";
@@ -15,6 +17,7 @@ import { createElement, type ReactElement, type ReactNode } from "react";
 import {
   Document,
   Font,
+  Image,
   Page,
   Path,
   Rect,
@@ -25,6 +28,7 @@ import {
   View,
   type DocumentProps,
 } from "@react-pdf/renderer";
+import { fitHeight, type RasterLogo } from "@/lib/branding/model";
 import { palette, tones } from "@/lib/design/tokens";
 import { formatINR } from "@/lib/money";
 import type { InvoiceLine, InvoiceModel } from "./model";
@@ -193,6 +197,15 @@ function LogoMark() {
   );
 }
 
+/** The uploaded logo in the header: 28 pt tall like the built-in mark, at most 200 pt wide. */
+const PDF_LOGO_HEIGHT = 28;
+const PDF_LOGO_MAX_WIDTH = 200;
+
+function UploadedLogo({ logo }: { logo: RasterLogo }) {
+  const size = fitHeight(logo, PDF_LOGO_HEIGHT, PDF_LOGO_MAX_WIDTH);
+  return h(Image, { src: { data: Buffer.from(logo.png), format: "png" }, style: { width: size.width, height: size.height } });
+}
+
 type PartyProps = { label: string; name: string; lines: string[]; gstin: string; extra?: string[] };
 
 function Party({ label, name, lines, gstin, extra = [] }: PartyProps) {
@@ -270,7 +283,7 @@ const SAMPLE_NOTICE =
   "Sample seller details: the seller’s legal name, GSTIN and address are placeholders, so this is not a valid tax invoice.";
 
 /** The invoice document. Long orders continue on new pages; the table header and the footer repeat. */
-export function InvoiceDocument({ model }: { model: InvoiceModel }) {
+export function InvoiceDocument({ model, logo = null }: { model: InvoiceModel; logo?: RasterLogo | null }) {
   const number = model.number ?? model.orderId;
   const buyerExtra = [
     ...(model.buyer.attention ? [`Attn: ${model.buyer.attention}`] : []),
@@ -279,12 +292,14 @@ export function InvoiceDocument({ model }: { model: InvoiceModel }) {
   const header = h(
     View,
     { style: s.header },
-    h(
-      View,
-      { style: s.brand },
-      h(LogoMark),
-      h(View, { style: s.brandText }, h(Text, { style: s.brandName }, "Axiomatic"), h(Text, { style: s.brandSub }, "SOFTWARE SOLUTIONS")),
-    ),
+    logo
+      ? h(View, { style: s.brand }, h(UploadedLogo, { logo }))
+      : h(
+          View,
+          { style: s.brand },
+          h(LogoMark),
+          h(View, { style: s.brandText }, h(Text, { style: s.brandName }, "Axiomatic"), h(Text, { style: s.brandSub }, "SOFTWARE SOLUTIONS")),
+        ),
     h(View, { style: s.titleBlock }, h(Text, { style: s.title }, model.docLabel), h(Text, { style: s.titleSub }, "Original for recipient")),
   );
   const meta = h(
@@ -334,8 +349,11 @@ export function InvoiceDocument({ model }: { model: InvoiceModel }) {
   );
 }
 
-/** Renders the invoice PDF (bytes starting with "%PDF-"). */
-export async function renderInvoicePdf(model: InvoiceModel): Promise<Buffer> {
+/**
+ * Renders the invoice PDF (bytes starting with "%PDF-"). `logo`: the uploaded light logo (lib/branding/store.ts
+ * invoiceLogo), null for the built-in look.
+ */
+export async function renderInvoicePdf(model: InvoiceModel, opts: { logo?: RasterLogo | null } = {}): Promise<Buffer> {
   registerInvoiceFonts();
-  return renderToBuffer(h(InvoiceDocument, { model }) as ReactElement<DocumentProps>);
+  return renderToBuffer(h(InvoiceDocument, { model, logo: opts.logo ?? null }) as ReactElement<DocumentProps>);
 }

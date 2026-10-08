@@ -27,6 +27,9 @@ export const ROUTES: readonly AdminRouteSpec[] = [
   // Settings (Owner only)
   { method: "GET", path: "/api/admin/settings", perm: "settings.manage" },
   { method: "PATCH", path: "/api/admin/settings/[section]", perm: "settings.manage", sampleBody: {} },
+  // Settings > Branding (Owner only): the dummy slot is 404 before the body is read, so nothing is stored.
+  { method: "PUT", path: "/api/admin/settings/branding/[slot]", perm: "settings.manage", sampleBody: {} },
+  { method: "DELETE", path: "/api/admin/settings/branding/[slot]", perm: "settings.manage", sampleBody: {} },
   // Settings > Integrations (Owner only; save, clear and remove also re-check the password)
   { method: "PUT", path: "/api/admin/settings/integrations/[kind]", perm: "integrations.manage", sampleBody: {} },
   { method: "DELETE", path: "/api/admin/settings/integrations/[kind]", perm: "integrations.manage", sampleBody: { currentPassword: "Permission test" } },

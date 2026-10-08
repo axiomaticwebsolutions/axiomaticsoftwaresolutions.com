@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type * as React from "react";
+import { BrandLogoSwap } from "@/components/brand/branding-context";
 import { LogoMark } from "@/components/brand/logo";
 import { Icon, type IconName } from "@/components/icons/icon";
 import { AUTH_ASIDE, AUTH_BRAND } from "./copy";
@@ -18,7 +19,8 @@ const HOME_LABEL = "Axiomatic Software Solutions — home";
  * 900px only the column shows, with a compact logo above the form. The panel's headline is a <p> so the page keeps a
  * single <h1>; the prototype's "Prototype · accounts are stored in this browser only" note is gone (its slot is kept
  * empty so the headline stays where the design puts it). `aside` replaces the customer copy of the brand panel (the
- * staff invitation page). Server component.
+ * staff invitation page). Both logos become the one uploaded in Admin > Settings > Branding when there is one. Server
+ * component.
  */
 export function AuthShell({ children, aside = AUTH_ASIDE }: { children: React.ReactNode; aside?: AuthAside }) {
   return (
@@ -31,11 +33,13 @@ export function AuthShell({ children, aside = AUTH_ASIDE }: { children: React.Re
           aria-label={HOME_LABEL}
           className="relative flex items-center gap-[11px] self-start rounded-10 text-ink no-underline"
         >
-          <LogoMark size={36} />
-          <span aria-hidden="true" className="flex flex-col leading-none">
-            <span className="text-[19px] font-extrabold tracking-[-0.025em]">{AUTH_BRAND}</span>
-            <span className="mt-1 text-[9px] font-bold uppercase tracking-[0.17em] text-ink-2">Software Solutions</span>
-          </span>
+          <BrandLogoSwap height={36} maxWidth={260}>
+            <LogoMark size={36} />
+            <span aria-hidden="true" className="flex flex-col leading-none">
+              <span className="text-[19px] font-extrabold tracking-[-0.025em]">{AUTH_BRAND}</span>
+              <span className="mt-1 text-[9px] font-bold uppercase tracking-[0.17em] text-ink-2">Software Solutions</span>
+            </span>
+          </BrandLogoSwap>
         </Link>
         <div className="relative max-w-[440px]">
           <p className="m-0 text-[34px] font-extrabold leading-[1.1] tracking-[-0.035em] text-ink">{aside.headline}</p>
@@ -57,8 +61,10 @@ export function AuthShell({ children, aside = AUTH_ASIDE }: { children: React.Re
             aria-label={HOME_LABEL}
             className="mb-7 inline-flex items-center gap-2.5 rounded-10 text-[18px] font-extrabold text-ink no-underline catalog:hidden"
           >
-            <LogoMark size={32} />
-            <span aria-hidden="true">{AUTH_BRAND}</span>
+            <BrandLogoSwap height={32} maxWidth={220}>
+              <LogoMark size={32} />
+              <span aria-hidden="true">{AUTH_BRAND}</span>
+            </BrandLogoSwap>
           </Link>
           {children}
         </div>
