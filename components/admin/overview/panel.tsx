@@ -32,7 +32,8 @@ export function DashboardPanel({ id, title, aside, wide = false, className, body
         </h2>
         {aside}
       </div>
-      <div className={cn("flex-1", bodyClassName)}>{children}</div>
+      {/* The body takes the extra height, but its own rows stay packed at the top (content-start). */}
+      <div className={cn("flex-1 content-start", bodyClassName)}>{children}</div>
     </section>
   );
 }
