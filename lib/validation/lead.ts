@@ -1,7 +1,8 @@
 /**
- * Contact and demo requests (Contact.dc.html), shared by the form (client) and POST /api/contact (server).
+ * Contact and demo requests (Contact.dc.html) and launch waitlist sign-ups ("Notify me when it launches" on a
+ * COMING_SOON product page), shared by the forms (client) and POST /api/contact (server).
  *
- * The body is a strict discriminated union on `kind` ("demo" | "contact"); unknown keys are rejected. Field keys are
+ * The body is a strict discriminated union on `kind` ("demo" | "contact" | "waitlist"); unknown keys are rejected. Field keys are
  * the form's field ids, so 422 field errors map straight back onto the form. Messages are the prototype copy.
  * The schema is built per request: the product list (published, demo-enabled) and the clock are inputs, so the
  * same rules run in the browser and on the server, and tests can pin "today" (an IST calendar date).
@@ -12,7 +13,7 @@ import { istParts } from "@/lib/dates";
 import { BILLING_ERRORS, cleanLine, tooLongMessage } from "@/lib/validation/billing";
 import { makeEmailSchema, makeIndianMobileSchema, PHONE_INPUT_MAX } from "@/lib/validation/contact";
 
-export const LEAD_KINDS = ["demo", "contact"] as const;
+export const LEAD_KINDS = ["demo", "contact", "waitlist"] as const;
 export type LeadKindKey = (typeof LEAD_KINDS)[number];
 
 /** Input length limits (characters, after clean-up). */
@@ -84,6 +85,8 @@ export const LEAD_ERRORS = {
   slot: "Choose a preferred time.",
   topic: "Choose a topic.",
   message: "Tell us a little more (at least 10 characters).",
+  /** API callers only: the waitlist form always sends its own (coming-soon) product. */
+  waitlistProduct: "This product isn’t taking launch sign-ups.",
 } as const;
 
 const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -187,22 +190,39 @@ const sourceField = z
   .optional()
   .transform((value) => value ?? null);
 
+/** Optional single line: blank -> null, otherwise cleaned up and at most `max` characters. */
+function optionalLine(max: number) {
+  return z
+    .string()
+    .optional()
+    .transform((value, ctx) => {
+      const text = cleanLine(value ?? "");
+      if (text.length > max) {
+        ctx.addIssue(tooLongMessage(max));
+        return z.NEVER;
+      }
+      return text === "" ? null : text;
+    });
+}
+
 export type LeadSchemaOptions = {
   /** Slugs of PUBLISHED products with demo requests enabled. */
   demoProductIds: Iterable<string>;
+  /** Slugs of COMING_SOON products (launch waitlist); none = every waitlist sign-up is refused. */
+  waitlistProductIds?: Iterable<string>;
   /** Clock for the preferred-date rules (default: the current time). */
   now?: () => Date;
 };
 
 /** What the server stores (lib/leads.ts createLead). Strings are cleaned up; blanks are null. */
 export type LeadInput = {
-  kind: "DEMO" | "CONTACT";
+  kind: "DEMO" | "CONTACT" | "WAITLIST";
   name: string;
   businessName: string | null;
   email: string;
   /** Bare ten digits. */
   phone: string | null;
-  /** null = "Not sure yet" (demo), or not asked (contact). */
+  /** null = "Not sure yet" (demo), or not asked (contact). Always set for a waitlist sign-up. */
   productId: string | null;
   countersBand: LeadCounterBand | null;
   /** IST calendar date "YYYY-MM-DD". */
@@ -223,11 +243,19 @@ export type LeadRequest = { lead: LeadInput; honeypot: boolean };
  * Demo: name, businessName, email, phone (Indian mobile), product (a demo-enabled slug or "not-sure"), counters
  * (optional), preferredDate (today to +180 days, IST), preferredSlot, message (optional).
  * Contact: name, email, phone (optional Indian mobile), topic, message (at least 10 characters).
- * Both: marketingOptIn (default false), website (honeypot), source (optional).
+ * Waitlist: name, email, phone (optional Indian mobile), businessName (optional), product (a COMING_SOON slug); no
+ * marketingOptIn (the stored lead always has false).
+ * All: website (honeypot), source (optional); demo and contact: marketingOptIn (default false).
  */
 export function createLeadRequestSchema(options: LeadSchemaOptions) {
   const demoIds = new Set(options.demoProductIds);
+  const waitlistIds = new Set(options.waitlistProductIds ?? []);
   const now = options.now ?? (() => new Date());
+
+  const waitlistProductField = z
+    .string({ error: LEAD_ERRORS.waitlistProduct })
+    .trim()
+    .refine((value) => value.length <= LEAD_MAX.product && waitlistIds.has(value), LEAD_ERRORS.waitlistProduct);
 
   const productField = z
     .string({ error: LEAD_ERRORS.product })
@@ -284,8 +312,40 @@ export function createLeadRequestSchema(options: LeadSchemaOptions) {
     source: sourceField,
   });
 
-  return z.discriminatedUnion("kind", [demo, contact]).transform((body): LeadRequest => {
+  const waitlist = z.strictObject({
+    kind: z.literal("waitlist"),
+    name: requiredLine(LEAD_ERRORS.name, LEAD_MAX.name),
+    email: emailField,
+    phone: contactPhoneField,
+    businessName: optionalLine(LEAD_MAX.businessName),
+    product: waitlistProductField,
+    // No marketingOptIn: the form's purpose is only "tell you when it launches" (DPDP), so the field is an unknown key.
+    website: honeypotField,
+    source: sourceField,
+  });
+
+  return z.discriminatedUnion("kind", [demo, contact, waitlist]).transform((body): LeadRequest => {
     const honeypot = body.website.trim() !== "";
+    if (body.kind === "waitlist") {
+      return {
+        honeypot,
+        lead: {
+          kind: "WAITLIST",
+          name: body.name,
+          businessName: body.businessName,
+          email: body.email,
+          phone: body.phone,
+          productId: body.product,
+          countersBand: null,
+          preferredDate: null,
+          preferredSlot: null,
+          topic: null,
+          message: null,
+          marketingOptIn: false,
+          source: body.source,
+        },
+      };
+    }
     if (body.kind === "demo") {
       return {
         honeypot,

@@ -6,6 +6,7 @@
  */
 import { ItemKind, LicenseStatus, OrderStatus, PaymentStatus, PublishStatus } from "@/generated/prisma/enums";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { servesExistingLicenses } from "@/lib/catalog/status";
 import { ApiError, errors } from "@/lib/http";
 import { log } from "@/lib/log";
 import {
@@ -151,7 +152,7 @@ export async function assertOrderStillPurchasable(db: PrismaClient, orderId: str
       if (item.plan.archived || productStatus !== PublishStatus.PUBLISHED) throw unavailable();
       continue;
     }
-    if (productStatus === PublishStatus.DRAFT) throw unavailable();
+    if (!servesExistingLicenses(productStatus)) throw unavailable();
     const license = item.targetLicenseId ? byId.get(item.targetLicenseId) : undefined;
     if (!license || accountId === null || license.accountId !== accountId || license.status === LicenseStatus.REVOKED) {
       throw unavailable();

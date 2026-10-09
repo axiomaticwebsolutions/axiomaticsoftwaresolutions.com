@@ -2,15 +2,17 @@ import { describe, expect, it } from "vitest";
 import { SETTING_KEYS } from "@/lib/config";
 import type { Db } from "@/lib/db";
 import {
+  fixtureCatalogProduct,
   fixtureCategories,
+  fixtureComingSoonProducts,
   fixtureFaqs,
   fixtureLatestRelease,
   fixtureProduct,
   fixtureProducts,
   fixtureSettings,
 } from "@/lib/storefront/fixtures";
-import { loadFaqs, loadStoreCategories, loadStoreProducts } from "@/lib/storefront/prisma-source";
-import { PRODUCTS } from "@/prisma/seed-data/catalog";
+import { loadCatalogProducts, loadFaqs, loadStoreCategories, loadStoreProducts } from "@/lib/storefront/prisma-source";
+import { COMING_SOON_PRODUCTS, PRODUCTS } from "@/prisma/seed-data/catalog";
 import { buildSeedPlan } from "@/prisma/seed-data/plan";
 
 const products = fixtureProducts();
@@ -29,6 +31,7 @@ describe("fixtures source", () => {
       category: { id: "pharmacy", name: "Medical & Pharmacy", tone: "sage", icon: "local_pharmacy" },
       platforms: ["windows"],
       demoEnabled: true,
+      comingSoon: false,
       relatedIds: ["general-store-gst", "cheque-printing"],
       createdAt: "2024-02-09T18:30:00.000Z",
     });
@@ -106,13 +109,37 @@ describe("fixtures source", () => {
     expect(fixtureFaqs("constructor")).toEqual([]);
   });
 
-  it("serves categories with blurbs and published product counts", () => {
+  it("serves categories with blurbs, published and coming-soon product counts", () => {
     expect(fixtureCategories()).toEqual([
-      { id: "pharmacy", name: "Medical & Pharmacy", blurb: "Billing with batch and expiry tracking for chemists and medical stores.", tone: "sage", icon: "local_pharmacy", sortOrder: 0, productCount: 1 },
-      { id: "restaurant", name: "Restaurants & Cafés", blurb: "Table billing, KOTs and day-end reports for food businesses.", tone: "peach", icon: "room_service", sortOrder: 1, productCount: 1 },
-      { id: "retail", name: "Retail & Grocery", blurb: "GST invoicing, barcode billing and stock for general stores.", tone: "blue", icon: "shopping_basket", sortOrder: 2, productCount: 1 },
-      { id: "finance", name: "Finance & Office", blurb: "Cheque printing and payment records for any business.", tone: "lavender", icon: "account_balance", sortOrder: 3, productCount: 1 },
+      { id: "pharmacy", name: "Medical & Pharmacy", blurb: "Billing with batch and expiry tracking for chemists and medical stores.", tone: "sage", icon: "local_pharmacy", sortOrder: 0, productCount: 1, comingSoonCount: 3 },
+      { id: "restaurant", name: "Restaurants & Cafés", blurb: "Table billing, KOTs and day-end reports for food businesses.", tone: "peach", icon: "room_service", sortOrder: 1, productCount: 1, comingSoonCount: 1 },
+      { id: "retail", name: "Retail & Grocery", blurb: "GST invoicing, barcode billing and stock for general stores.", tone: "blue", icon: "shopping_basket", sortOrder: 2, productCount: 1, comingSoonCount: 6 },
+      { id: "finance", name: "Finance & Office", blurb: "Cheque printing and payment records for any business.", tone: "lavender", icon: "account_balance", sortOrder: 3, productCount: 1, comingSoonCount: 3 },
+      { id: "jewellery", name: "Jewellery", blurb: "Billing with daily gold rates, HUID and tags for jewellers.", tone: "pink", icon: "workspace_premium", sortOrder: 4, productCount: 0, comingSoonCount: 1 },
+      { id: "wholesale", name: "Wholesale & Distribution", blurb: "Billing, schemes and collections for distributors, stockists and traders.", tone: "peach", icon: "warehouse", sortOrder: 5, productCount: 0, comingSoonCount: 3 },
+      { id: "industry", name: "Manufacturing & Logistics", blurb: "Software for factories, transporters and fuel stations.", tone: "blue", icon: "factory", sortOrder: 6, productCount: 0, comingSoonCount: 3 },
     ]);
+  });
+
+  it("serves the coming-soon products by rank, after the published ones, with no plans, releases or FAQs", () => {
+    const coming = fixtureComingSoonProducts();
+    expect(coming.map((p) => p.id)).toEqual(COMING_SOON_PRODUCTS.map((p) => p.id));
+    expect(coming.every((p) => p.comingSoon && p.plans.length === 0 && p.releases.length === 0 && p.faqs.length === 0)).toBe(true);
+    expect(coming.every((p) => !p.demoEnabled)).toBe(true);
+    expect(Math.min(...coming.map((p) => p.rank))).toBeGreaterThan(Math.max(...products.map((p) => p.rank)));
+    expect(products.some((p) => p.comingSoon)).toBe(false);
+    expect(fixtureCatalogProduct("payroll")).toMatchObject({
+      code: "PAY",
+      tone: "lavender",
+      comingSoon: true,
+      category: { id: "finance", tone: "lavender" },
+      relatedIds: ["cheque-printing"],
+      createdAt: "2026-10-08T18:30:00.000Z",
+    });
+    expect(fixtureProduct("payroll")).toBeNull();
+    expect(fixtureCatalogProduct("medical-billing")).toEqual(fixtureProduct("medical-billing"));
+    expect(fixtureCatalogProduct("nope")).toBeNull();
+    expect(fixtureFaqs("payroll")).toEqual([]);
   });
 
   it("serves the seed settings", () => {
@@ -153,11 +180,22 @@ describe("database source parity", () => {
         calls.push({ model: "product", args });
         return productRows;
       },
+      groupBy: async (args: unknown) => {
+        calls.push({ model: "productGroups", args });
+        const groups = new Map<string, { categoryId: string; status: string; _count: { _all: number } }>();
+        for (const p of seed.products) {
+          const key = `${p.categoryId}:${String(p.status)}`;
+          const g = groups.get(key) ?? { categoryId: p.categoryId, status: String(p.status), _count: { _all: 0 } };
+          g._count._all += 1;
+          groups.set(key, g);
+        }
+        return [...groups.values()];
+      },
     },
     category: {
       findMany: async (args: unknown) => {
         calls.push({ model: "category", args });
-        return seed.categories.map((c) => ({ ...c, _count: { products: seed.products.filter((p) => p.categoryId === c.id).length } }));
+        return seed.categories;
       },
     },
     faq: {
@@ -177,16 +215,22 @@ describe("database source parity", () => {
     expect(fromDb).toEqual(products);
     const productQuery = calls.find((c) => c.model === "product")?.args as Record<string, unknown>;
     expect(productQuery).toMatchObject({
-      where: { status: "PUBLISHED" },
+      where: { status: { in: ["PUBLISHED", "COMING_SOON"] } },
       orderBy: [{ rank: "asc" }, { name: "asc" }],
       include: { plans: { where: { archived: false } }, releases: { where: { status: "PUBLISHED" } } },
     });
   });
 
+  it("maps coming-soon products to the same view, without plans or releases", async () => {
+    const { published, comingSoon } = await loadCatalogProducts(fakeDb);
+    expect(published).toEqual(products);
+    expect(comingSoon).toEqual(fixtureComingSoonProducts());
+  });
+
   it("maps categories and FAQ pages to the same view", async () => {
     expect(await loadStoreCategories(fakeDb)).toEqual(fixtureCategories());
-    const categoryQuery = calls.find((c) => c.model === "category")?.args;
-    expect(categoryQuery).toMatchObject({ include: { _count: { select: { products: { where: { status: "PUBLISHED" } } } } } });
+    const groupQuery = calls.find((c) => c.model === "productGroups")?.args;
+    expect(groupQuery).toMatchObject({ by: ["categoryId", "status"], where: { status: { in: ["PUBLISHED", "COMING_SOON"] } } });
     for (const page of ["home", "pricing", "support", "general-store-gst"]) {
       expect(await loadFaqs(fakeDb, page)).toEqual(fixtureFaqs(page));
     }

@@ -64,6 +64,29 @@ sudo -iu axsstore bash -lc 'cd /www/wwwroot/axiomaticsoftwaresolutions.com && ./
 sudo -iu axsstore bash -lc 'cd /www/wwwroot/axiomaticsoftwaresolutions.com && ./scripts/deploy.sh --ref v0.1.1'
 ```
 
+**Deploy with `--bootstrap`** when a release adds catalog rows (a "catalog addition", decisions.md 2026-10-09), such as
+the release with the 20 coming-soon products and 3 new categories. The bootstrap runs after the migrations and before
+the build (settings and counters only), and the catalog addition runs as step 13, once the new release is live and
+healthy: the release that is still live during the build cannot read a "Coming soon" product, and its admin pages
+that list every product (Overview, Products & categories) would fail until the switch. The addition inserts only the
+categories and products that are missing, records itself so it never runs again, and leaves every existing product,
+plan, setting and user as it is. The storefront lists the new products within 5 minutes (page cache). The Owner already
+exists, so no `BOOTSTRAP_OWNER_*` line is needed (leave them out of `shared/.env.production`):
+
+```bash
+sudo -iu axsstore bash -lc 'cd /www/wwwroot/axiomaticsoftwaresolutions.com && ./scripts/deploy.sh --bootstrap'
+```
+
+The deploy output (and `shared/logs/deploy-<release>.log`) shows, under `[13/14] Catalog additions`, `Catalog addition
+2026-10-09-coming-soon ... added 3 categories, 20 products.` with one `+` line per row; a product skipped because its license prefix is taken is listed
+with `!`. A later deploy with `--bootstrap` prints `already added on <date>; nothing to do`. To check at any time
+(read only; the release reads `shared/.env.production` itself), and to run the addition by hand if step 13 failed (the
+new release is live either way; drop `--dry-run`):
+
+```bash
+sudo -iu axsstore bash -lc 'cd /www/wwwroot/axiomatic/current && NODE_ENV=production node --import tsx scripts/bootstrap-production.ts --additions-only --dry-run'
+```
+
 `./scripts/deploy.sh` always pulls the newest `main` (or the given tag) first. To rebuild exactly the code that is live
 (for example after an `APP_URL` change), check that the checkout is at the live commit, then build from it:
 
@@ -73,7 +96,7 @@ sudo -iu axsstore grep '^commit=' /www/wwwroot/axiomatic/current/.release       
 sudo -iu axsstore bash -lc 'cd /www/wwwroot/axiomaticsoftwaresolutions.com && bash deploy/deploy.sh --source "$PWD"'
 ```
 
-**If a deploy fails**, its last lines read `DEPLOY FAILED in step N/13 ...`, a `What to do:` line and
+**If a deploy fails**, its last lines read `DEPLOY FAILED in step N/14 ...`, a `What to do:` line and
 `Full log: /www/wwwroot/axiomatic/shared/logs/deploy-<release>.log`.
 
 - Steps 1-10 (checks, install, migrations, build): the live site is unchanged. Fix the cause shown above that line and
@@ -83,6 +106,7 @@ sudo -iu axsstore bash -lc 'cd /www/wwwroot/axiomaticsoftwaresolutions.com && ba
 - `AUTOMATIC ROLLBACK` (exit 3): the previous release is live and healthy again. Read the PM2 lines printed above it
   (or `sudo -iu axsstore pm2 logs axiomatic-software --lines 300 --nostream`), fix the cause, deploy again.
 - The new release is live but not healthy, or the automatic rollback did not bring a healthy site back: go to 8.5.
+- Step 13 (catalog additions): the new release is live and healthy; only the addition failed. Run it by hand (above).
 - An error before `==> Releasing` (git fetch, local changes, cannot fast-forward): nothing changed. Test the deploy key
   with `sudo -iu axsstore ssh -T git@github.com`.
 - Run every command a failure message suggests as the app user (`sudo -iu axsstore ...`). A bare `pm2` in the root
@@ -105,7 +129,10 @@ curl -fsS http://127.0.0.1:3210/api/health; echo          # {"status":"ok"}
 systemctl is-active axsstore-redis pm2-axsstore            # active, active
 ```
 
-**Roll back** to the previous release (code only; database migrations stay), or to a named one:
+**Roll back** to the previous release (code only; database migrations stay), or to a named one. Going back to a
+release older than the 2026-10-09 coming-soon release once its products or waitlist sign-ups exist breaks that old
+release's admin pages that list them (Overview, Products & categories, Leads; the storefront is fine): see
+"Rolling back past a new status" in `deploy/README.md` first.
 
 ```bash
 sudo -iu axsstore bash /www/wwwroot/axiomatic/current/deploy/rollback.sh --list
@@ -129,9 +156,19 @@ node scripts/smoke-prod.mjs --base https://axiomaticsoftwaresolutions.com
 | A secret in `shared/.env.production` (session, license, database, Redis) | `restart.sh` |
 | `APP_URL` | Deploy again (the build bakes it into the pages); see above to rebuild exactly the live code |
 | Code (pushed to GitHub from the PC) | Deploy |
+| Code that adds catalog products or categories (a catalog addition) | Deploy with `--bootstrap` (above) |
 | `AXS_PORT` | `restart.sh --recreate`; then put the new port into the root copy of the proxy file (`sed -i 's#127.0.0.1:3210;#127.0.0.1:<NEW>;#' /root/axs-nginx/axiomatic-app.conf`), run 8.1, and use the new port in this runbook's health checks. The site answers 502 between the two steps. |
 | `AXS_NODE_DIR` | 8.4 |
 | `AXS_APP_NAME` | `sudo -iu axsstore pm2 delete <old name>`, then `restart.sh`, then `sudo -iu axsstore pm2 save` |
+
+**Coming-soon products** are listed on the site with a "Coming soon" badge and a "Notify me when it launches" form, and
+cannot be bought. Sign-ups arrive in Admin > Leads (type "Waitlist", references `WAIT-1001`, ...), each with an email to
+the sales address; the product's drawer in Admin > Products & categories shows how many people are waiting. To launch
+one: Admin > Plans & pricing, add its plans; Admin > Releases, create a release, upload the installer and publish it;
+then Admin > Products & categories > the product > Publish (with a reason). Publish stays disabled, with the missing
+item named, until it has page content, a plan on sale and a published release. The waitlist is not emailed
+automatically: export it from Admin > Leads (filter Type = Waitlist) and write to those people. To take a coming-soon
+product off the site, use Hide; to show a draft product as coming soon, use Mark coming soon.
 
 **Editing the settings file:** always as the app user, never as root and never in aaPanel > Files (a compromised app
 could otherwise swap the file for a link to a system file that root then changes):

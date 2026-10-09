@@ -16,6 +16,7 @@
  *   devices (`below_active_devices`; fulfilment would deactivate the extra computers, lib/licensing/device-limit.ts).
  */
 import { ItemKind, LicenseStatus, PlanType, PublishStatus } from "@/generated/prisma/enums";
+import { servesExistingLicenses } from "@/lib/catalog/status";
 import type { Db } from "@/lib/db";
 import { countActiveDevices } from "@/lib/licensing/device-limit";
 import { LicenseTermsError, renewalTerms, upgradeTerms } from "@/lib/licensing/terms";
@@ -154,7 +155,8 @@ export async function validateCheckoutLines(
     const plan = ctx.plans.get(item.planId);
     if (!plan) return fail("unknown_plan", LINE_MESSAGES.unknownPlan);
     const productStatus = plan.product.status;
-    if (productStatus === PublishStatus.DRAFT || (kind === ItemKind.NEW && productStatus !== PublishStatus.PUBLISHED)) {
+    // New licenses: PUBLISHED only. Renewals, upgrades and add-ons: PUBLISHED or HIDDEN (never DRAFT or COMING_SOON).
+    if (!servesExistingLicenses(productStatus) || (kind === ItemKind.NEW && productStatus !== PublishStatus.PUBLISHED)) {
       return fail("unavailable", LINE_MESSAGES.unavailable);
     }
 

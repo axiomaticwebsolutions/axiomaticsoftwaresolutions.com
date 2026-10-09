@@ -3,7 +3,8 @@
 import Link from "next/link";
 import * as React from "react";
 import { Icon } from "@/components/icons/icon";
-import { STORE_PATHS, TONE_TILE_CLASSES, ariaCurrentFor, type NavProduct } from "@/components/store/active-nav";
+import { STORE_PATHS, TONE_TILE_CLASSES, ariaCurrentFor, comingSoonLinkLabel, type NavProduct } from "@/components/store/active-nav";
+import { COMING_SOON_CATALOG_HREF } from "@/lib/storefront/catalog-filter";
 import { demoHref } from "@/lib/storefront/derive";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +35,8 @@ function linksIn(menu: HTMLElement | null): HTMLAnchorElement[] {
 
 export type MegaMenuProps = {
   products: readonly NavProduct[];
+  /** COMING_SOON products: one small "N more coming soon" link under the list (none when 0). */
+  comingSoonCount?: number;
   pathname: string;
   /** The current page is in the Software section (lavender trigger, aria-current). */
   active: boolean;
@@ -41,10 +44,11 @@ export type MegaMenuProps = {
 
 /**
  * "Software" disclosure in the primary nav: a button (aria-expanded/aria-controls) that opens the 640px menu of
- * products plus the Explore links. Click toggles; Escape closes and returns focus to the button; a click outside or
- * tabbing out closes; ArrowDown/ArrowUp open it and move between links (Home/End jump). Closes on navigation.
+ * products on sale (plus a "N more coming soon" link to the filtered catalog) and the Explore links. Click toggles;
+ * Escape closes and returns focus to the button; a click outside or tabbing out closes; ArrowDown/ArrowUp open it and
+ * move between links (Home/End jump). Closes on navigation.
  */
-export function MegaMenu({ products, pathname, active }: MegaMenuProps) {
+export function MegaMenu({ products, comingSoonCount = 0, pathname, active }: MegaMenuProps) {
   // Open state is tied to the path it was opened on, so navigating away closes the menu without an effect.
   const [openAt, setOpenAt] = React.useState<string | null>(null);
   const open = openAt === pathname;
@@ -184,6 +188,17 @@ export function MegaMenu({ products, pathname, active }: MegaMenuProps) {
               </Link>
             </li>
           ))}
+          {comingSoonCount > 0 ? (
+            <li>
+              <Link
+                href={COMING_SOON_CATALOG_HREF}
+                className="flex items-center gap-2 rounded-12 px-3 py-2.5 text-[13.5px] font-bold text-lavender-fg no-underline transition-colors hover:bg-lavender-soft"
+              >
+                <Icon name="schedule" size={18} />
+                {comingSoonLinkLabel(comingSoonCount)} <span aria-hidden="true">→</span>
+              </Link>
+            </li>
+          ) : null}
         </ul>
         <div className="flex flex-col gap-3 rounded-14 bg-bg p-4 text-[14px] leading-[1.35]">
           <p className="m-0 text-[11.5px] font-bold uppercase leading-[1.35] tracking-[0.12em] text-ink-2">Explore</p>

@@ -5,10 +5,13 @@ import { palette, tones } from "@/lib/design/tokens";
 import { RUPEE, formatINR } from "@/lib/money";
 import { log } from "@/lib/log";
 import { OG_IMAGE_SIZE, SITE_NAME } from "@/lib/seo/metadata";
-import { getStoreProduct, getStoreProducts } from "@/lib/storefront/data";
+import { getCatalogProduct, getCatalogProducts } from "@/lib/storefront/data";
 import { platformsLabel, startingPlan, unitLabel } from "@/lib/storefront/derive";
 
-/** Share image per product (1200x630): tone panel, product icon, name, tagline and the "From" price. No web fonts. */
+/**
+ * Share image per product (1200x630): tone panel, product icon, name, tagline and the "From" price ("Coming soon" for
+ * a coming-soon product). No web fonts.
+ */
 export const runtime = "nodejs";
 export const size = { ...OG_IMAGE_SIZE };
 export const contentType = "image/png";
@@ -17,10 +20,10 @@ export const contentType = "image/png";
 // plan edits. Without generateStaticParams the generateImageMetadata route ([__metadata_id__]) renders on every request.
 export const revalidate = 300;
 
-/** Every published product's "card" image. Slugs added later render on first request, unknown ones 404. */
+/** Every listed product's "card" image. Slugs added later render on first request, unknown ones 404. */
 export async function generateStaticParams(): Promise<Array<{ slug: string; __metadata_id__: string }>> {
   try {
-    const products = await getStoreProducts();
+    const products = await getCatalogProducts();
     return products.map((p) => ({ slug: p.id, __metadata_id__: "card" }));
   } catch (error) {
     log.warn("product_og_static_params_unavailable", { error: error instanceof Error ? error.message : String(error) });
@@ -34,20 +37,24 @@ type ImageParams = Promise<{ slug: string }> | { slug: string };
 /** One image per product, with a per-product alt text. */
 export async function generateImageMetadata({ params }: { params: ImageParams }) {
   const { slug } = await params;
-  const product = await getStoreProduct(slug);
-  const alt = product ? `${product.name}: ${product.tagline}` : SITE_NAME;
+  const product = await getCatalogProduct(slug);
+  const alt = product ? `${product.name}${product.comingSoon ? " (coming soon)" : ""}: ${product.tagline}` : SITE_NAME;
   return [{ id: "card", alt, size, contentType }];
 }
 
 export default async function ProductOpengraphImage({ params }: { params: ImageParams; id?: string }) {
   const { slug } = await params;
-  const product = await getStoreProduct(slug);
+  const product = await getCatalogProduct(slug);
   if (!product) return new Response("Not found", { status: 404 });
 
   const tone = tones[product.tone];
   const from = startingPlan(product);
   // The built-in OG font has no rupee glyph, so the image says "Rs" (the page itself shows the rupee sign).
-  const price = from ? `From ${formatINR(from.pricePaise).replace(RUPEE, "Rs ")} ${unitLabel(from)} + GST` : null;
+  const price = product.comingSoon
+    ? "Coming soon"
+    : from
+      ? `From ${formatINR(from.pricePaise).replace(RUPEE, "Rs ")} ${unitLabel(from)} + GST`
+      : null;
   const iconPath = ICON_PATHS[toIconName(product.icon)];
 
   return new ImageResponse(

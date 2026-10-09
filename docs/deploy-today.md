@@ -498,7 +498,7 @@ build is the slow part):
 sudo -iu axiomatic bash -lc 'cd /www/wwwroot/axiomaticsoftwaresolutions.com && ./scripts/deploy.sh --first-run'
 ```
 
-It ends with `DEPLOYED <release> in ...`. If it stops with `DEPLOY FAILED in step N/13`, read the lines above it and
+It ends with `DEPLOYED <release> in ...`. If it stops with `DEPLOY FAILED in step N/14`, read the lines above it and
 the "What to do" line, fix that (usually a value in `shared/.env.production`), and run the same command again. The
 full log is in `/www/wwwroot/axiomatic/shared/logs/deploy-<release>.log`.
 

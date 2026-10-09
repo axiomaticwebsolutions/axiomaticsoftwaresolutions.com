@@ -313,8 +313,9 @@ export async function issueManualLicense(input: ManualIssueInput, ctx: LicenseAc
         },
       });
       if (!account) throw errors.validation({ accountId: LICENSE_ACTION_MESSAGES.accountMissing });
-      const plan = await tx.plan.findUnique({ where: { id: input.planId }, include: { product: { select: { id: true, code: true, name: true } } } });
-      if (!plan || plan.archived || !(MANUAL_ISSUE_PLAN_TYPES as readonly PlanType[]).includes(plan.type)) {
+      const plan = await tx.plan.findUnique({ where: { id: input.planId }, include: { product: { select: { id: true, code: true, name: true, status: true } } } });
+      // A COMING_SOON product is not on sale: no licenses until it is published (decisions.md 2026-10-09).
+      if (!plan || plan.archived || plan.product.status === "COMING_SOON" || !(MANUAL_ISSUE_PLAN_TYPES as readonly PlanType[]).includes(plan.type)) {
         throw errors.validation({ planId: LICENSE_ACTION_MESSAGES.planNotIssuable });
       }
       const maxQty = Math.min(plan.maxQty ?? MANUAL_ISSUE_MAX_QTY, MANUAL_ISSUE_MAX_QTY);

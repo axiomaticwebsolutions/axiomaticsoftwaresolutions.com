@@ -11,9 +11,11 @@ function Sub({ children }: { children: React.ReactNode }) {
   return <div className="mt-px text-[11.5px] font-semibold text-ink-2">{children}</div>;
 }
 
-/** What the request is about: the product for demo requests, the topic for messages. */
+/** What the request is about: the product for demo requests and waitlist sign-ups, the topic for messages. */
 export function leadInterest(l: LeadDto): string {
-  return l.kind === "DEMO" ? (l.productName ?? "Not sure yet") : (l.topicLabel ?? "\u2014");
+  if (l.kind === "DEMO") return l.productName ?? "Not sure yet";
+  if (l.kind === "WAITLIST") return l.productName ?? "\u2014";
+  return l.topicLabel ?? "\u2014";
 }
 
 /** REQUEST | TYPE | CONTACT | ABOUT | STATUS | RECEIVED (sort ids match LEAD_SORTS: name, status, received). */

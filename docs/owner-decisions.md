@@ -417,6 +417,20 @@ New on 2026-10-08 (two-step sign-in optional for every account):
 | Admin > My profile: menu item and title "My profile"; "Your details, two-step verification, password and the devices signed in as you."; card "Your details" with "Only an Owner can change your role, in Staff & roles." | `PROFILE_COPY` in `lib/admin/profile/model.ts` |
 | Production bootstrap report: "two-step sign-in off (password only)" and the next step "Once email sending works, turn two-step on in Admin > My profile (go-live checklist)." | `formatBootstrapReport()` in `prisma/seed-data/bootstrap.ts` |
 
+New on 2026-10-09 (coming-soon products and the launch waitlist, decisions.md 2026-10-09):
+
+| Copy | Where it lives |
+|---|---|
+| The 20 coming-soon products: names, taglines, summaries, planned features, benefits and requirements (written from the market research; no prices or dates). Once in the database, edit them in Admin > Products & categories; the code copy is only used where the catalog addition has not run yet | `prisma/seed-data/coming-soon.ts` |
+| The three new categories: "Jewellery", "Wholesale & Distribution", "Manufacturing & Logistics" and their blurbs | `CATEGORIES` in `prisma/seed-data/catalog.ts`; Admin > Products & categories > Categories |
+| Product page: badge "Coming soon"; "This software is not on sale yet. Leave your email and we’ll tell you when it launches."; "See software available now"; headings "Planned features", "What it will do for your business", "Planned system requirements"; the form "Notify me when it launches", "We’ll send one email when <product> is ready to buy. No spam.", the notice "We’ll use these details only to tell you when <product> launches. See our privacy policy.", button "Notify me", success "You’re on the list" / "Thanks — we’ll email you when <product> launches." | `COMING_SOON_COPY` in `components/store/product/copy.ts` |
+| Catalog filter "Availability: All / Available now / Coming soon"; menu link "20 more coming soon" | `lib/storefront/catalog-filter.ts`, `components/store/active-nav.ts` |
+| Internal waitlist email (stored `lead_new` template unchanged): kind "launch waitlist sign-up", Topic "Launch waitlist", Message "Asked to be emailed when <product> launches. No reply is needed now: the website promised only a launch email." | `lib/leads.ts` |
+| Admin: "Mark coming soon" and its dialog, the blockers (e.g. "Customers already have licenses for this product. Hide it instead: ..." and "Orders exist for this product. Hide it instead: ..."), the drawer's "Launch waitlist" section; the Leads module description ("... and “Notify me” launch waitlist sign-ups. Contact and demo senders get an automatic acknowledgement email; waitlist sign-ups do not.") and the template label "Contact, demo or waitlist form sent (to sales)" | `lib/admin/catalog/rules.ts`, `components/admin/catalog/product-drawer.tsx`, `components/admin/destructive-action.tsx`, `lib/rbac.ts`, `lib/admin/templates/model.ts` |
+
+Open follow-up: emailing a product's waitlist when it is published is not built (export Leads, filter Type = Waitlist,
+and write to them).
+
 ## Decided already (change only on purpose)
 
 These were open once and are now settled; they are listed so nobody reopens them by accident.

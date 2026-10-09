@@ -9,8 +9,16 @@
  *   NODE_ENV=production pnpm exec tsx scripts/bootstrap-production.ts
  *
  * (`node --import tsx scripts/bootstrap-production.ts` is the same.) Safe on every deploy: once the Owner exists it
- * only adds settings sections and counters that a newer version introduced, else it prints "nothing to do".
- * What it writes and the idempotency rules: prisma/seed-data/bootstrap.ts.
+ * only adds settings sections, counters and catalog additions (e.g. the 2026-10-09 coming-soon products, each added
+ * exactly once) that a newer version introduced, else it prints "nothing to do".
+ * What it writes and the idempotency rules: prisma/seed-data/bootstrap.ts and prisma/seed-data/additions.ts.
+ *
+ * `--additions-only` runs just the catalog additions (no Owner, settings or counters, no BOOTSTRAP_* variables, and no
+ * refusal of a database with development seed data), e.g. on a development database:
+ *   NODE_ENV=development pnpm exec tsx scripts/bootstrap-production.ts --additions-only [--dry-run]
+ * `--skip-additions` is the opposite: everything except the catalog additions. deploy/deploy.sh uses it before the build
+ * while an older release is still live (that release's Prisma client cannot read a COMING_SOON product and would fail
+ * on admin pages that list every product), then runs `--additions-only` once the new release is live and healthy.
  *
  * Env files: like prisma.config.ts it loads .env files from the current directory with @next/env, except that an
  * unset NODE_ENV reads the production set (.env.production.local, .env.local, .env.production, .env), because this
@@ -26,6 +34,7 @@
  */
 import { loadEnvConfig } from "@next/env";
 import { createPrismaClient } from "@/lib/db";
+import { formatAdditionLines, pendingAdditions, runCatalogAdditions } from "@/prisma/seed-data/additions";
 import {
   BootstrapError,
   OWNER_ENV,
@@ -39,7 +48,7 @@ import {
 } from "@/prisma/seed-data/bootstrap";
 
 const USAGE = [
-  "Usage: pnpm exec tsx scripts/bootstrap-production.ts [--dry-run] [--update-catalog]",
+  "Usage: pnpm exec tsx scripts/bootstrap-production.ts [--dry-run] [--update-catalog] [--additions-only | --skip-additions]",
   "       (run it from the release directory; NODE_ENV=production or unset reads .env.production)",
   "",
   "  --dry-run         Print what would change (counts only) and write nothing (READ ONLY transaction).",
@@ -48,23 +57,49 @@ const USAGE = [
   "                    code update. Admin edits to those fields are lost. Kept: product status, archived plans, FAQ",
   "                    visibility and order, template on/off, every release, settings, counters, users, customers,",
   "                    orders and licenses. Run it with --dry-run first.",
+  "  --additions-only  Run only the catalog additions (new categories and products, each set added once and never",
+  "                    again): no Owner, settings or counters, no BOOTSTRAP_* variables. Works on a development",
+  "                    database too. Every normal run applies them as well.",
+  "  --skip-additions  Everything except the catalog additions (deploy.sh runs them after the switch with",
+  "                    --additions-only, so the release that is still live never reads rows it does not know).",
   "  --help            Show this text.",
   "",
   "First run: export BOOTSTRAP_OWNER_EMAIL and BOOTSTRAP_OWNER_PASSWORD (optionally BOOTSTRAP_OWNER_NAME) in the shell.",
   "Later runs need none of them. The bootstrap never creates a second Owner and never resets a password.",
 ].join("\n");
 
-type Args = { dryRun: boolean; updateCatalog: boolean; help: boolean };
+type Args = { dryRun: boolean; updateCatalog: boolean; additionsOnly: boolean; skipAdditions: boolean; help: boolean };
 
 function parseArgs(argv: readonly string[]): Args {
-  const args: Args = { dryRun: false, updateCatalog: false, help: false };
+  const args: Args = { dryRun: false, updateCatalog: false, additionsOnly: false, skipAdditions: false, help: false };
   for (const arg of argv) {
     if (arg === "--dry-run") args.dryRun = true;
     else if (arg === "--update-catalog") args.updateCatalog = true;
+    else if (arg === "--additions-only") args.additionsOnly = true;
+    else if (arg === "--skip-additions") args.skipAdditions = true;
     else if (arg === "--help" || arg === "-h") args.help = true;
     else throw new BootstrapError([`Unknown argument "${arg}". Run with --help for the options.`]);
   }
+  if (args.additionsOnly && args.updateCatalog) throw new BootstrapError(["--additions-only and --update-catalog cannot be combined."]);
+  if (args.additionsOnly && args.skipAdditions) throw new BootstrapError(["--additions-only and --skip-additions cannot be combined."]);
   return args;
+}
+
+/** --additions-only: the catalog additions alone, in their own locked transaction (READ ONLY with --dry-run). */
+async function runAdditionsOnly(url: string, dryRun: boolean): Promise<void> {
+  const db = createPrismaClient(url);
+  try {
+    const plans = await runCatalogAdditions(db, { dryRun });
+    const pending = pendingAdditions(plans).length > 0;
+    const head = dryRun
+      ? "Catalog additions - DRY RUN: nothing was written. Planned changes:"
+      : pending
+        ? "Catalog additions - done. Changes:"
+        : "Catalog additions - nothing to do: every addition was already applied.";
+    console.info([head, ...formatAdditionLines(plans, !dryRun)].join("\n"));
+  } finally {
+    await db.$disconnect();
+  }
 }
 
 type EnvLoad = { mode: "production" | "development" | "test"; files: EnvFile[]; passwordInProcessEnv: boolean };
@@ -90,6 +125,12 @@ async function main(): Promise<void> {
   }
   const env = loadEnvFiles(process.cwd());
   console.info(`Environment: ${env.mode}; .env files read: ${env.files.map((f) => f.path).join(", ") || "none"}.`);
+  if (args.additionsOnly) {
+    const additionsUrl = process.env.DATABASE_URL?.trim();
+    if (!additionsUrl || !/^postgres(ql)?:/.test(additionsUrl)) throw new BootstrapError(["DATABASE_URL: is required (a postgresql:// connection URL)."]);
+    await runAdditionsOnly(additionsUrl, args.dryRun);
+    return;
+  }
   const notes: string[] = [];
   if (env.mode === "production" && env.files.some((f) => f.path === ".env.local")) {
     notes.push(".env.local was read too, and its values override .env.production. On a server, keep every value in .env.production.");
@@ -119,6 +160,10 @@ async function main(): Promise<void> {
   }
 
   const rows = buildBootstrapRows(config);
+  if (args.skipAdditions) {
+    rows.additions = [];
+    notes.push("Catalog additions were not checked (--skip-additions): run --additions-only once the new release is live.");
+  }
   const db = createPrismaClient(url);
   try {
     const report = await runBootstrap(db, {

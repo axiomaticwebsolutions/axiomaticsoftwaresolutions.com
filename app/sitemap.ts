@@ -3,17 +3,18 @@ import { DOC_GUIDES, guideHref } from "@/content/docs/guides";
 import { LEGAL_DOCUMENTS, LEGAL_DOC_SLUGS, legalDocHref } from "@/content/legal/documents";
 import { startOfDayIST } from "@/lib/dates";
 import { siteUrl } from "@/lib/seo/metadata";
-import { getStoreProducts } from "@/lib/storefront/data";
+import { getCatalogProducts } from "@/lib/storefront/data";
 import { latestRelease, productHref } from "@/lib/storefront/derive";
 
 /**
- * sitemap.xml: the public storefront pages, every PUBLISHED product (lastModified = its newest published release),
+ * sitemap.xml: the public storefront pages, every PUBLISHED product (lastModified = its newest published release) and
+ * then every COMING_SOON product (no lastModified: it has no release yet),
  * every docs guide and every legal document (lastModified = the document's "Last updated" date). Absolute URLs from
  * APP_URL. Left out: /docs and /legal (they redirect), /compare and filtered catalog URLs (noindex / canonical
  * /software), sign-in and every private area (robots.txt disallows them). Revalidates with the catalog cache.
  */
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
-  const products = await getStoreProducts();
+  const products = await getCatalogProducts();
   const page = (path: string): MetadataRoute.Sitemap[number] => ({ url: siteUrl(path) });
 
   return [

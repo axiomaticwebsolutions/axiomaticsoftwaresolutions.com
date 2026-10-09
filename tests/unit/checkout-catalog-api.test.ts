@@ -1,11 +1,15 @@
 import { NextRequest } from "next/server";
 import { describe, expect, it, vi } from "vitest";
-import { fixtureCategories, fixtureProducts } from "@/lib/storefront/fixtures";
+import { fixtureCategories, fixtureComingSoonProducts, fixtureProducts } from "@/lib/storefront/fixtures";
+
+const catalog = () => [...fixtureProducts(), ...fixtureComingSoonProducts()];
 
 vi.mock("@/lib/storefront/data", () => ({
   getStoreProducts: async () => fixtureProducts(),
+  getCatalogProducts: async () => catalog(),
   getStoreCategories: async () => fixtureCategories(),
   getStoreProduct: async (slug: string) => fixtureProducts().find((p) => p.id === slug) ?? null,
+  getCatalogProduct: async (slug: string) => catalog().find((p) => p.id === slug) ?? null,
 }));
 
 const { GET: listProducts } = await import("@/app/api/catalog/products/route");
@@ -36,9 +40,27 @@ describe("GET /api/catalog/products", () => {
     expect(body.facets.category.find((c) => c.value === "pharmacy")?.checked).toBe(true);
   });
 
-  it("returns every published product without filters", async () => {
-    const body = (await (await listProducts(req("/api/catalog/products"), undefined)).json()) as { total: number };
-    expect(body.total).toBe(fixtureProducts().length);
+  it("returns every published product, then every coming-soon product, without filters", async () => {
+    const body = (await (await listProducts(req("/api/catalog/products"), undefined)).json()) as {
+      total: number;
+      items: Array<{ id: string; comingSoon: boolean; startingPricePaise: number | null; licenseTypes: string[] }>;
+    };
+    expect(body.total).toBe(fixtureProducts().length + fixtureComingSoonProducts().length);
+    expect(body.items.map((i) => i.id)).toEqual(catalog().map((p) => p.id));
+    for (const item of body.items.slice(fixtureProducts().length)) {
+      expect(item).toMatchObject({ comingSoon: true, startingPricePaise: null, licenseTypes: [] });
+    }
+  });
+
+  it("filters by availability", async () => {
+    const coming = (await (await listProducts(req("/api/catalog/products?availability=coming-soon"), undefined)).json()) as {
+      items: Array<{ id: string }>;
+      query: { availability: string };
+    };
+    expect(coming.query.availability).toBe("coming-soon");
+    expect(coming.items.map((i) => i.id)).toEqual(fixtureComingSoonProducts().map((p) => p.id));
+    const now = (await (await listProducts(req("/api/catalog/products?availability=available"), undefined)).json()) as { items: Array<{ id: string }> };
+    expect(now.items.map((i) => i.id)).toEqual(fixtureProducts().map((p) => p.id));
   });
 });
 
@@ -52,6 +74,19 @@ describe("GET /api/catalog/products/:slug", () => {
     expect(body.product.id).toBe(slug);
     expect(body.product).not.toHaveProperty("plans");
     expect(body.latestRelease === null || Object.keys(body.latestRelease as object).sort().join() === "notes,releasedAt,version").toBe(true);
+  });
+
+  it("returns a coming-soon product without plans or a release, with its related cards", async () => {
+    const res = await getProduct(req("/api/catalog/products/pharma-distribution"), ctx("pharma-distribution"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { product: Record<string, unknown>; plans: unknown[]; latestRelease: unknown; related: Array<{ id: string; comingSoon: boolean }> };
+    expect(body.product).toMatchObject({ id: "pharma-distribution", comingSoon: true, demoEnabled: false });
+    expect(body.plans).toEqual([]);
+    expect(body.latestRelease).toBeNull();
+    expect(body.related.map((r) => [r.id, r.comingSoon])).toEqual([
+      ["medical-billing", false],
+      ["fmcg-distribution", true],
+    ]);
   });
 
   it("answers 404 for unknown and malformed slugs", async () => {
@@ -72,5 +107,11 @@ describe("GET /api/catalog/compare", () => {
     expect(body.products.map((p) => p.id)).toEqual([ids[0], ids[1]]);
     expect(body.products[0]?.plans.length).toBeGreaterThan(0);
     expect((await (await compare(req("/api/catalog/compare"), undefined)).json()) as unknown).toEqual({ ids: [], products: [] });
+  });
+
+  it("drops coming-soon products (they are not sold)", async () => {
+    const res = await compare(req("/api/catalog/compare?ids=payroll,medical-billing,clinic-opd"), undefined);
+    const body = (await res.json()) as { ids: string[] };
+    expect(body.ids).toEqual(["medical-billing"]);
   });
 });

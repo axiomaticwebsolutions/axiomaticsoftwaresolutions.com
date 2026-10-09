@@ -15,7 +15,9 @@ import { nextCounterValue, nextCreditNoteNumber, nextInvoiceNumber, nextLicenseI
 import { createPrismaClient } from "@/lib/db";
 import { LEAD_COUNTER_KEY, LEAD_COUNTER_START } from "@/lib/leads";
 import { latestRelease, mainPlans, newestRelease, startingPlan } from "@/lib/storefront/derive";
-import { loadFaqs, loadStoreCategories, loadStoreProducts, loadStoreSettings } from "@/lib/storefront/prisma-source";
+import { loadCatalogProducts, loadFaqs, loadStoreCategories, loadStoreProducts, loadStoreSettings } from "@/lib/storefront/prisma-source";
+import { additionMarkerId, runCatalogAdditions } from "@/prisma/seed-data/additions";
+import { CATEGORIES, COMING_SOON_PRODUCTS } from "@/prisma/seed-data/catalog";
 import {
   BOOTSTRAP_AUDIT,
   BootstrapError,
@@ -47,6 +49,8 @@ const TEST_PAYMENTS = { PAYMENT_PROVIDER: "razorpay", PAYMENT_KEY_ID: "rzp_test_
 const OWNER: BootstrapOwnerInput = { email: OWNER_EMAIL, name: "Asha Rao", password: PASSWORD };
 const rows = buildBootstrapRows(readBootstrapConfig({}));
 const SLOW = 180_000;
+const ADDITION = rows.additions[0] ?? { id: "", categories: [], products: [] };
+const MARKER = additionMarkerId(ADDITION.id);
 
 beforeAll(() => {
   if (!base) throw new Error("TEST_DATABASE_URL is not set (see .env.example).");
@@ -187,6 +191,8 @@ describe("production bootstrap on an empty database", () => {
     expect(output).toMatch(/DRY RUN: nothing was written/);
     expect(status).toBe(0);
     expect(output).toContain(`would create ${String(rows.products.length).padStart(3)}`);
+    expect(output).toMatch(/added products\s+would create\s+20/);
+    expect(output).toContain(`Catalog addition ${ADDITION.id}`);
     expect(output).toContain(OWNER_EMAIL);
     expect(output).not.toContain(PASSWORD);
     expect(Object.values(await counts()).every((n) => n === 0)).toBe(true);
@@ -224,18 +230,22 @@ describe("production bootstrap on an empty database", () => {
     expect(output).not.toContain(PASSWORD);
 
     const after = await counts();
+    // A brand-new database also gets the coming-soon catalog (the addition runs right after the catalog step).
     expect(after).toMatchObject({
       users: 1,
-      categories: rows.categories.length,
-      products: rows.products.length,
+      categories: rows.categories.length + ADDITION.categories.length,
+      products: rows.products.length + ADDITION.products.length,
       plans: rows.plans.length,
       releases: rows.releases.length,
       faqs: rows.faqs.length,
       notificationTemplates: rows.templates.length,
       siteSettings: 5,
       counters: 4,
-      auditLogs: 1,
+      auditLogs: 2,
     });
+    expect(await db.product.count({ where: { status: "COMING_SOON" } })).toBe(COMING_SOON_PRODUCTS.length);
+    expect(await db.plan.count({ where: { product: { status: "COMING_SOON" } } })).toBe(0);
+    expect(await db.release.count({ where: { product: { status: "COMING_SOON" } } })).toBe(0);
     for (const table of CUSTOMER_TABLES) expect({ table, rows: after[table] }).toEqual({ table, rows: 0 });
 
     expect(await db.product.count({ where: { status: "PUBLISHED" } })).toBe(rows.products.length);
@@ -254,7 +264,11 @@ describe("production bootstrap on an empty database", () => {
     const read = await getSettings(db);
     for (const key of SETTING_KEYS) expect({ key, value: read[key] }).toEqual({ key, value: settings.get(key) });
 
-    const audit = await db.auditLog.findMany();
+    const marker = await db.auditLog.findMany({ where: { targetId: MARKER } });
+    expect(marker).toHaveLength(1);
+    expect(marker[0]).toMatchObject({ actorId: null, actorRole: "system", action: "Added catalog products", targetType: "system" });
+    expect(marker[0]?.detail).toContain("Created 3 categories and 20 products (Coming soon).");
+    const audit = await db.auditLog.findMany({ where: { targetId: BOOTSTRAP_AUDIT.targetId } });
     expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({ actorId: null, actorRole: "system", action: "Bootstrapped production data", targetType: BOOTSTRAP_AUDIT.targetType, targetId: BOOTSTRAP_AUDIT.targetId });
     expect(audit[0]?.detail).toContain("Created the Owner account.");
@@ -284,8 +298,12 @@ describe("production bootstrap on an empty database", () => {
     }
     expect(newestRelease(products)).toBeNull();
     const categories = await loadStoreCategories(db);
-    expect(categories.map((c) => c.id)).toEqual(rows.categories.map((c) => c.id));
+    expect(categories.map((c) => c.id)).toEqual(CATEGORIES.map((c) => c.id));
     expect(categories.reduce((n, c) => n + c.productCount, 0)).toBe(rows.products.length);
+    expect(categories.reduce((n, c) => n + c.comingSoonCount, 0)).toBe(COMING_SOON_PRODUCTS.length);
+    const { comingSoon } = await loadCatalogProducts(db);
+    expect(comingSoon.map((p) => p.id)).toEqual(COMING_SOON_PRODUCTS.map((p) => p.id));
+    expect(comingSoon.every((p) => p.plans.length === 0 && p.releases.length === 0 && p.content.features.length >= 5)).toBe(true);
     for (const page of ["home", "pricing", "support"]) expect((await loadFaqs(db, page)).length).toBeGreaterThan(0);
     expect((await loadStoreSettings(db))["content.sampleNotice"]).toEqual({ enabled: true, text: TEST_MODE_NOTICE_TEXT });
   });
@@ -394,4 +412,121 @@ describe("production bootstrap on later runs", () => {
     expect(again.changed).toBe(false);
     expect(await counts()).toEqual(after);
   });
+});
+
+/**
+ * The 2026-10-09 release on a database bootstrapped before it (production): the addition inserts the missing categories
+ * and products once, never touches existing or edited rows, and never runs again. Simulated by removing what the first
+ * run added (rows and marker), i.e. the state of a database bootstrapped by the previous release.
+ */
+describe("catalog additions on an existing database", () => {
+  const addedIds = ADDITION.products.map((p) => p.id);
+  const addedCategoryIds = ADDITION.categories.map((c) => c.id);
+
+  it("starts from a database bootstrapped before the addition existed", async () => {
+    await db.product.deleteMany({ where: { id: { in: addedIds } } });
+    await db.category.deleteMany({ where: { id: { in: addedCategoryIds } } });
+    await db.auditLog.deleteMany({ where: { targetId: MARKER } });
+    expect(await db.product.count()).toBe(rows.products.length);
+    // The owner had already made a "payroll" product of their own, and another product already uses the prefix PTL.
+    await db.product.create({
+      data: { id: "payroll", code: "PYR", name: "Our payroll", shortName: "Payroll", tagline: "Owner copy", summary: "Owner copy", icon: "badge", categoryId: "finance", platforms: ["windows"], status: "DRAFT", content: { features: [], benefits: [], requirements: [] }, relatedIds: [] },
+    });
+    await db.product.create({
+      data: { id: "fuel-station", code: "PTL", name: "Fuel station", shortName: "Fuel", tagline: "Owner copy", summary: "Owner copy", icon: "storefront", categoryId: "retail", platforms: ["windows"], status: "DRAFT", content: { features: [], benefits: [], requirements: [] }, relatedIds: [] },
+    });
+  });
+
+  it("--dry-run lists what it would add and writes nothing (no BOOTSTRAP_OWNER_* needed once an Owner exists)", async () => {
+    const before = await counts();
+    const { status, output } = runCli(["--dry-run"]);
+    expect(output).toMatch(/DRY RUN: nothing was written/);
+    expect(status).toBe(0);
+    expect(output).toContain(`Catalog addition ${ADDITION.id} - Coming-soon catalog (3 categories, 20 products): would add 3 categories, 18 products.`);
+    expect(output).toContain('    + category jewellery "Jewellery"');
+    expect(output).toContain('    + product jewellery-billing "Jewellery Shop Billing Software" (JWL, Coming soon, category jewellery)');
+    expect(output).toContain("    = already there, left unchanged: product payroll");
+    expect(output).toContain('    ! skipped product petrol-pump: license prefix PTL already belongs to product "fuel-station"');
+    expect(output).toContain("Catalog and content: skipped");
+    expect(await counts()).toEqual(before);
+    expect((await runCatalogAdditions(db, { dryRun: true }))[0]?.products.create).toHaveLength(18);
+    expect(await counts()).toEqual(before);
+  }, SLOW);
+
+  it("the pre-build run (--skip-additions, while an older release is live) leaves the addition pending", async () => {
+    const before = await counts();
+    const { status, output } = runCli(["--skip-additions"]);
+    expect(output).toContain("Production bootstrap - nothing to do");
+    expect(status).toBe(0);
+    expect(output).toContain("Catalog additions were not checked (--skip-additions)");
+    expect(output).not.toContain(`Catalog addition ${ADDITION.id}`);
+    expect(await counts()).toEqual(before);
+    expect(await db.auditLog.count({ where: { targetId: MARKER } })).toBe(0);
+    const both = runCli(["--additions-only", "--skip-additions"]);
+    expect(both.status).toBe(1);
+    expect(both.output).toContain("--additions-only and --skip-additions cannot be combined.");
+  }, SLOW);
+
+  it("the deploy run (--bootstrap) inserts only what is missing, as COMING_SOON, and records the addition once", async () => {
+    const before = await counts();
+    const publishedBefore = await db.product.findMany({ where: { status: "PUBLISHED" }, orderBy: { id: "asc" } });
+    const { status, output } = runCli([]);
+    expect(output).toMatch(/Production bootstrap - done/);
+    expect(status).toBe(0);
+    expect(output).toContain("added 3 categories, 18 products.");
+    expect(output).toContain("Recorded as done: it never runs again on this database.");
+    expect(output).not.toContain("Next steps");
+
+    const after = await counts();
+    expect(after).toEqual({ ...before, categories: before.categories + 3, products: before.products + 18, auditLogs: before.auditLogs + 2 });
+    expect(await db.product.findUniqueOrThrow({ where: { id: "payroll" } })).toMatchObject({ name: "Our payroll", code: "PYR", status: "DRAFT", tagline: "Owner copy" });
+    expect(await db.product.findUnique({ where: { id: "petrol-pump" } })).toBeNull();
+    const created = await db.product.findUniqueOrThrow({ where: { id: "transport-lr-billing" } });
+    // A related product that was not created (petrol-pump) is dropped from the list.
+    expect(created).toMatchObject({ status: "COMING_SOON", demoEnabled: false, code: "TRN", relatedIds: ["fmcg-distribution"] });
+    expect(await db.product.findMany({ where: { status: "PUBLISHED" }, orderBy: { id: "asc" } })).toEqual(publishedBefore);
+    expect(await db.plan.count({ where: { productId: { in: addedIds } } })).toBe(0);
+    const marker = await db.auditLog.findMany({ where: { targetId: MARKER } });
+    expect(marker).toHaveLength(1);
+    expect(marker[0]?.detail).toContain("Skipped: petrol-pump (license prefix PTL already belongs to product \"fuel-station\").");
+  }, SLOW);
+
+  it("never runs again: edits, deletions and the skipped product stay as the owner left them", async () => {
+    await db.product.update({ where: { id: "jewellery-billing" }, data: { tagline: "Edited by the owner", status: "HIDDEN" } });
+    await db.product.delete({ where: { id: "garment-billing" } });
+    await db.product.delete({ where: { id: "fuel-station" } });
+    const before = await counts();
+    const report = await run({ owner: null });
+    expect(report.changed).toBe(false);
+    expect(report.plan.additions[0]?.doneAt).toBeInstanceOf(Date);
+    expect(await counts()).toEqual(before);
+    expect(await db.product.findUnique({ where: { id: "garment-billing" } })).toBeNull();
+    expect(await db.product.findUnique({ where: { id: "petrol-pump" } })).toBeNull();
+    expect(await db.product.findUniqueOrThrow({ where: { id: "jewellery-billing" } })).toMatchObject({ tagline: "Edited by the owner", status: "HIDDEN" });
+
+    const cli = runCli(["--additions-only"]);
+    expect(cli.status).toBe(0);
+    expect(cli.output).toContain("Catalog additions - nothing to do");
+    expect(cli.output).toMatch(/Catalog addition 2026-10-09-coming-soon: already added on \d+ \w+ \d{4}; nothing to do\./);
+    expect(await counts()).toEqual(before);
+  }, SLOW);
+
+  it("--additions-only also works on a database with development seed data (which the bootstrap refuses)", async () => {
+    await db.auditLog.deleteMany({ where: { targetId: MARKER } });
+    await db.user.create({ data: { id: "seed_user_dev", email: "dev@sharmamedicals.example", name: "Dev" } });
+    try {
+      await expect(run({ owner: null, dryRun: true })).rejects.toThrow(/development seed data/);
+      const { status, output } = runCli(["--additions-only"]);
+      expect(output).toContain("Catalog additions - done.");
+      expect(status).toBe(0);
+      // Only the rows missing now are inserted (the deleted garment product and the no-longer-blocked petrol pump).
+      expect(output).toContain("added 0 categories, 2 products.");
+      expect(await db.product.findUniqueOrThrow({ where: { id: "petrol-pump" } })).toMatchObject({ status: "COMING_SOON", code: "PTL" });
+      expect(await db.product.findUniqueOrThrow({ where: { id: "jewellery-billing" } })).toMatchObject({ tagline: "Edited by the owner" });
+      expect(await db.auditLog.count({ where: { targetId: MARKER } })).toBe(1);
+      expect(runCli(["--additions-only"]).output).toContain("nothing to do");
+    } finally {
+      await db.user.delete({ where: { id: "seed_user_dev" } });
+    }
+  }, SLOW);
 });

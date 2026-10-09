@@ -1,8 +1,9 @@
 /**
- * CATALOG_SOURCE=db: reads the storefront view from PostgreSQL. Only PUBLISHED products, PUBLISHED stable-channel
- * releases (the channel customers can download; decisions.md Phase 4 "Release channel"), only
- * non-archived plans and published FAQs; DRAFT and HIDDEN products never leave this module. Rows are mapped to plain
- * JSON (ISO dates, BigInt sizes turned into "148 MB" labels) so lib/storefront/data.ts can cache them.
+ * CATALOG_SOURCE=db: reads the storefront view from PostgreSQL. Only listed products: PUBLISHED ones with their
+ * PUBLISHED stable-channel releases (the channel customers can download; decisions.md Phase 4 "Release channel") and
+ * non-archived plans, and COMING_SOON ones (decisions.md 2026-10-09) with no plans and no releases whatever the
+ * database holds; published FAQs. DRAFT and HIDDEN products never leave this module. Rows are mapped to plain JSON
+ * (ISO dates, BigInt sizes turned into "148 MB" labels) so lib/storefront/data.ts can cache them.
  */
 import "server-only";
 import type { Prisma } from "@/generated/prisma/client";
@@ -74,8 +75,11 @@ export function toStoreRelease(row: ReleaseRow): StoreRelease {
   };
 }
 
-/** `publishedIds` keeps related links pointing at PUBLISHED products only. */
-export function toStoreProduct(row: ProductRow, faqs: StoreFaq[], publishedIds: ReadonlySet<string>): StoreProduct {
+/**
+ * `listedIds` keeps related links pointing at listed (PUBLISHED or COMING_SOON) products only. A COMING_SOON product
+ * is never sold: its plans and releases are left out even if the admin already added some.
+ */
+export function toStoreProduct(row: ProductRow, faqs: StoreFaq[], listedIds: ReadonlySet<string>): StoreProduct {
   const content = productContentSchema.safeParse(row.content);
   if (!content.success) {
     log.warn("product_content_invalid", {
@@ -84,6 +88,7 @@ export function toStoreProduct(row: ProductRow, faqs: StoreFaq[], publishedIds: 
     });
   }
   const categoryTone = toTone(row.category.tone) ?? FALLBACK_TONE;
+  const comingSoon = row.status === PublishStatus.COMING_SOON;
   return {
     id: row.id,
     code: row.code,
@@ -96,12 +101,13 @@ export function toStoreProduct(row: ProductRow, faqs: StoreFaq[], publishedIds: 
     category: { id: row.category.id, name: row.category.name, tone: categoryTone, icon: row.category.icon },
     platforms: PLATFORMS.filter((p) => row.platforms.includes(p)),
     demoEnabled: row.demoEnabled,
+    comingSoon,
     rank: row.rank,
     content: content.success ? content.data : EMPTY_CONTENT,
-    relatedIds: [...new Set(row.relatedIds)].filter((id) => id !== row.id && publishedIds.has(id)),
+    relatedIds: [...new Set(row.relatedIds)].filter((id) => id !== row.id && listedIds.has(id)),
     createdAt: row.createdAt.toISOString(),
-    plans: row.plans.map(toStorePlan),
-    releases: row.releases.map(toStoreRelease).sort((a, b) => b.releasedAt.localeCompare(a.releasedAt)),
+    plans: comingSoon ? [] : row.plans.map(toStorePlan),
+    releases: comingSoon ? [] : row.releases.map(toStoreRelease).sort((a, b) => b.releasedAt.localeCompare(a.releasedAt)),
     faqs,
   };
 }
@@ -113,11 +119,18 @@ export async function loadStoreSettings(db: Db): Promise<StoreSettings> {
   return getSettings(db);
 }
 
+const LISTED_STATUSES = [PublishStatus.PUBLISHED, PublishStatus.COMING_SOON];
+
+/** Categories by sortOrder (then name), with their PUBLISHED and COMING_SOON product counts. Two queries. */
 export async function loadStoreCategories(db: Db): Promise<StoreCategory[]> {
-  const rows = await db.category.findMany({
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
-    include: { _count: { select: { products: { where: { status: PublishStatus.PUBLISHED } } } } },
+  const rows = await db.category.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }] });
+  const groups = await db.product.groupBy({
+    by: ["categoryId", "status"],
+    where: { status: { in: LISTED_STATUSES } },
+    _count: { _all: true },
   });
+  const count = (categoryId: string, status: PublishStatus) =>
+    groups.find((g) => g.categoryId === categoryId && g.status === status)?._count._all ?? 0;
   return rows.map((c) => ({
     id: c.id,
     name: c.name,
@@ -125,18 +138,22 @@ export async function loadStoreCategories(db: Db): Promise<StoreCategory[]> {
     tone: toTone(c.tone) ?? FALLBACK_TONE,
     icon: c.icon,
     sortOrder: c.sortOrder,
-    productCount: c._count.products,
+    productCount: count(c.id, PublishStatus.PUBLISHED),
+    comingSoonCount: count(c.id, PublishStatus.COMING_SOON),
   }));
 }
 
-/** PUBLISHED products by rank (then name), each with its published FAQs. Two queries. */
-export async function loadStoreProducts(db: Db): Promise<StoreProduct[]> {
+/** The storefront catalog: PUBLISHED and COMING_SOON products, each list by rank (then name). */
+export type StoreCatalog = { published: StoreProduct[]; comingSoon: StoreProduct[] };
+
+/** Listed products (PUBLISHED and COMING_SOON) by rank (then name), each with its published FAQs. Two queries. */
+export async function loadCatalogProducts(db: Db): Promise<StoreCatalog> {
   const rows = await db.product.findMany({
-    where: { status: PublishStatus.PUBLISHED },
+    where: { status: { in: LISTED_STATUSES } },
     orderBy: [{ rank: "asc" }, { name: "asc" }],
     include: productInclude,
   });
-  if (rows.length === 0) return [];
+  if (rows.length === 0) return { published: [], comingSoon: [] };
   const ids = rows.map((r) => r.id);
   const faqRows = await db.faq.findMany({ where: { page: { in: ids }, published: true }, orderBy: faqOrder, select: faqSelect });
   const faqsByPage = new Map<string, StoreFaq[]>();
@@ -145,8 +162,14 @@ export async function loadStoreProducts(db: Db): Promise<StoreProduct[]> {
     list.push(toStoreFaq(f));
     faqsByPage.set(f.page, list);
   }
-  const publishedIds = new Set(ids);
-  return rows.map((r) => toStoreProduct(r, faqsByPage.get(r.id) ?? [], publishedIds));
+  const listedIds = new Set(ids);
+  const products = rows.map((r) => toStoreProduct(r, faqsByPage.get(r.id) ?? [], listedIds));
+  return { published: products.filter((p) => !p.comingSoon), comingSoon: products.filter((p) => p.comingSoon) };
+}
+
+/** PUBLISHED products by rank (then name), each with its published FAQs (the products that are sold). */
+export async function loadStoreProducts(db: Db): Promise<StoreProduct[]> {
+  return (await loadCatalogProducts(db)).published;
 }
 
 export async function loadFaqs(db: Db, page: string): Promise<StoreFaq[]> {

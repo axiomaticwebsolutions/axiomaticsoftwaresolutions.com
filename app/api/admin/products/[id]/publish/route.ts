@@ -1,7 +1,8 @@
 /**
  * POST /api/admin/products/:id/publish (products.manage) { reason } -> { product }. Destructive rule products.publish:
  * reason required (422 reason_required), one audit row in the same transaction.
- * 409 not_ready (with blockers) while content, a plan on sale or a published release is missing.
+ * From DRAFT, HIDDEN or COMING_SOON. 409 not_ready (with blockers) while content, a plan on sale or a published release
+ * is missing.
  */
 import { setProductStatus } from "@/lib/admin/catalog/products";
 import { destructiveBodySchema } from "@/lib/admin/destructive";

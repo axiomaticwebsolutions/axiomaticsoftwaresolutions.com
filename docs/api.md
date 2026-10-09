@@ -63,11 +63,11 @@ client: portal routes act on the session's active account (`POST /api/me/active-
 |---|---|---|
 | `GET /api/health` | Readiness for deploys and monitors: 200 `{ status: "ok" }` when PostgreSQL (and Redis, when configured) answer within 2 s | 503 `{ status: "unavailable" }` with `Retry-After` (never says which check failed) |
 | `GET /api/csrf` | Issues the CSRF token: sets `axs_csrf`, returns `{ token }` | - |
-| `GET /api/catalog/products?q=&category=&os=&license=&price=&sort=` | Published products with facets: `{ items, facets, query, total }`; unknown filter values fall back to defaults | - |
-| `GET /api/catalog/products/:slug` | One published product: `{ product, plans, latestRelease, faqs, related }` | 404 for draft, hidden and unknown products |
-| `GET /api/catalog/compare?ids=a,b,c` | Up to 3 published products side by side: `{ ids, products }` | - |
+| `GET /api/catalog/products?q=&category=&availability=&os=&license=&price=&sort=` | Published products, then coming-soon ones (`comingSoon: true`, no price), with facets: `{ items, facets, query, total }`; `availability` = `available` or `coming-soon`; unknown filter values fall back to defaults | - |
+| `GET /api/catalog/products/:slug` | One published or coming-soon product: `{ product, plans, latestRelease, faqs, related }` (coming soon: `product.comingSoon: true`, `plans: []`, `latestRelease: null`) | 404 for draft, hidden and unknown products |
+| `GET /api/catalog/compare?ids=a,b,c` | Up to 3 published products side by side: `{ ids, products }` (coming-soon ids are dropped) | - |
 | `GET /brand/:file` | The files uploaded in Admin > Settings > Branding (not under /api): `logo-light`, `logo-dark`, `favicon` (the stored PNG, WebP, SVG or ICO), the same + `.png` (PNG rendition: logos at most 160 px tall, the favicon 180 x 180 with transparency) or `favicon-apple.png` (that favicon PNG on white, for apple-touch-icon). Stored type, `nosniff`, `Content-Disposition: inline`, `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox`, ETag (304 on If-None-Match). `?v=` = first 12 hex of the SHA-256: matching -> `public, max-age=31536000, immutable`; no `v` -> `public, max-age=300`; another `v` -> `no-store` | 404 `no-store` for an empty slot or any other name |
-| `POST /api/contact` | Contact message or demo request (CSRF, "anon" binding when signed out); stores a Lead and queues the acknowledgement and the internal notice: `{ reference }` | 422, 429 (5 per hour per IP), 503 `unavailable` (asks the visitor to email sales). A filled honeypot gets a decoy 200 |
+| `POST /api/contact` | Contact message or demo request (CSRF, "anon" binding when signed out); stores a Lead and queues the acknowledgement and the internal notice: `{ reference }`. Launch waitlist sign-up (`kind: "waitlist"`: `name`, `email`, optional `phone` and `businessName`, `product` = a coming-soon slug, `website` honeypot, `source`; no `marketingOptIn`, an unknown key there): stores a WAITLIST lead ("WAIT-1001") and queues only the internal notice; at most one per email and product, and the answer is `{ ok: true }` for a new and a repeated sign-up alike | 422 (a waitlist `product` that is not coming soon: `fieldErrors.product`), 429 (5 per hour per IP, shared by all kinds), 503 `unavailable` (asks the visitor to email sales). A filled honeypot gets a decoy 200 (`{ ok: true }` for a waitlist) |
 
 ## Auth (`/api/auth/*`)
 
@@ -215,7 +215,8 @@ Permissions (`PERMS` in `lib/rbac.ts`):
 |---|---|---|
 | `GET /api/admin/products`, `GET .../:id` | any staff | |
 | `POST /api/admin/products`, `PATCH .../:id` | `products.manage` | Created as DRAFT; 409 `code_locked` once licenses exist |
-| `POST .../products/:id/publish`, `POST .../:id/hide` | `products.manage` | Reason; 409 `not_ready` with blockers (content, a plan on sale, a published stable release with an installer), `already_published` / `not_published` |
+| `POST .../products/:id/publish`, `POST .../:id/hide` | `products.manage` | Reason; publish from draft, hidden or coming soon, hide from published or coming soon; 409 `not_ready` with blockers (content, a plan on sale, a published stable release with an installer), `already_published` / `not_published` |
+| `POST .../products/:id/coming-soon` | `products.manage` | Reason; from draft or hidden only (409 `already_coming_soon` / `published`); 409 `not_ready` with blockers (name, tagline, summary, category, icon, a feature; no licenses issued and no orders placed). No plans or releases needed. The product is listed with a waitlist form and never sold |
 | `GET /api/admin/categories`, `GET .../:id` / `POST`, `PATCH`, `DELETE .../:id` | any staff / `products.manage` | Delete needs a reason; 409 `category_in_use` |
 | `GET /api/admin/plans`, `GET .../:id` | any staff | |
 | `POST /api/admin/plans`, `PATCH .../:id`, `POST .../:id/archive`, `.../:id/restore`, `POST .../bulk-archive` | `pricing.manage` | Price changes audited old -> new; archive and restore need a reason; plans are never deleted |
@@ -271,7 +272,7 @@ Catalog writes revalidate the storefront cache.
 | `GET` / `PATCH /api/admin/content/banner`, `.../content/sample-notice` | `content.manage` | Site banner and sample notice; revalidate the storefront |
 | `GET /api/admin/templates`, `GET` / `PATCH .../:id` | `templates.manage` | 422 for unknown `{{placeholders}}` |
 | `POST /api/admin/templates/:id/test` | `templates.manage` | Sends the (unsaved) copy to the signed-in staff member only; 10 per hour; 409 `send_failed` / `email_not_configured` |
-| `GET /api/admin/leads`, `GET` / `PATCH .../:id` | `leads.view` | Contact and demo requests; status and notes |
+| `GET /api/admin/leads`, `GET` / `PATCH .../:id` | `leads.view` | Contact and demo requests and launch waitlist sign-ups (`filter[kind]` = `demo`, `contact` or `waitlist`); status and notes |
 | `GET .../coupons/export.csv` | `reports.export` | |
 | `GET .../faqs/export.csv`, `.../templates/export.csv`, `.../leads/export.csv` | the module permission and `reports.export` (Owner only in practice) | |
 

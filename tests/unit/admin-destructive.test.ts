@@ -167,6 +167,7 @@ describe("destructive vocabulary and body fields", () => {
       "plans.restore": "Restored plan",
       "products.hide": "Hid product",
       "products.publish": "Published product",
+      "products.coming_soon": "Marked product coming soon",
       "categories.delete": "Deleted category",
       "releases.delete": "Deleted release draft",
       "releases.remove_installer": "Removed installer",

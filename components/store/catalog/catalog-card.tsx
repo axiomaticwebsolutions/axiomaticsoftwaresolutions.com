@@ -44,10 +44,15 @@ export type CatalogCardProps = {
   ratePct: number;
 };
 
+/** The card's "Coming soon" pill (text and icon, not colour alone). */
+const COMING_SOON_BADGE_CLASS =
+  "inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-pill border border-lavender-line bg-lavender-soft px-2.5 py-1 text-[12px] font-bold text-lavender-fg";
+
 /**
  * Catalog result card (Software.dc.html): tinted preview, category badge, "Free trial", license-type chips, "From" price
- * with the tax note, OS line, "View details" and the Compare checkbox. Rendered inside the client CatalogView (the
- * Compare checkbox needs handlers), so import it from client code only.
+ * with the tax note, OS line, "View details" and the Compare checkbox. A coming-soon product shows a "Coming soon"
+ * badge instead, with no price and no Compare (it is not sold). Rendered inside the client CatalogView (the Compare
+ * checkbox needs handlers), so import it from client code only.
  */
 export function CatalogCard({ item, compared, onToggleCompare, ratePct }: CatalogCardProps) {
   const href = productHref(item.id);
@@ -78,11 +83,18 @@ export function CatalogCard({ item, compared, onToggleCompare, ratePct }: Catalo
       </Link>
 
       <div className="flex flex-1 flex-col px-[22px] pb-[22px] pt-5">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <span className={cn("rounded-pill px-2.5 py-1 text-[12px] font-bold", TONE_TILE_CLASSES[item.tone])}>
             {item.categoryName}
           </span>
-          {item.hasTrial ? <span className="text-[12px] font-bold text-sage-fg">Free trial</span> : null}
+          {item.comingSoon ? (
+            <span className={COMING_SOON_BADGE_CLASS}>
+              <Icon name="schedule" size={14} />
+              Coming soon
+            </span>
+          ) : item.hasTrial ? (
+            <span className="text-[12px] font-bold text-sage-fg">Free trial</span>
+          ) : null}
         </div>
         <h2 className="mt-3 text-[19px] font-extrabold leading-[1.25] tracking-[-0.02em]">
           <Link href={href} className="rounded-6 text-ink no-underline transition-colors hover:text-primary-link">
@@ -131,20 +143,22 @@ export function CatalogCard({ item, compared, onToggleCompare, ratePct }: Catalo
           >
             View details<span className="sr-only">: {item.name}</span>
           </Link>
-          <label
-            className={cn(
-              "flex cursor-pointer items-center gap-2 rounded-12 border px-3 py-2.5 text-[14px] font-bold transition-colors",
-              compared ? "border-primary-accent bg-lavender-soft" : "border-line-input bg-surface hover:border-primary",
-            )}
-          >
-            <Checkbox
-              checked={compared}
-              onCheckedChange={() => onToggleCompare(item.id)}
-              data-compare-id={item.id}
-              className="size-[17px]"
-            />
-            Compare<span className="sr-only"> {item.shortName}</span>
-          </label>
+          {item.comingSoon ? null : (
+            <label
+              className={cn(
+                "flex cursor-pointer items-center gap-2 rounded-12 border px-3 py-2.5 text-[14px] font-bold transition-colors",
+                compared ? "border-primary-accent bg-lavender-soft" : "border-line-input bg-surface hover:border-primary",
+              )}
+            >
+              <Checkbox
+                checked={compared}
+                onCheckedChange={() => onToggleCompare(item.id)}
+                data-compare-id={item.id}
+                className="size-[17px]"
+              />
+              Compare<span className="sr-only"> {item.shortName}</span>
+            </label>
+          )}
         </div>
       </div>
     </article>

@@ -18,6 +18,9 @@
  *
  * Idempotent: one transaction under an advisory lock; rows are only created when missing; the catalog step runs once
  * (an AuditLog row with targetType "system" and targetId "bootstrap" records every run that changed something).
+ * Catalog additions (./additions.ts, e.g. "2026-10-09-coming-soon": 3 categories and 20 COMING_SOON products) run on
+ * every bootstrap until done: each inserts its missing categories and products exactly once, on a new database (after
+ * the catalog step, in the same transaction) or an existing one, and records an AuditLog marker so it never runs again.
  * `updateCatalog` re-applies catalog and content copy from code but keeps admin-owned switches (product status, plan
  * archived, FAQ visibility and order, template active flag) and only adds releases to products that have none.
  * Settings, counters and existing users are never modified. A second Owner is never created.
@@ -38,6 +41,18 @@ import { makeEmailSchema } from "@/lib/validation/contact";
 import { NAME_LINK_ERROR, isLinkLikeName } from "@/lib/validation/names";
 import { PASSWORD_ERROR, isAcceptablePassword } from "@/lib/validation/password";
 import { CATEGORIES, PLANS, PRODUCTS, planSortOrder, productContentSchema, type SeedFaq, type SeedProduct, type SeedRelease } from "./catalog";
+import {
+  BOOTSTRAP_LOCK_KEY,
+  additionCategoryIds,
+  applyCatalogAdditions,
+  buildAdditionRows,
+  formatAdditionLines,
+  pendingAdditions,
+  planCatalogAdditions,
+  type AdditionPlan,
+  type AdditionRows,
+  type PlannedCatalog,
+} from "./additions";
 import { HOME_FAQS, NOTIFICATION_TEMPLATES, PRICING_FAQS, SAMPLE_NOTICE_TEXT, SEED_SETTINGS, SUPPORT_FAQS, templateBody } from "./content";
 import { seedIds } from "./ids";
 import type { WithId } from "./types";
@@ -335,6 +350,8 @@ export type BootstrapRows = {
   faqs: FaqRow[];
   templates: TemplateRow[];
   counters: BootstrapCounter[];
+  /** Versioned insert-only additions (./additions.ts), applied once each. */
+  additions: AdditionRows[];
 };
 
 /** The highest sample version of a product (semver precedence, lib/licensing/entitlement.ts). */
@@ -355,9 +372,15 @@ function settingRows(input: Pick<BootstrapConfig, "business" | "sampleNotice">):
   return SETTING_KEYS.map((key) => ({ key, value: settingSchemas[key].parse(values[key]) as Prisma.InputJsonValue }));
 }
 
-/** Same rows as the dev seed's catalog (tests/unit/bootstrap-production.test.ts compares them), minus the samples. */
+/**
+ * Same rows as the dev seed's catalog (tests/unit/bootstrap-production.test.ts compares them), minus the samples and
+ * minus what a catalog addition owns (its categories and the COMING_SOON products: see `additions`).
+ */
 function catalogRows(): Pick<BootstrapRows, "categories" | "products" | "plans" | "releases"> {
-  const categories = CATEGORIES.map((c, i) => ({ id: c.id, name: c.name, blurb: c.blurb, tone: c.tone, icon: c.icon, sortOrder: i }));
+  const owned = additionCategoryIds();
+  const categories = CATEGORIES.map((c, i) => ({ id: c.id, name: c.name, blurb: c.blurb, tone: c.tone, icon: c.icon, sortOrder: i })).filter(
+    (c) => !owned.has(c.id),
+  );
   const products = PRODUCTS.map((p) => ({
     id: p.id,
     code: p.code,
@@ -431,6 +454,7 @@ export function buildBootstrapRows(input: Pick<BootstrapConfig, "business" | "sa
     ...catalogRows(),
     ...contentRows(),
     counters: BOOTSTRAP_COUNTERS.map((c) => ({ ...c })),
+    additions: buildAdditionRows(),
   };
 }
 
@@ -439,7 +463,7 @@ export function buildBootstrapRows(input: Pick<BootstrapConfig, "business" | "sa
 /** AuditLog row written by every bootstrap run that changed something; the first one marks the catalog as done. */
 export const BOOTSTRAP_AUDIT = { targetType: "system", targetId: "bootstrap", target: "Production bootstrap" } as const;
 /** pg_advisory_xact_lock key ("AXSB"): a second bootstrap waits for the first instead of racing it. */
-export const BOOTSTRAP_LOCK_KEY = 1096307522;
+export { BOOTSTRAP_LOCK_KEY };
 export const BOOTSTRAP_TX_OPTIONS = { maxWait: 10_000, timeout: 60_000 } as const;
 
 /**
@@ -485,6 +509,8 @@ export type BootstrapPlan = {
   counters: { create: BootstrapCounter[]; kept: BootstrapCounter[] };
   owner: OwnerPlan;
   notices: string[];
+  /** Every catalog addition: done ones with their date, pending ones with what this run inserts. */
+  additions: AdditionPlan[];
 };
 
 export type PlanInput = {
@@ -622,8 +648,12 @@ export async function planBootstrap(db: Db, rows: BootstrapRows, input: PlanInpu
     counters,
     owner,
     notices,
+    additions: [],
   };
-  if (catalog === "skip") return plan;
+  if (catalog === "skip") {
+    plan.additions = await planCatalogAdditions(db, rows.additions);
+    return plan;
+  }
 
   const update = catalog === "update";
   const codes = await db.product.findMany({ where: { code: { in: rows.products.map((p) => p.code) } }, select: { id: true, code: true } });
@@ -646,6 +676,13 @@ export async function planBootstrap(db: Db, rows: BootstrapRows, input: PlanInpu
   });
   const released = new Set(withReleases.map((r) => r.productId));
   plan.releases = { create: rows.releases.filter((r) => !released.has(r.productId)), kept: released.size };
+  // Additions see the rows this run's catalog step creates first (categories, product ids and license prefixes).
+  const planned: PlannedCatalog = {
+    categoryIds: new Set(plan.categories.create.map((c) => c.id)),
+    productIds: new Set(plan.products.create.map((p) => p.id)),
+    productCodes: new Map(plan.products.create.map((p) => [p.code, p.id])),
+  };
+  plan.additions = await planCatalogAdditions(db, rows.additions, planned);
   return plan;
 }
 
@@ -669,13 +706,22 @@ export function planCounts(plan: BootstrapPlan): CountLine[] {
     line("releases (draft)", plan.releases),
     line("faqs", plan.faqs),
     line("notification templates", plan.templates),
+    line("added categories", {
+      create: pendingAdditions(plan.additions).flatMap((a) => a.categories.create),
+      kept: pendingAdditions(plan.additions).reduce((n, a) => n + a.categories.kept.length, 0),
+    }),
+    line("added products", {
+      create: pendingAdditions(plan.additions).flatMap((a) => a.products.create),
+      kept: pendingAdditions(plan.additions).reduce((n, a) => n + a.products.kept.length, 0),
+    }),
     line("counters", { create: plan.counters.create, kept: plan.counters.kept.length }),
     line("owner", { create: plan.owner.action === "create" ? [plan.owner] : [], kept: plan.owner.action === "create" ? 0 : 1 }),
   ];
 }
 
+/** True when the run writes anything; a pending catalog addition always does (at least its marker). */
 export function planChangesSomething(plan: BootstrapPlan): boolean {
-  return planCounts(plan).some((c) => c.create + c.update > 0);
+  return planCounts(plan).some((c) => c.create + c.update > 0) || pendingAdditions(plan.additions).length > 0;
 }
 
 function auditDetail(plan: BootstrapPlan): string {
@@ -711,6 +757,8 @@ export async function applyBootstrap(tx: Tx, plan: BootstrapPlan, input: { now: 
   await applyRows(plan.products, (data) => tx.product.createMany({ data }), (id, data) => tx.product.update({ where: { id }, data }));
   await applyRows(plan.plans, (data) => tx.plan.createMany({ data }), (id, data) => tx.plan.update({ where: { id }, data }));
   if (plan.releases.create.length > 0) await tx.release.createMany({ data: plan.releases.create });
+  // After the catalog step: addition products may belong to categories it just created.
+  await applyCatalogAdditions(tx, plan.additions);
   await applyRows(plan.faqs, (data) => tx.faq.createMany({ data }), (id, data) => tx.faq.update({ where: { id }, data }));
   await applyRows(plan.templates, (data) => tx.notificationTemplate.createMany({ data }), (id, data) => tx.notificationTemplate.update({ where: { id }, data }));
   // ON CONFLICT DO NOTHING: a counter the running app created meanwhile keeps its value (counters never go back).
@@ -819,12 +867,17 @@ export function formatBootstrapReport(
   }
   // A skipped catalog step read nothing, so its tables would only show zeros.
   const catalogLabels = new Set(["categories", "products", "plans", "releases (draft)", "faqs", "notification templates"]);
-  const counts = planCounts(plan).filter((c) => plan.catalog !== "skip" || !catalogLabels.has(c.label));
+  const additionLabels = new Set(["added categories", "added products"]);
+  const additionsPending = pendingAdditions(plan.additions).length > 0;
+  const counts = planCounts(plan).filter(
+    (c) => (plan.catalog !== "skip" || !catalogLabels.has(c.label)) && (additionsPending || !additionLabels.has(c.label)),
+  );
   const width = Math.max(...counts.map((c) => c.label.length));
   const verb = dryRun ? ["would create", "would update"] : ["created", "updated"];
   for (const c of counts) {
     lines.push(`  ${c.label.padEnd(width)}  ${verb[0]} ${String(c.create).padStart(3)}   ${verb[1]} ${String(c.update).padStart(3)}   kept ${String(c.kept).padStart(3)}`);
   }
+  lines.push(...formatAdditionLines(plan.additions, !dryRun));
   if (plan.counters.create.length > 0) lines.push(`  new counters (next number handed out): ${counterList(plan.counters.create)}`);
   if (plan.counters.kept.length > 0) lines.push(`  existing counters (never changed): ${counterList(plan.counters.kept)}`);
 
@@ -859,7 +912,8 @@ export function formatBootstrapReport(
       "Next steps:",
       `  1. Sign in at ${base}/sign-in as the Owner with the password (no emailed code: two-step sign-in starts off).`,
       "     Once email sending works, turn two-step on in Admin > My profile (go-live checklist).",
-      "  2. Admin > Releases: each product has a DRAFT release without files. Upload an installer, then publish it.",
+      "  2. Admin > Releases: each published product has a DRAFT release without files. Upload an installer, then publish it.",
+      "     Coming-soon products have no plans or releases: they are listed with a waitlist form until you publish them.",
       "  3. Admin > Settings: check the business details. While `sample` is on, invoices say they are not valid tax",
       "     invoices and the site shows sample labels; switch it off (and the sample notice in Admin > Content) at go-live.",
     );

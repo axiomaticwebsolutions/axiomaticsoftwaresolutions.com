@@ -73,14 +73,15 @@ export async function issueDownload(db: PrismaClient, input: IssueDownloadInput)
           status: true,
           releasedAt: true,
           productId: true,
-          product: { select: { shortName: true } },
+          product: { select: { shortName: true, status: true } },
         },
       },
     },
   });
   if (!file) throw new ApiError(404, "not_found", DOWNLOAD_NOT_FOUND_MESSAGE);
   const { release } = file;
-  if (release.channel !== STABLE_CHANNEL) throw notEntitledError("not_released");
+  // Other channels, and any release of a COMING_SOON product (not on sale yet), are not offered to customers.
+  if (release.channel !== STABLE_CHANNEL || release.product.status === "COMING_SOON") throw notEntitledError("not_released");
 
   const licenses = await db.license.findMany({
     where:

@@ -13,13 +13,14 @@ import type { NextRequest } from "next/server";
 import {
   LicenseStatus,
   PlanType,
-  PublishStatus,
   type BillingInterval,
+  type PublishStatus,
   type Prisma,
   type TeamRole,
 } from "@/generated/prisma/client";
 import { assertCsrf, csrfBinding } from "@/lib/auth/csrf";
 import { requireAccountRole, TEAM_FORBIDDEN_MESSAGE, type AccountContext } from "@/lib/auth/guards";
+import { servesExistingLicenses } from "@/lib/catalog/status";
 import { getSetting } from "@/lib/config";
 import { DAY_MS, maxDate } from "@/lib/dates";
 import type { Db } from "@/lib/db";
@@ -398,13 +399,13 @@ const TIME_LIMITED_PLAN_TYPES: readonly PlanType[] = [PlanType.ANNUAL, PlanType.
 
 /**
  * Renewal, maintenance, add-on and upgrade offers for one license, following the checkout rules (lib/checkout/lines)
- * and the portal prototype: nothing for revoked licenses or draft products; a trial converts through an UPGRADE to
+ * and the portal prototype: nothing for revoked licenses or draft and coming-soon products; a trial converts through an UPGRADE to
  * the cheapest paid plan (no renewal or add-on on a trial); a perpetual license renews updates through MAINTENANCE; an
  * annual or subscription license renews its own plan (archived plans still renew); add-ons need a usable license;
  * an active annual or subscription license may switch to a single-device one-time plan.
  */
 export function renewalOptionsFor(license: RenewalLicense, plans: readonly RenewalPlan[], now: Date): RenewalOption[] {
-  if (license.status === LicenseStatus.REVOKED || license.productStatus === PublishStatus.DRAFT) return [];
+  if (license.status === LicenseStatus.REVOKED || !servesExistingLicenses(license.productStatus)) return [];
   const live = plans
     .filter((p) => !p.archived)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.pricePaise - b.pricePaise || (a.id < b.id ? -1 : 1));

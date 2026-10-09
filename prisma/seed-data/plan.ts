@@ -26,6 +26,7 @@ import { INVITE_TTL_DAYS } from "@/lib/validation/team";
 import { generateAdminSample, type AdminOrderDraft } from "./admin";
 import {
   CATEGORIES,
+  COMING_SOON_PRODUCTS,
   PLANS,
   PRODUCTS,
   findPlan,
@@ -38,6 +39,7 @@ import {
   sampleSha256,
   type SeedFaq,
 } from "./catalog";
+import { comingSoonProductRow } from "./coming-soon";
 import {
   HOME_FAQS,
   NOTIFICATION_TEMPLATES,
@@ -146,7 +148,7 @@ function settingRows(): SeedPlanData["settings"] {
 
 function catalogRows(): Pick<SeedPlanData, "categories" | "products" | "plans" | "releases" | "releaseFiles"> {
   const categories = CATEGORIES.map((c, i) => ({ id: c.id, name: c.name, blurb: c.blurb, tone: c.tone, icon: c.icon, sortOrder: i }));
-  const products = PRODUCTS.map((p) => ({
+  const products: SeedPlanData["products"] = PRODUCTS.map((p) => ({
     id: p.id,
     code: p.code,
     name: p.name,
@@ -164,6 +166,8 @@ function catalogRows(): Pick<SeedPlanData, "categories" | "products" | "plans" |
     relatedIds: [...p.relatedIds],
     createdAt: startOfDayIST(p.added),
   }));
+  // The coming-soon catalog: listed with a waitlist form, never sold (no plans, releases or FAQs).
+  products.push(...COMING_SOON_PRODUCTS.map(comingSoonProductRow));
   const plans = PLANS.map((p) => ({
     id: p.id,
     productId: p.productId,

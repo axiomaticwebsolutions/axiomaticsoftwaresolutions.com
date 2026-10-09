@@ -7,10 +7,13 @@ import { PlanType, PublishStatus } from "@/generated/prisma/client";
 import type { Db } from "@/lib/db";
 import type { AdminOrderPlanOption } from "./records-model";
 
-/** Plans that are not archived and not trials, of products that are not drafts, by product then plan order. */
+/**
+ * Plans that are not archived and not trials, of published or hidden products (not drafts, and not COMING_SOON ones,
+ * which checkout refuses for every item kind), by product then plan order.
+ */
 export async function adminOrderPlanOptions(db: Db): Promise<AdminOrderPlanOption[]> {
   const plans = await db.plan.findMany({
-    where: { archived: false, type: { not: PlanType.TRIAL }, product: { status: { not: PublishStatus.DRAFT } } },
+    where: { archived: false, type: { not: PlanType.TRIAL }, product: { status: { in: [PublishStatus.PUBLISHED, PublishStatus.HIDDEN] } } },
     orderBy: [{ product: { name: "asc" } }, { sortOrder: "asc" }, { id: "asc" }],
     take: 500,
     select: {

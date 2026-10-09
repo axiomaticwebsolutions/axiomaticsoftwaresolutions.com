@@ -32,6 +32,7 @@ export function ProductsActions() {
 
 const STATUS_OPTIONS = filterOptions([
   ["published", "Published"],
+  ["coming_soon", "Coming soon"],
   ["hidden", "Hidden"],
   ["draft", "Draft"],
 ]);

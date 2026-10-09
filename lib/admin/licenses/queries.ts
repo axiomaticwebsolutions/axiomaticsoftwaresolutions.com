@@ -253,10 +253,13 @@ export async function adminProductOptions(db: Db): Promise<AdminProductOption[]>
   return db.product.findMany({ orderBy: [{ name: "asc" }, { id: "asc" }], select: { id: true, name: true, shortName: true } });
 }
 
-/** Plans staff can issue by hand: trial, one-time, annual and subscription plans that are on sale. */
+/**
+ * Plans staff can issue by hand: trial, one-time, annual and subscription plans that are on sale, except plans of a
+ * COMING_SOON product (issueManualLicense refuses them: not on sale until it is published).
+ */
 export async function manualIssuePlanOptions(db: Db): Promise<ManualIssuePlanOption[]> {
   const plans = await db.plan.findMany({
-    where: { archived: false, type: { in: [...MANUAL_ISSUE_PLAN_TYPES] } },
+    where: { archived: false, type: { in: [...MANUAL_ISSUE_PLAN_TYPES] }, product: { status: { not: "COMING_SOON" } } },
     orderBy: [{ product: { name: "asc" } }, { sortOrder: "asc" }, { id: "asc" }],
     select: { id: true, name: true, type: true, productId: true, perUnit: true, maxQty: true, product: { select: { name: true } } },
   });

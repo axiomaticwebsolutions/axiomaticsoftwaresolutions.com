@@ -8,6 +8,7 @@ import { useDrawerParam } from "@/components/admin/use-drawer-param";
 import { useListState } from "@/components/data-table/use-list-state";
 import {
   LEAD_COPY,
+  LEAD_KIND_ENUM,
   LEAD_KIND_LABELS,
   LEAD_KIND_VALUES,
   LEAD_STATUS_LABELS,
@@ -28,7 +29,7 @@ type Props = {
 
 const KIND_OPTIONS = [
   { value: "all", label: "All" },
-  ...LEAD_KIND_VALUES.map((k) => ({ value: k, label: LEAD_KIND_LABELS[k === "demo" ? "DEMO" : "CONTACT"] })),
+  ...LEAD_KIND_VALUES.map((k) => ({ value: k, label: LEAD_KIND_LABELS[LEAD_KIND_ENUM[k]] })),
 ];
 const STATUS_OPTIONS = [{ value: "all", label: "All" }, ...LEAD_STATUS_VALUES.map((s) => ({ value: s, label: LEAD_STATUS_LABELS[s] }))];
 

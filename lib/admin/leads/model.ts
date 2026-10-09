@@ -1,5 +1,6 @@
 /**
- * Admin Leads inbox (decisions.md Phase 6 "plus a Leads inbox (contact and demo requests; not in the prototype)"):
+ * Admin Leads inbox (decisions.md Phase 6 "plus a Leads inbox (contact and demo requests; not in the prototype)", and
+ * launch waitlist sign-ups from coming-soon product pages since 2026-10-09):
  * statuses and their workflow, the DTOs, the list URL contract shared by the page, the table and GET /api/admin/leads.
  * Pure and client-safe.
  *
@@ -12,7 +13,7 @@ import { defineListState } from "@/lib/url-state";
 export const LEAD_STATUS_VALUES = ["new", "contacted", "scheduled", "closed", "spam"] as const;
 export type LeadStatusValue = (typeof LEAD_STATUS_VALUES)[number];
 
-export const LEAD_KIND_VALUES = ["demo", "contact"] as const;
+export const LEAD_KIND_VALUES = ["demo", "contact", "waitlist"] as const;
 export type LeadKindValue = (typeof LEAD_KIND_VALUES)[number];
 
 export const LEAD_STATUS_ENUM: Readonly<Record<LeadStatusValue, LeadStatus>> = {
@@ -23,7 +24,7 @@ export const LEAD_STATUS_ENUM: Readonly<Record<LeadStatusValue, LeadStatus>> = {
   spam: "SPAM",
 };
 
-export const LEAD_KIND_ENUM: Readonly<Record<LeadKindValue, LeadKind>> = { demo: "DEMO", contact: "CONTACT" };
+export const LEAD_KIND_ENUM: Readonly<Record<LeadKindValue, LeadKind>> = { demo: "DEMO", contact: "CONTACT", waitlist: "WAITLIST" };
 
 export function leadStatusValue(status: LeadStatus): LeadStatusValue {
   return status.toLowerCase() as LeadStatusValue;
@@ -46,7 +47,7 @@ export const LEAD_STATUS_HINTS: Readonly<Record<LeadStatusValue, string>> = {
   spam: "Not a real request.",
 };
 
-export const LEAD_KIND_LABELS: Readonly<Record<LeadKind, string>> = { DEMO: "Demo request", CONTACT: "Message" };
+export const LEAD_KIND_LABELS: Readonly<Record<LeadKind, string>> = { DEMO: "Demo request", CONTACT: "Message", WAITLIST: "Waitlist" };
 
 /** Statuses a lead of this kind can be set to (only demo requests get "Scheduled"). */
 export function leadStatusesFor(kind: LeadKind): LeadStatusValue[] {
@@ -64,7 +65,7 @@ export type LeadDto = {
   /** "+91 98200 00000" for Indian mobiles, else as entered. */
   phone: string | null;
   productId: string | null;
-  /** Product name, "Not sure yet" for demo requests without one, else null. */
+  /** Product name (demo requests and waitlist sign-ups), "Not sure yet" for demo requests without one, else null. */
   productName: string | null;
   countersLabel: string | null;
   /** "12 Oct 2026, Morning (10–1)". */
@@ -137,8 +138,8 @@ export const LEAD_ERRORS = {
 export const LEAD_COPY = {
   searchPlaceholder: "Search reference, name, email or business",
   searchLabel: "Search leads",
-  caption: "Contact and demo requests",
-  empty: "No requests yet. Contact and demo forms on the website land here.",
+  caption: "Contact and demo requests and waitlist sign-ups",
+  empty: "No requests yet. Contact and demo forms and \u201cNotify me\u201d sign-ups on the website land here.",
   saved: "Lead updated",
   noteSaved: "Note added",
   noChanges: "No changes to save",

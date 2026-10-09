@@ -5,7 +5,7 @@ import { JsonLd } from "@/components/seo/json-ld";
 import { breadcrumbJsonLd } from "@/lib/seo/json-ld";
 import { buildMetadata } from "@/lib/seo/metadata";
 import { CATALOG_PATH, parseCatalogParams, toCatalogItem } from "@/lib/storefront/catalog-filter";
-import { getStoreCategories, getStoreProducts, getStoreSettings } from "@/lib/storefront/data";
+import { getCatalogProducts, getStoreCategories, getStoreSettings } from "@/lib/storefront/data";
 
 // Filtered views (/software?category=...) all canonicalise to /software (docs/decisions.md).
 export const metadata = buildMetadata({
@@ -20,13 +20,14 @@ type SoftwarePageProps = {
 };
 
 /**
- * /software: the catalog. The server reads the filters from the URL and renders the matching results (no-JS and
- * crawlers see real content); CatalogView takes over on the client for live filtering, the drawer and compare.
+ * /software: the catalog, products on sale first and then the coming-soon ones (badge, no price, no Compare). The
+ * server reads the filters from the URL and renders the matching results (no-JS and crawlers see real content);
+ * CatalogView takes over on the client for live filtering, the drawer and compare.
  */
 export default async function SoftwarePage({ searchParams }: SoftwarePageProps) {
   const [params, products, categories, settings] = await Promise.all([
     searchParams,
-    getStoreProducts(),
+    getCatalogProducts(),
     getStoreCategories(),
     getStoreSettings(),
   ]);

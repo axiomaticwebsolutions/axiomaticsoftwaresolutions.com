@@ -208,10 +208,13 @@ What it does, in order: preflight (tools, disk, memory, env file mode 600, lock)
 `pnpm install --frozen-lockfile` (devDependencies included, store in `shared/pnpm-store`) > `prisma generate` >
 `preflight.mjs` (production env rules, no CHANGE-ME left, PostgreSQL 14+ with a UTF8 database, Redis PING) >
 pre-deploy `pg_dump` to `shared/backups` > `prisma migrate deploy` > bootstrap (`scripts/bootstrap-production.ts`;
-`--first-run`, or `--bootstrap` on a later deploy) > `next build`
+`--first-run`, or `--bootstrap` on a later deploy, e.g. a release with a catalog addition such as the 2026-10-09
+coming-soon products) > `next build`
 (prerenders from the database, so after the migration) > switch `current` atomically > `pm2 startOrReload` >
-`/api/health` on 127.0.0.1 within 90 s and a check that PM2 runs the new folder > `pm2 save` > keep the newest 3
-releases. Anything failing before the switch leaves the live site untouched and deletes the half-built release.
+`/api/health` on 127.0.0.1 within 90 s and a check that PM2 runs the new folder > `pm2 save` > catalog additions
+(`--bootstrap` while an older release was live: the bootstrap before the build skips them with `--skip-additions` and
+`bootstrap-production.ts --additions-only` runs them now, so the older release never reads a product status it does not
+know; a first deploy adds them before the build) > keep the newest 3 releases. Anything failing before the switch leaves the live site untouched and deletes the half-built release.
 With one PM2 instance the reload leaves a gap of a few seconds (Nginx answers 502 meanwhile); see "Scaling".
 A failure after the switch rolls back automatically (next section).
 
@@ -249,6 +252,23 @@ Migrations are forward-only: a rollback switches code, never the schema. Older c
 migrations only added things, which is how this project writes them. If a migration removed or renamed something the
 older code needs, stop the app and restore `shared/backups/pre-deploy-<time>.dump` (see "Backups"). The failed
 release stays on disk until later deploys prune it.
+
+**Rolling back past a new status.** A new enum value is additive, but once rows use it, older code cannot read them:
+its Prisma client throws "Value ... not found in enum" on any query that returns such a row. The 2026-10-09 release added
+the product status `COMING_SOON` and the lead type `WAITLIST`. On a release older than that, the storefront still works
+(it only reads published products), but Admin > Overview, Products & categories and Leads fail once those rows exist.
+Before you run an older release for more than a few minutes, note the rows and move them to values it knows (psql as
+the database owner):
+
+```sql
+SELECT id FROM "Product" WHERE status = 'COMING_SOON';          -- keep this list
+UPDATE "Product" SET status = 'DRAFT' WHERE status = 'COMING_SOON';
+UPDATE "Lead" SET kind = 'CONTACT' WHERE kind = 'WAITLIST';   -- their ids still start with WAIT-
+```
+
+After deploying the newer release again: `UPDATE "Lead" SET kind = 'WAITLIST' WHERE id LIKE 'WAIT-%';`, and mark the
+listed products coming soon again (Admin > Products & categories > Mark coming soon, or `UPDATE "Product" SET status =
+'COMING_SOON' WHERE id IN (...)`).
 
 ## Restart, env changes and secret rotation
 

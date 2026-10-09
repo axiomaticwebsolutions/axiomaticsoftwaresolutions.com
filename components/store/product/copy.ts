@@ -76,6 +76,41 @@ export const PRODUCT_COPY = {
   notFoundTitle: "We couldn’t find that product",
   notFoundBody: "It may have been renamed or is no longer sold.",
   notFoundCta: "Browse all software",
+
+  relatedComingSoon: "Coming soon",
+} as const;
+
+/**
+ * Copy of a COMING_SOON product page (decisions.md 2026-10-09): what the product will do, no prices, and the
+ * "Notify me when it launches" form. The purpose notice follows the contact form's (DPDP: say what the details are for).
+ */
+export const COMING_SOON_COPY = {
+  badge: "Coming soon",
+  metaTitle: (name: string) => `${name} (coming soon)`,
+  metaDescription: (tagline: string) => `Coming soon: ${tagline} Join the waitlist to hear when it launches.`,
+  heroNote: "This software is not on sale yet. Leave your email and we’ll tell you when it launches.",
+  notifyCta: "Notify me when it launches",
+  browseAvailable: "See software available now",
+  featuresTitle: "Planned features",
+  benefitsTitle: "What it will do for your business",
+  requirementsTitle: "Planned system requirements",
+
+  formTitle: "Notify me when it launches",
+  formLede: (shortName: string) => `We’ll send one email when ${shortName} is ready to buy. No spam.`,
+  name: "Your name",
+  email: "Email",
+  phone: "Phone",
+  businessName: "Business name",
+  optional: "Optional",
+  submit: "Notify me",
+  sending: "Sending…",
+  noticeBeforeLink: (shortName: string) => `We’ll use these details only to tell you when ${shortName} launches. See our `,
+  noticeLink: "privacy policy",
+  noticeAfterLink: ".",
+  privacyHref: "/legal/privacy",
+  honeypotLabel: "Leave this field empty",
+  sentTitle: "You’re on the list",
+  sentBody: (name: string) => `Thanks — we’ll email you when ${name} launches.`,
 } as const;
 
 /** Full installation guide (Docs article "install"). */

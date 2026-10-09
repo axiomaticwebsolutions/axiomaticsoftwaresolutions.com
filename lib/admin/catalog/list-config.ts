@@ -9,7 +9,7 @@ import { PLAN_TYPE_FILTERS, RELEASE_STATUS_FILTERS } from "./model";
 /** Rows per page in the console tables (prototype: 10). The API defaults to 25. */
 export const CATALOG_PAGE_SIZE = 10;
 
-export const PRODUCT_STATUS_FILTERS = ["published", "hidden", "draft"] as const;
+export const PRODUCT_STATUS_FILTERS = ["published", "coming_soon", "hidden", "draft"] as const;
 export const PRODUCT_SORTS = ["name", "latest", "price", "rank"] as const;
 export type ProductSort = (typeof PRODUCT_SORTS)[number];
 export const PRODUCT_DEFAULT_SORT = { id: "rank", desc: false } as const satisfies { id: ProductSort; desc: boolean };

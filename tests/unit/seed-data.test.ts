@@ -12,6 +12,7 @@ import { isIndianState } from "@/lib/validation/states";
 import { ADMIN_ORDER_ITERATIONS, generateAdminSample } from "@/prisma/seed-data/admin";
 import {
   CATEGORIES,
+  COMING_SOON_PRODUCTS,
   PLANS,
   PRODUCTS,
   findProduct,
@@ -132,14 +133,68 @@ describe("sample GSTINs and addresses", () => {
 });
 
 describe("catalog", () => {
-  it("has the prototype's 4 categories, 4 products and 16 plans with unique ids", () => {
-    expect(CATEGORIES).toHaveLength(4);
+  it("has the prototype's 4 categories, 4 products and 16 plans plus 3 categories and 20 coming-soon products", () => {
+    expect(CATEGORIES).toHaveLength(7);
+    expect(CATEGORIES.slice(4).map((c) => c.id)).toEqual(["jewellery", "wholesale", "industry"]);
     expect(PRODUCTS).toHaveLength(4);
+    expect(COMING_SOON_PRODUCTS).toHaveLength(20);
     expect(PLANS).toHaveLength(16);
-    expect(unique(PRODUCTS.map((p) => p.id))).toBe(true);
-    expect(unique(PRODUCTS.map((p) => p.code))).toBe(true);
+    const all = [...PRODUCTS, ...COMING_SOON_PRODUCTS];
+    expect(unique(all.map((p) => p.id))).toBe(true);
+    expect(unique(all.map((p) => p.code))).toBe(true);
+    expect(unique(CATEGORIES.map((c) => c.id))).toBe(true);
     expect(unique(PLANS.map((p) => p.id))).toBe(true);
-    for (const p of PRODUCTS) expect(p.code).toMatch(/^[A-Z]{3}$/);
+    for (const p of all) expect(p.code).toMatch(/^[A-Z]{3}$/);
+    for (const p of COMING_SOON_PRODUCTS) expect(["MED", "RST", "GST", "CHQ"]).not.toContain(p.code);
+  });
+
+  it("defines the coming-soon catalog: Windows only, copy within limits, valid content, known references", () => {
+    const icons = new Set<string>(ICON_NAMES);
+    const categoryIcon = new Map(CATEGORIES.map((c) => [c.id, c.icon]));
+    const listed = new Set([...PRODUCTS, ...COMING_SOON_PRODUCTS].map((p) => p.id));
+    for (const p of COMING_SOON_PRODUCTS) {
+      expect(p.platforms, p.id).toEqual(["windows"]);
+      expect(p.id).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+      expect(p.tagline.length, p.id).toBeLessThanOrEqual(80);
+      expect(p.summary.length, p.id).toBeLessThanOrEqual(600);
+      expect(p.rank, p.id).toBeGreaterThan(Math.max(...PRODUCTS.map((x) => x.rank)));
+      expect(productContentSchema.safeParse(p.content).success, p.id).toBe(true);
+      expect(p.content.features.length, p.id).toBeGreaterThanOrEqual(5);
+      expect(p.content.features.length, p.id).toBeLessThanOrEqual(8);
+      expect(p.content.benefits.length, p.id).toBeGreaterThanOrEqual(3);
+      expect(p.content.benefits.length, p.id).toBeLessThanOrEqual(4);
+      expect(p.content.requirements.map((r) => r.label), p.id).toEqual(expect.arrayContaining(["Operating system", "Internet", "Printers"]));
+      expect(icons.has(p.icon), p.icon).toBe(true);
+      expect(p.icon, p.id).not.toBe(categoryIcon.get(p.categoryId));
+      for (const f of p.content.features) expect(icons.has(f.icon), `${p.id} ${f.icon}`).toBe(true);
+      expect(categoryIcon.has(p.categoryId), p.id).toBe(true);
+      expect(p.relatedIds.length, p.id).toBeGreaterThanOrEqual(1);
+      expect(p.relatedIds.length, p.id).toBeLessThanOrEqual(3);
+      for (const r of p.relatedIds) {
+        expect(listed.has(r), `${p.id} -> ${r}`).toBe(true);
+        expect(r).not.toBe(p.id);
+      }
+      // Honest internet row: a product whose features send messages does not claim it needs internet only to activate.
+      const internet = p.content.requirements.find((r) => r.label === "Internet")?.value ?? "";
+      const sendsMessages = p.content.features.some((f) => /\b(SMS|WhatsApp|email)\b/i.test(f.body));
+      if (sendsMessages) expect(internet, p.id).not.toMatch(/only/i);
+      if (sendsMessages) expect(internet, p.id).toMatch(/SMS|WhatsApp|email/);
+      // Plain copy: no prices, dates or promises of availability.
+      const text = JSON.stringify([p.tagline, p.summary, p.content]);
+      expect(text, p.id).not.toMatch(/₹|Rs\.?\s?\d|\bINR\b|\b20\d\d\b|guarantee/i);
+    }
+    expect(COMING_SOON_PRODUCTS.map((p) => p.rank)).toEqual(COMING_SOON_PRODUCTS.map((_, i) => 101 + i));
+  });
+
+  it("seeds the coming-soon products as COMING_SOON, demo off, with no plans, releases or FAQs", () => {
+    for (const p of COMING_SOON_PRODUCTS) {
+      const row = plan.products.find((x) => x.id === p.id);
+      expect(row, p.id).toMatchObject({ status: "COMING_SOON", demoEnabled: false, tone: null, platforms: ["windows"], categoryId: p.categoryId });
+      expect(plan.plans.some((x) => x.productId === p.id), p.id).toBe(false);
+      expect(plan.releases.some((x) => x.productId === p.id), p.id).toBe(false);
+      expect(plan.faqs.some((x) => x.page === p.id), p.id).toBe(false);
+    }
+    expect(plan.products.filter((p) => p.status === "PUBLISHED").map((p) => p.id)).toEqual(PRODUCTS.map((p) => p.id));
   });
 
   it("resolves every product, category, related and plan reference", () => {
@@ -183,7 +238,7 @@ describe("catalog", () => {
       const sortOrders = plan.faqs.filter((f) => f.page === page).map((f) => f.sortOrder);
       expect(unique(sortOrders)).toBe(true);
     }
-    expect(plan.categories.map((c) => c.sortOrder)).toEqual([0, 1, 2, 3]);
+    expect(plan.categories.map((c) => c.sortOrder)).toEqual([0, 1, 2, 3, 4, 5, 6]);
   });
 
   it("writes the Home category blurbs", () => {
@@ -192,6 +247,14 @@ describe("catalog", () => {
       "Table billing, KOTs and day-end reports for food businesses.",
       "GST invoicing, barcode billing and stock for general stores.",
       "Cheque printing and payment records for any business.",
+      "Billing with daily gold rates, HUID and tags for jewellers.",
+      "Billing, schemes and collections for distributors, stockists and traders.",
+      "Software for factories, transporters and fuel stations.",
+    ]);
+    expect(plan.categories.slice(4).map((c) => [c.name, c.tone, c.icon])).toEqual([
+      ["Jewellery", "pink", "workspace_premium"],
+      ["Wholesale & Distribution", "peach", "warehouse"],
+      ["Manufacturing & Logistics", "blue", "factory"],
     ]);
   });
 

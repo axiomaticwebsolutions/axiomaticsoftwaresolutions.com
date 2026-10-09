@@ -29,6 +29,7 @@ import {
   type CatalogChip,
   type CatalogItem,
   type CatalogListFacet,
+  type AvailabilityKey,
   type CatalogQuery,
   type PriceBandKey,
 } from "@/lib/storefront/catalog-filter";
@@ -134,8 +135,8 @@ export function CatalogView({ items, categories, initialQuery, ratePct }: Catalo
     }
   }, [chips]);
 
-  // Compare selection: only published products count; stale ids (e.g. an unpublished product) are dropped.
-  const itemsById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
+  // Compare selection: only products on sale count; stale ids (an unpublished or coming-soon product) are dropped.
+  const itemsById = useMemo(() => new Map(items.filter((item) => !item.comingSoon).map((item) => [item.id, item])), [items]);
   const compared = useMemo(
     () => compareIds.flatMap((id) => (itemsById.has(id) ? [itemsById.get(id)!] : [])),
     [compareIds, itemsById],
@@ -172,13 +173,16 @@ export function CatalogView({ items, categories, initialQuery, ratePct }: Catalo
     setQuery((q) => toggleFacetValue(q, facet, value));
   }, []);
   const onPrice = useCallback((price: PriceBandKey) => setQuery((q) => ({ ...q, price })), []);
+  const onAvailability = useCallback((availability: AvailabilityKey) => setQuery((q) => ({ ...q, availability })), []);
   const onClear = useCallback(() => setQuery(clearCatalogFilters), []);
   const onRemoveChip = (chip: CatalogChip, index: number) => {
     chipFocus.current = index;
     setQuery((q) => removeCatalogChip(q, chip));
   };
 
-  const panel = <FilterPanel facets={facets} onToggle={onToggleFacet} onPrice={onPrice} onClear={onClear} />;
+  const panel = (
+    <FilterPanel facets={facets} onToggle={onToggleFacet} onAvailability={onAvailability} onPrice={onPrice} onClear={onClear} />
+  );
 
   return (
     <Sheet open={filtersOpen} onOpenChange={setFiltersOpen}>
@@ -217,6 +221,7 @@ export function CatalogView({ items, categories, initialQuery, ratePct }: Catalo
           />
         </div>
         {query.category.length > 0 ? <input type="hidden" name="category" value={query.category.join(",")} /> : null}
+        {query.availability !== "all" ? <input type="hidden" name="availability" value={query.availability} /> : null}
         {query.price !== "any" ? <input type="hidden" name="price" value={query.price} /> : null}
         {query.os.length > 0 ? <input type="hidden" name="os" value={query.os.join(",")} /> : null}
         {query.license.length > 0 ? <input type="hidden" name="license" value={query.license.join(",")} /> : null}
@@ -250,7 +255,12 @@ export function CatalogView({ items, categories, initialQuery, ratePct }: Catalo
       </form>
 
       <div className="mt-6 grid items-start gap-8 catalog:grid-cols-[240px_minmax(0,1fr)]">
-        <aside aria-label="Filters" className="sticky top-[calc(var(--store-header-h)+24px)] hidden catalog:block">
+        {/* Sticky, and scrolls on its own once taller than the window (7 categories + availability), so every filter and
+            its focus ring stay reachable; -mx-2 px-2 keeps the rows' negative margins and focus rings inside the box. */}
+        <aside
+          aria-label="Filters"
+          className="scrollbar-subtle sticky top-[calc(var(--store-header-h)+24px)] -mx-2 hidden max-h-[calc(100dvh-var(--store-header-h)-48px)] overflow-y-auto overscroll-contain px-2 pb-2 catalog:block"
+        >
           {panel}
         </aside>
 

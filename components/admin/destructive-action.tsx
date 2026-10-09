@@ -34,6 +34,7 @@ export const DESTRUCTIVE_COPY: Record<DestructiveActionKey, ActionCopy> = {
   "plans.restore": { trigger: "Restore", icon: "archive", variant: "default", tone: "primary", title: (t) => `Restore ${t}?` },
   "products.hide": { trigger: "Hide", icon: "visibility_off", variant: "default", tone: "primary", title: (t) => `Hide ${t}?` },
   "products.publish": { trigger: "Publish", icon: "visibility", variant: "primary", tone: "primary", title: (t) => `Publish ${t}?` },
+  "products.coming_soon": { trigger: "Mark coming soon", icon: "schedule", variant: "default", tone: "primary", title: (t) => `Show ${t} as coming soon?` },
   "categories.delete": { trigger: "Delete category", icon: "delete", variant: "danger", tone: "danger", title: (t) => `Delete ${t}?` },
   "releases.delete": { trigger: "Delete draft", icon: "delete", variant: "danger", tone: "danger", title: (t) => `Delete the draft ${t}?` },
   "releases.remove_installer": { trigger: "Remove", icon: "delete", variant: "danger", tone: "danger", title: (t) => `Remove ${t}?` },

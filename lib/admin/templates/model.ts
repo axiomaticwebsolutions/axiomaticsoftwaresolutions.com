@@ -41,7 +41,7 @@ export const TEMPLATE_TRIGGERS: Readonly<Partial<Record<EmailTemplateId, string>
   license_expired: "A license has ended",
   ticket_reply: "Staff reply to a ticket",
   lead_received: "Contact or demo form sent (to the visitor)",
-  lead_new: "Contact or demo form sent (to sales)",
+  lead_new: "Contact, demo or waitlist form sent (to sales)",
   team_invite: "A customer invites a team member",
   staff_invite: "The owner invites a staff member",
   refund_issued: "A refund is issued",

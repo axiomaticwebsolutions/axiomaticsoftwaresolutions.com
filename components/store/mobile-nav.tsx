@@ -6,11 +6,12 @@ import * as React from "react";
 import { Logo } from "@/components/brand/logo";
 import { Icon } from "@/components/icons/icon";
 import { AccountMenu } from "@/components/store/account-menu";
-import { HEADER_LINKS, STORE_PATHS, TONE_TILE_CLASSES, ariaCurrentFor, type NavProduct } from "@/components/store/active-nav";
+import { HEADER_LINKS, STORE_PATHS, TONE_TILE_CLASSES, ariaCurrentFor, comingSoonLinkLabel, type NavProduct } from "@/components/store/active-nav";
 import { CartButton } from "@/components/store/cart-button";
 import { Container } from "@/components/store/container";
 import { SampleNotice } from "@/components/store/sample-notice";
 import { Sheet, SheetClose, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { COMING_SOON_CATALOG_HREF } from "@/lib/storefront/catalog-filter";
 import { demoHref } from "@/lib/storefront/derive";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,8 @@ const NAV_BREAKPOINT = "(min-width: 60rem)";
 
 export type MobileNavProps = {
   products: readonly NavProduct[];
+  /** COMING_SOON products ("N more coming soon" link after the product list; none when 0). */
+  comingSoonCount?: number;
   /** Sample strip text when the strip shows, so the open panel lines up with the header it covers. */
   sampleNotice: string | null;
 };
@@ -34,7 +37,7 @@ export type MobileNavProps = {
  * back on the hamburger). The panel repeats the strip and the bar on top, so the header looks unchanged except that
  * the hamburger has become a close button, then lists every product, Pricing, Resources, Support and the two CTAs.
  */
-export function MobileNav({ products, sampleNotice }: MobileNavProps) {
+export function MobileNav({ products, comingSoonCount = 0, sampleNotice }: MobileNavProps) {
   const pathname = usePathname() ?? "/";
   // Keyed to the path it was opened on: following a link closes the panel.
   const [openAt, setOpenAt] = React.useState<string | null>(null);
@@ -121,6 +124,12 @@ export function MobileNav({ products, sampleNotice }: MobileNavProps) {
               </li>
             ))}
           </ul>
+          {comingSoonCount > 0 ? (
+            <Link href={COMING_SOON_CATALOG_HREF} onClick={close} className={cn(ROW_CLASS, "flex items-center gap-2 py-2.5 text-[14.5px] text-lavender-fg")}>
+              <Icon name="schedule" size={18} />
+              {comingSoonLinkLabel(comingSoonCount)} <span aria-hidden="true">→</span>
+            </Link>
+          ) : null}
           <Link
             href={STORE_PATHS.software}
             onClick={close}

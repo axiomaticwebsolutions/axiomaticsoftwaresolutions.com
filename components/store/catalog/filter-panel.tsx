@@ -4,7 +4,9 @@ import { useId, type ReactNode } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
+  isAvailabilityKey,
   isPriceBandKey,
+  type AvailabilityKey,
   type CatalogFacets,
   type CatalogListFacet,
   type FacetOption,
@@ -14,6 +16,7 @@ import {
 export type FilterPanelProps = {
   facets: CatalogFacets;
   onToggle: (facet: CatalogListFacet, value: string) => void;
+  onAvailability: (availability: AvailabilityKey) => void;
   onPrice: (band: PriceBandKey) => void;
   /** "Clear all filters" (also clears the search, as in the prototype). */
   onClear: () => void;
@@ -50,10 +53,10 @@ function Group({ legend, legendId, children }: { legend: string; legendId: strin
 }
 
 /**
- * The catalog filters (sidebar >= 900px, drawer below): Business category, Starting price, Operating system and
- * License type, each option with its live count, then "Clear all filters".
+ * The catalog filters (sidebar >= 900px, drawer below): Business category, Availability (all, available now, coming
+ * soon), Starting price, Operating system and License type, each option with its live count, then "Clear all filters".
  */
-export function FilterPanel({ facets, onToggle, onPrice, onClear }: FilterPanelProps) {
+export function FilterPanel({ facets, onToggle, onAvailability, onPrice, onClear }: FilterPanelProps) {
   const id = useId();
   const listGroup = (facet: CatalogListFacet, legend: string) => (
     <Group key={facet} legend={legend} legendId={`${id}-${facet}`}>
@@ -69,10 +72,25 @@ export function FilterPanel({ facets, onToggle, onPrice, onClear }: FilterPanelP
     </Group>
   );
   const selectedBand = facets.price.find((o) => o.checked)?.value ?? "any";
+  const selectedAvailability = facets.availability.find((o) => o.checked)?.value ?? "all";
 
   return (
     <>
       {listGroup("category", "Business category")}
+      <Group legend="Availability" legendId={`${id}-availability`}>
+        <RadioGroup
+          value={selectedAvailability}
+          onValueChange={(value) => {
+            if (isAvailabilityKey(value)) onAvailability(value);
+          }}
+          aria-labelledby={`${id}-availability`}
+          className="gap-1"
+        >
+          {facets.availability.map((option) => (
+            <OptionRow key={option.value} option={option} control={<RadioGroupItem value={option.value} />} />
+          ))}
+        </RadioGroup>
+      </Group>
       <Group legend="Starting price" legendId={`${id}-price`}>
         <RadioGroup
           value={selectedBand}

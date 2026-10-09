@@ -620,6 +620,7 @@ async function reasonsJourney(page, fx) {
     ["plans.restore", "POST", `/api/admin/plans/${fx.plan.id}/restore`, {}],
     ["products.hide", "POST", `/api/admin/products/${fx.product}/hide`, {}],
     ["products.publish", "POST", `/api/admin/products/${fx.product}/publish`, {}],
+    ["products.coming_soon", "POST", `/api/admin/products/${fx.product}/coming-soon`, {}],
     ["coupons.delete", "DELETE", `/api/admin/coupons/${encodeURIComponent(fx.coupon)}`, { confirmId: fx.coupon }],
     ["faqs.delete", "DELETE", `/api/admin/faqs/${fx.faq}`, {}],
     ["staff.change_role", "PATCH", `/api/admin/staff/${fx.otherStaff}`, { role: "ADMIN" }],
@@ -894,8 +895,9 @@ async function adminCoupon(page) {
   const code = `CHK${TAG.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(-7)}`;
   await go(page, "/admin/coupons?new=1");
   const drawer = drawerOf(page);
-  await drawer.getByLabel("Code").waitFor({ timeout: 30_000 });
-  await drawer.getByLabel("Code").fill(code);
+  // Exact: the "Limit to products" list has products whose names contain "code" (e.g. "Barcode & MRP Labels").
+  await drawer.getByLabel("Code", { exact: true }).waitFor({ timeout: 30_000 });
+  await drawer.getByLabel("Code", { exact: true }).fill(code);
   await drawer.getByLabel("Percent off").fill("5");
   await drawer.getByLabel("Checkout label").fill("Admin check: 5% off");
   await drawer.getByLabel("Starts").fill(istDate(0));

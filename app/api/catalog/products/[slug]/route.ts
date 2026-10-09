@@ -1,11 +1,12 @@
 /**
- * GET /api/catalog/products/:slug: one PUBLISHED product with its live plans, latest release (notes only), FAQs and
- * related products (api-contracts section 2). 404 for DRAFT, HIDDEN and unknown slugs. Public and cacheable.
+ * GET /api/catalog/products/:slug: one listed product with its live plans, latest release (notes only), FAQs and
+ * related products (api-contracts section 2). A COMING_SOON product has `comingSoon: true`, no plans and no release.
+ * 404 for DRAFT, HIDDEN and unknown slugs. Public and cacheable.
  */
 import { CATALOG_CACHE_CONTROL, toCatalogCard, toLatestRelease, toProductView, type CatalogProductDetail } from "@/lib/checkout/catalog-api";
 import { errors, json, route } from "@/lib/http";
 import { toCatalogItem } from "@/lib/storefront/catalog-filter";
-import { getStoreProduct, getStoreProducts } from "@/lib/storefront/data";
+import { getCatalogProduct, getCatalogProducts } from "@/lib/storefront/data";
 
 export const runtime = "nodejs";
 
@@ -13,9 +14,9 @@ type Context = { params: Promise<{ slug: string }> };
 
 export const GET = route<Context>(async (_req, { params }) => {
   const { slug } = await params;
-  const product = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) ? await getStoreProduct(slug) : null;
+  const product = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) ? await getCatalogProduct(slug) : null;
   if (!product) throw errors.notFound("Product");
-  const products = await getStoreProducts();
+  const products = await getCatalogProducts();
   const byId = new Map(products.map((p) => [p.id, p]));
   const related = product.relatedIds.flatMap((id) => {
     const p = byId.get(id);

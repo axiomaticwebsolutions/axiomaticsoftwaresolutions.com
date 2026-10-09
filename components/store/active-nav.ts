@@ -106,6 +106,11 @@ export function toIconName(name: string | null | undefined, fallback: IconName =
   return name && Object.hasOwn(ICON_PATHS, name) ? (name as IconName) : fallback;
 }
 
+/** "20 more coming soon" / "1 more coming soon" (the Software menu and the mobile panel). */
+export function comingSoonLinkLabel(count: number): string {
+  return `${count} more coming soon`;
+}
+
 /** Strips products down to what the header and footer render (keeps the given order: rank). */
 export function toNavProducts(products: readonly NavProductSource[]): NavProduct[] {
   return products.map((p) => ({

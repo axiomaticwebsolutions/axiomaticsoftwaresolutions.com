@@ -23,7 +23,9 @@ export async function makeCategory(overrides: { id?: string; name?: string } = {
 }
 
 /** A product (DRAFT unless told otherwise) in a new category, with an unused 3-letter code. */
-export async function makeProduct(opts: { status?: "DRAFT" | "PUBLISHED" | "HIDDEN"; platforms?: string[]; content?: object; categoryId?: string; name?: string } = {}) {
+export async function makeProduct(
+  opts: { status?: "DRAFT" | "PUBLISHED" | "HIDDEN" | "COMING_SOON"; platforms?: string[]; content?: object; categoryId?: string; name?: string } = {},
+) {
   const t = tag();
   const categoryId = opts.categoryId ?? (await makeCategory()).id;
   return db.product.create({

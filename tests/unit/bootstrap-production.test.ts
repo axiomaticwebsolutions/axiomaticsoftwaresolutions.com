@@ -56,10 +56,24 @@ const devPlan = buildSeedPlan({ now: new Date("2026-10-06T06:30:00.000Z"), owner
 
 describe("buildBootstrapRows: catalog and content", () => {
   it("matches the dev seed's categories, products, plans and FAQs exactly (no drift between the two)", () => {
-    expect(rows.categories).toEqual(devPlan.categories);
-    expect(rows.products).toEqual(devPlan.products);
+    // The catalog step writes the original catalog; the catalog additions write the rest (once each).
+    const addedCategories = rows.additions.flatMap((a) => a.categories);
+    const addedProducts = rows.additions.flatMap((a) => a.products);
+    expect([...rows.categories, ...addedCategories].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))).toEqual(devPlan.categories);
+    expect([...rows.products, ...addedProducts]).toEqual(devPlan.products);
     expect(rows.plans).toEqual(devPlan.plans);
     expect(rows.faqs).toEqual(devPlan.faqs);
+  });
+
+  it("leaves the coming-soon categories and products to the 2026-10-09 catalog addition", () => {
+    expect(rows.categories.map((c) => c.id)).toEqual(["pharmacy", "restaurant", "retail", "finance"]);
+    expect(rows.additions.map((a) => a.id)).toEqual(["2026-10-09-coming-soon"]);
+    const addition = rows.additions[0];
+    expect(addition?.categories.map((c) => [c.id, c.sortOrder])).toEqual([["jewellery", 4], ["wholesale", 5], ["industry", 6]]);
+    expect(addition?.products).toHaveLength(20);
+    expect(addition?.products.every((p) => p.status === PublishStatus.COMING_SOON && p.demoEnabled === false)).toBe(true);
+    expect(rows.plans.some((p) => addition?.products.some((x) => x.id === p.productId))).toBe(false);
+    expect(rows.releases.some((r) => addition?.products.some((x) => x.id === r.productId))).toBe(false);
   });
 
   it("matches the dev seed's notification templates apart from the fake edit dates", () => {
@@ -94,7 +108,7 @@ describe("buildBootstrapRows: catalog and content", () => {
   });
 
   it("writes no sample people, orders, licenses, tickets or coupons", () => {
-    expect(Object.keys(rows).sort()).toEqual(["categories", "counters", "faqs", "plans", "products", "releases", "settings", "templates"]);
+    expect(Object.keys(rows).sort()).toEqual(["additions", "categories", "counters", "faqs", "plans", "products", "releases", "settings", "templates"]);
   });
 });
 
@@ -318,6 +332,14 @@ describe("formatBootstrapReport", () => {
     counters: { create: rows.counters, kept: [] },
     owner: { action: "create", email: "founder@axiomaticsoftwaresolutions.com", name: "Owner" },
     notices: ["n1"],
+    additions: rows.additions.map((a) => ({
+      id: a.id,
+      title: a.title,
+      doneAt: null,
+      categories: { create: a.categories, kept: [] },
+      products: { create: a.products, kept: [] },
+      skipped: [],
+    })),
   };
 
   it("prints counts, counters, the Owner email and next steps, never row contents or the password", () => {
@@ -337,6 +359,13 @@ describe("formatBootstrapReport", () => {
     expect(text).toContain("  - n1");
     expect(text).not.toContain(PASSWORD);
     expect(text).not.toContain(rows.products[0]?.tagline);
+    // The catalog addition lists what it added (ids and names only) and that it never runs again.
+    expect(text).toMatch(/added categories\s+created\s+3/);
+    expect(text).toMatch(/added products\s+created\s+20/);
+    expect(text).toContain("Catalog addition 2026-10-09-coming-soon - Coming-soon catalog (3 categories, 20 products): added 3 categories, 20 products.");
+    expect(text).toContain('    + product payroll "Payroll & Attendance Software" (PAY, Coming soon, category finance)');
+    expect(text).toContain("Recorded as done: it never runs again on this database.");
+    expect(text).not.toContain(rows.additions[0]?.products[0]?.tagline);
   });
 
   it("says when nothing was written", () => {
@@ -345,9 +374,18 @@ describe("formatBootstrapReport", () => {
     expect(dry).toContain("would create");
     expect(dry).toContain("  Business details: would be sample");
     expect(dry).not.toContain("Next steps");
-    const noop = formatBootstrapReport({ dryRun: false, changed: false, plan: { ...plan, catalog: "skip", bootstrappedAt: new Date("2026-10-07T06:00:00Z") } });
+    expect(dry).toContain("would add 3 categories, 20 products.");
+    expect(dry).toContain("Will record as done");
+    const done = plan.additions.map((a) => ({ ...a, doneAt: new Date("2026-10-09T06:00:00Z") }));
+    const noop = formatBootstrapReport({
+      dryRun: false,
+      changed: false,
+      plan: { ...plan, catalog: "skip", bootstrappedAt: new Date("2026-10-07T06:00:00Z"), additions: done },
+    });
     expect(noop).toMatch(/^Production bootstrap - nothing to do/);
     expect(noop).toContain("skipped (bootstrapped on 7 Oct 2026)");
+    expect(noop).toContain("Catalog addition 2026-10-09-coming-soon: already added on 9 Oct 2026; nothing to do.");
+    expect(noop).not.toMatch(/added (categories|products)\s+created/);
   });
 });
 
@@ -366,6 +404,7 @@ describe("formatBootstrapReport with --update-catalog", () => {
     counters: { create: [], kept: [...rows.counters] },
     owner: { action: "none", email: "founder@axiomaticsoftwaresolutions.com" },
     notices: [],
+    additions: [],
   };
 
   it("says what a refresh would do, what it did, or that the catalog already matches the code", () => {

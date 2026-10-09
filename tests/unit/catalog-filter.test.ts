@@ -147,7 +147,8 @@ describe("search and filters", () => {
 describe("facet counts", () => {
   it("shows the prototype's counts with no filters", () => {
     const f = catalogFacets(items, query(), categories);
-    expect(counts(f.category)).toEqual({ pharmacy: 1, restaurant: 1, retail: 1, finance: 1 });
+    expect(counts(f.category)).toEqual({ pharmacy: 1, restaurant: 1, retail: 1, finance: 1, jewellery: 0, wholesale: 0, industry: 0 });
+    expect(counts(f.availability)).toEqual({ all: null, available: 4, "coming-soon": 0 });
     expect(counts(f.price)).toEqual({ any: null, "under-3000": 2, "3000-7000": 2, "over-7000": 0 });
     expect(counts(f.os)).toEqual({ windows: 4, macos: 2, android: 1 });
     expect(counts(f.license)).toEqual({ trial: 3, one_time: 3, annual: 2, subscription: 1, multi: 3 });
@@ -157,7 +158,11 @@ describe("facet counts", () => {
       "Restaurants & Cafés",
       "Retail & Grocery",
       "Finance & Office",
+      "Jewellery",
+      "Wholesale & Distribution",
+      "Manufacturing & Logistics",
     ]);
+    expect(f.availability.map((o) => o.label)).toEqual(["All", "Available now", "Coming soon"]);
     expect(f.os.map((o) => o.label)).toEqual(["Windows", "macOS", "Android"]);
     expect(f.license.map((o) => o.label)).toEqual(["Free trial", "One-time", "Annual", "Subscription", "Multi-device"]);
   });
@@ -165,7 +170,7 @@ describe("facet counts", () => {
   it("counts each option against every OTHER active filter (prototype: “billing” + Medical & Pharmacy)", () => {
     const q = query({ q: "billing", category: ["pharmacy"] });
     const f = catalogFacets(items, q, categories);
-    expect(counts(f.category)).toEqual({ pharmacy: 1, restaurant: 1, retail: 1, finance: 0 });
+    expect(counts(f.category)).toEqual({ pharmacy: 1, restaurant: 1, retail: 1, finance: 0, jewellery: 0, wholesale: 0, industry: 0 });
     expect(counts(f.price)).toEqual({ any: null, "under-3000": 0, "3000-7000": 1, "over-7000": 0 });
     expect(counts(f.os)).toEqual({ windows: 1, macos: 0, android: 0 });
     expect(f.category.find((o) => o.value === "pharmacy")?.checked).toBe(true);
@@ -233,11 +238,12 @@ describe("sorting", () => {
 describe("URL state", () => {
   it("parses repeated and comma-separated values, dropping unknown ones", () => {
     const sp = new URLSearchParams(
-      "q=gst+billing&category=pharmacy,nope&category=retail&price=3000-7000&os=windows,linux&license=trial,multi,x&sort=newest",
+      "q=gst+billing&category=pharmacy,nope&category=retail&availability=coming-soon&price=3000-7000&os=windows,linux&license=trial,multi,x&sort=newest",
     );
     expect(parseCatalogParams(sp, { categoryIds })).toEqual({
       q: "gst billing",
       category: ["pharmacy", "retail"],
+      availability: "coming-soon",
       price: "3000-7000",
       os: ["windows"],
       license: ["trial", "multi"],

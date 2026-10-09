@@ -300,13 +300,14 @@ type LockedLicenseRow = {
   updatesUntil: Date | string;
   deviceLimit: number;
   productCode: string;
+  productStatus: string;
   planType: string;
 };
 
 async function lockLicenseByKeyHash(tx: Tx, keyHash: string) {
   const rows = await tx.$queryRaw<LockedLicenseRow[]>`
     SELECT l."id", l."accountId", l."status"::text AS "status", l."expiresAt", l."updatesUntil", l."deviceLimit",
-           p."code" AS "productCode", pl."type"::text AS "planType"
+           p."code" AS "productCode", p."status"::text AS "productStatus", pl."type"::text AS "planType"
     FROM "License" l
     JOIN "Product" p ON p."id" = l."productId"
     JOIN "Plan" pl ON pl."id" = l."planId"
@@ -341,7 +342,8 @@ export async function activateLicense(input: ActivateRequest, ctx: ActivationCon
 
   const result = await client.$transaction(async (tx) => {
     const license = await lockLicenseByKeyHash(tx, keyHash);
-    if (!license) throw new ApiError(404, "invalid_key", ACTIVATION_MESSAGES.invalidKey);
+    // A COMING_SOON product has never been sold, so no key of it can be valid (decisions.md 2026-10-09).
+    if (!license || license.productStatus === "COMING_SOON") throw new ApiError(404, "invalid_key", ACTIVATION_MESSAGES.invalidKey);
     assertLicenseUsable(license, now);
     assertProduct(license.productCode, ctx.appId);
 

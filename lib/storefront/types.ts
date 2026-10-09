@@ -22,6 +22,8 @@ export type StoreCategory = {
   sortOrder: number;
   /** PUBLISHED products in the category. */
   productCount: number;
+  /** COMING_SOON products in the category (listed after the published ones, never sold). */
+  comingSoonCount: number;
 };
 
 export type StorePlan = {
@@ -80,14 +82,19 @@ export type StoreProduct = {
   category: StoreProductCategory;
   platforms: Platform[];
   demoEnabled: boolean;
+  /**
+   * Status COMING_SOON: listed (catalog, product page with the waitlist form, sitemap) but never sold, so `plans` and
+   * `releases` are always empty. false = PUBLISHED (the only other status the storefront ever sees).
+   */
+  comingSoon: boolean;
   rank: number;
   content: ProductContent;
-  /** Related PUBLISHED products, in the order the admin chose. */
+  /** Related listed products (PUBLISHED or COMING_SOON), in the order the admin chose. */
   relatedIds: string[];
   createdAt: string;
-  /** Non-archived plans by sortOrder. */
+  /** Non-archived plans by sortOrder ([] for a coming-soon product). */
   plans: StorePlan[];
-  /** PUBLISHED releases, newest first. */
+  /** PUBLISHED releases, newest first ([] for a coming-soon product). */
   releases: StoreRelease[];
   /** Published FAQs for the product page, by sortOrder. */
   faqs: StoreFaq[];

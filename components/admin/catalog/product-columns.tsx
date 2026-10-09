@@ -56,6 +56,11 @@ export function productCard(p: AdminProductRow): React.ReactNode {
   );
 }
 
+/** "2 published" or "2 published · 5 coming soon". */
+export function categoryCountDetail(c: Pick<AdminCategoryRow, "publishedCount" | "comingSoonCount">): string {
+  return c.comingSoonCount > 0 ? `${c.publishedCount} published \u00B7 ${c.comingSoonCount} coming soon` : `${c.publishedCount} published`;
+}
+
 /** NAME | PRODUCTS | ORDER (the categories card under the products table). */
 export const CATEGORY_COLUMNS: ColumnDef<AdminCategoryRow>[] = [
   {
@@ -76,7 +81,7 @@ export const CATEGORY_COLUMNS: ColumnDef<AdminCategoryRow>[] = [
     id: "products",
     header: "Products",
     enableSorting: false,
-    cell: ({ row }) => <TwoLine top={row.original.productCount} bottom={`${row.original.publishedCount} published`} />,
+    cell: ({ row }) => <TwoLine top={row.original.productCount} bottom={categoryCountDetail(row.original)} />,
     meta: { align: "right", className: "whitespace-nowrap" },
   },
   { id: "order", header: "Order", enableSorting: false, cell: ({ row }) => row.original.sortOrder, meta: { align: "right" } },
@@ -87,7 +92,7 @@ export function categoryCard(c: AdminCategoryRow): React.ReactNode {
     <span className="grid gap-1">
       <span className="text-[14px] font-extrabold">{c.name}</span>
       <span className="text-[12.5px] font-semibold text-ink-2">
-        {c.productCount} {c.productCount === 1 ? "product" : "products"} {"\u00B7"} {c.publishedCount} published
+        {c.productCount} {c.productCount === 1 ? "product" : "products"} {"\u00B7"} {categoryCountDetail(c)}
       </span>
     </span>
   );

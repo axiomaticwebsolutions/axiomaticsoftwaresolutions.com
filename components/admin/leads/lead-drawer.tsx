@@ -42,6 +42,11 @@ function useLeadDetail(id: string | null): [DetailState, (detail: LeadDetail) =>
   return [current, (detail) => setState({ id, detail, failed: false })];
 }
 
+/** "Received from the ... form". */
+const LEAD_FORM_NAMES: Readonly<Record<LeadDto["kind"], string>> = { DEMO: "demo", CONTACT: "contact", WAITLIST: "\u201cNotify me\u201d" };
+/** Start of the reply subject ("Your demo request DEMO-1004"). */
+const LEAD_SUBJECTS: Readonly<Record<LeadDto["kind"], string>> = { DEMO: "Your demo request", CONTACT: "Your message", WAITLIST: "Your launch sign-up" };
+
 function leadFields(l: LeadDto): AdminField[] {
   const fields: AdminField[] = [
     { label: "Email", value: <a className="break-all text-primary-link underline-offset-2 hover:underline" href={`mailto:${l.email}`}>{l.email}</a> },
@@ -54,6 +59,8 @@ function leadFields(l: LeadDto): AdminField[] {
       { label: "Billing counters", value: l.countersLabel },
       { label: "Preferred time (IST)", value: l.preferredLabel },
     );
+  } else if (l.kind === "WAITLIST") {
+    fields.push({ label: "Waiting for", value: l.productName });
   } else {
     fields.push({ label: "Topic", value: l.topicLabel });
   }
@@ -82,7 +89,7 @@ function History({ entries, lead, now }: { entries: readonly LeadHistoryEntry[];
           }
         />
       ))}
-      <SectionRow title={`Received from the ${lead.kind === "DEMO" ? "demo" : "contact"} form`} detail={formatDateTimeIST(new Date(lead.createdAt))} />
+      <SectionRow title={`Received from the ${LEAD_FORM_NAMES[lead.kind]} form`} detail={formatDateTimeIST(new Date(lead.createdAt))} />
     </SectionRows>
   );
 }
@@ -130,7 +137,7 @@ export function LeadDrawer({ open, onOpenChange, id, row, now, onChanged }: Prop
     }
   }
 
-  const subject = lead ? `Your ${lead.kind === "DEMO" ? "demo request" : "message"} ${lead.id}` : "";
+  const subject = lead ? `${LEAD_SUBJECTS[lead.kind]} ${lead.id}` : "";
   return (
     <AdminDrawer
       open={open}

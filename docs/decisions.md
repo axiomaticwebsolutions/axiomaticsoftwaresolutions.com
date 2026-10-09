@@ -1847,3 +1847,86 @@ template carries attachments; refund and credit-note emails are out of scope, bu
   changed (the seeded copy, "your tax invoice is ready on the order page", stays true).
 - **Deploy.** No server or operator step beyond the normal deploy: `deploy/deploy.sh` runs `prisma migrate deploy`,
   which adds the nullable column. Emails queued before the deploy have no reference and go out without the PDF.
+
+## Coming-soon products, launch waitlist and catalog additions (owner request, 2026-10-09)
+
+Owner request (screenshot of Admin > Products & categories): "can you add all these products here and mark coming
+soon", i.e. the 20 products of the October 2026 market research. They are listed on the storefront, cannot be bought,
+and collect "Notify me when it launches" sign-ups.
+
+- **Status COMING_SOON** (`PublishStatus`, migration `20261009044725_coming_soon_waitlist`: enum values only,
+  additive). What each status allows is one table in `lib/catalog/status.ts`: PUBLISHED is listed and sold;
+  COMING_SOON is listed (catalog, product page, sitemap) but never sold and has no renewals or downloads (it has never
+  been sold); HIDDEN is not listed or sold, existing licenses keep renewing and downloading; DRAFT is none of these.
+  Categories and plans have no new status.
+- **Storefront.** `lib/storefront/data.ts` keeps `getStoreProducts()` = PUBLISHED only (home hero and grid, pricing,
+  compare, cart, checkout, demo form, footer: everything that prices or sells) and adds `getComingSoonProducts()`,
+  `getCatalogProducts()` (published by rank, then coming soon by rank) and `getCatalogProduct(slug)`. A coming-soon
+  `StoreProduct` has `comingSoon: true` and no plans or releases, whatever the database holds. `/software` lists
+  coming-soon products after the published ones for every sort, with a text "Coming soon" badge, no price, no
+  Compare; a new **Availability** filter (All / Available now / Coming soon, `?availability=available|coming-soon`) sits
+  in the existing filter panel and the catalog API. `/software/[slug]` of a coming-soon product renders statically like
+  the others (dynamicParams stays on, see 2026-10-08): name, category, badge, tagline, summary, platforms and the
+  waitlist form in the hero, then "Planned features", "Planned system requirements", FAQs when there are any, and
+  related products (published or coming soon); no plans, prices, trial, demo, installation, releases or support policy.
+  Title "<name> (coming soon)", description "Coming soon: <tagline> ...", SoftwareApplication JSON-LD without offers,
+  share image "Coming soon" instead of a price. The header Software menu and the mobile panel keep the published
+  products and add one small "20 more coming soon" link to `/software?availability=coming-soon`. The sitemap lists
+  coming-soon pages after the published ones (no lastModified). Home "Browse by business" still shows only categories
+  with published products.
+- **Never sold.** Checkout lines and quotes refuse new purchases (as before) and now renewals and add-ons of a
+  COMING_SOON product (`servesExistingLicenses`), payment attempts on an order whose product became coming soon refuse,
+  trials need PUBLISHED (unchanged), the portal offers no renewal options, Admin manual issue refuses its plans (and
+  neither the manual-issue nor the "New order" form lists them),
+  activation answers `invalid_key` for a key of a COMING_SOON product (no new error code for the apps) and downloads
+  answer `not_entitled` / `not_released`. Tests: `tests/db/coming-soon-guards.test.ts`.
+- **Admin.** Status filter and badge "Coming soon" (lavender). New destructive action "Mark coming soon"
+  (`products.coming_soon`, products.manage, reason required, audit "Marked product coming soon", detail
+  "Draft → Coming soon"; `POST /api/admin/products/:id/coming-soon`) from DRAFT or HIDDEN only. It needs the storefront
+  copy (name, tagline, summary, category, icon, at least one feature), no licenses ever issued and no order ever placed
+  for its plans, whatever the order status (a product customers already use is hidden instead; an unpaid order could
+  still be captured and fulfilled into a license that activation then refuses); plans and releases are not needed. Publish works from COMING_SOON with today's rules
+  (content, a main plan on sale, a published stable release); Hide works from PUBLISHED or COMING_SOON. The drawer shows
+  the launch waitlist count with a link to Leads (for roles with `leads.view`); the categories card shows "N published · M coming soon"; the "From"
+  column shows "—" without plans (unchanged); CSV exports say "Coming soon". The overview's product performance still
+  lists published products (or ones with sales) only.
+- **Launch waitlist.** `LeadKind` gains WAITLIST (same migration); ids "WAIT-1001" from the shared lead counter. The
+  product page form (name and email required, phone and business name optional, no marketing consent: the body has no
+  `marketingOptIn`, a crafted one is an unknown key (422) and the lead stores false; purpose notice "We’ll use these
+  details only to tell you when <product> launches. See our privacy policy.", honeypot) posts `kind: "waitlist"` to
+  `POST /api/contact`: same CSRF, 16 KB limit, honeypot and 5-per-hour IP limit as contact and demo requests. The server
+  accepts only a product that is COMING_SOON in the catalog, keeps at most one sign-up per email and product under an
+  advisory lock (any status counts; exact match on the lower-cased address, never Prisma's `mode: "insensitive"`,
+  which compiles to ILIKE where "_" and "%" in an address would be wildcards), and answers `200 { ok: true }` either way, so the response never
+  tells whether an address is already on a list. A new sign-up queues `lead_new` to the sales address with
+  kind_label "launch waitlist sign-up", Topic "Launch waitlist" and a Message saying no reply is needed (the stored
+  template text is unchanged); the visitor gets no email, because `lead_received` promises a reply within one business
+  day; the page says "Thanks — we’ll email you when <product> launches." Admin > Leads: kind "Waitlist" with a filter
+  and CSV rows; "Scheduled" stays demo-only. Follow-up (not built): email the waitlist when a product is published.
+- **Copy and data.** `prisma/seed-data/coming-soon.ts`: 20 products (codes JWL PHD HWS FMC AUT SPM GRM MOB PAY MFG AGR
+  BKY TXT PTL TRN CLN MND LBL LAB SOC), Windows only, demo requests off, ranks 101-120, the category's colour, 5-8
+  features phrased as what the software will do, 3-4 benefits, requirements (Windows 10/11, offline after activation
+  or, for the four whose features send SMS, WhatsApp or email, internet for those messages too; printers), 1-3 related products; no prices, dates or competitor names. Three new categories in `catalog.ts`:
+  Jewellery (pink), Wholesale & Distribution (peach), Manufacturing & Logistics (blue), sort order 4-6. 20 icons were
+  added to the icon registry (`pnpm icons`). The dev seed writes them all (`pnpm db:seed`).
+- **Catalog additions** (`prisma/seed-data/additions.ts`). The bootstrap's catalog step runs once, so later catalog
+  rows never reached production. An addition is a named, permanent id ("2026-10-09-coming-soon") with its categories
+  and products. Every bootstrap run applies pending additions in its transaction: it inserts categories and products
+  whose id does not exist (ON CONFLICT DO NOTHING), skips a product whose license prefix belongs to another product or
+  whose category is missing (reported), drops related ids that will not exist, then writes the marker AuditLog row
+  (targetType "system", targetId "catalog-addition:<id>") even when nothing was missing. With the marker present it
+  never runs again, so owner edits, re-categorisations and deletions are never undone; it never touches plans,
+  releases, FAQs, settings, counters or users. On a brand-new database it runs right after the catalog step (which
+  leaves the addition's categories to it). `--dry-run` lists each row it would add; `--additions-only` runs only the
+  additions (no Owner, settings, counters or BOOTSTRAP_* variables, and no refusal of development seed data), which is
+  how the dev database got them. Tests: `tests/db/bootstrap-production.test.ts` ("catalog additions on an existing
+  database").
+- **Deploy.** `./scripts/deploy.sh --bootstrap`. Order: migration (enum values only), bootstrap with
+  `--skip-additions` before `next build`, switch, health check, then `bootstrap-production.ts --additions-only` (deploy
+  step 13). The additions wait for the new release because the old one keeps serving during the build and, after a
+  failed build, until the next deploy: Prisma 7 throws "Value 'COMING_SOON' not found in enum" when its client reads an
+  unknown enum value, which would break its Overview, Products and Categories admin pages (its storefront filters on
+  PUBLISHED and is unaffected). On a first deploy (no older release) the additions run before the build. The pages pick
+  the products up within the 300 s storefront cache; product pages render on demand (dynamicParams stays on). Rolling
+  back to an older release once those rows exist needs the SQL in deploy/README.md "Rolling back past a new status".
+  Production already has an Owner, so no BOOTSTRAP_OWNER_* variable is needed. Runbook: docs/server-runbook.md.

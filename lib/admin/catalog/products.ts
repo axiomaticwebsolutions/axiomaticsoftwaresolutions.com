@@ -1,8 +1,8 @@
 /**
  * Admin Products & categories (Admin Console.dc.html #products; api-contracts section 7; decisions.md Phase 6):
- * product list, detail, create (DRAFT), listing and content edits, publish / hide (destructive: reason, one audit row
- * in the same transaction), and category CRUD. Product codes are immutable once licenses exist. Every write is
- * audited and revalidates the storefront catalog cache after commit.
+ * product list, detail, create (DRAFT), listing and content edits, publish / hide / mark coming soon (destructive:
+ * reason, one audit row in the same transaction), and category CRUD. Product codes are immutable once licenses exist.
+ * Every write is audited and revalidates the storefront catalog cache after commit.
  *
  * The catalog is small (tens of products), so lists are filtered in SQL and sorted in memory, which lets them sort by
  * derived values (latest version, "From" price). Server-only; routes authorize first.
@@ -21,7 +21,16 @@ import type { StaffRole } from "@/generated/prisma/enums";
 import type { CatalogListQuery, ProductSort } from "./list-config";
 import { readProductContent } from "./model";
 import { revalidateCatalog } from "./revalidate";
-import { CUSTOMER_CHANNEL, changedKeys, isMainPlanType, latestReleaseIds, productChangeSummary, productPublishBlockers, type ProductFieldKey } from "./rules";
+import {
+  CUSTOMER_CHANNEL,
+  changedKeys,
+  isMainPlanType,
+  latestReleaseIds,
+  productChangeSummary,
+  productComingSoonBlockers,
+  productPublishBlockers,
+  type ProductFieldKey,
+} from "./rules";
 import type { CategoryCreateInput, CategoryUpdateInput, ProductCreateInput, ProductUpdateInput } from "./schemas";
 import type {
   AdminCategoryRow,
@@ -45,7 +54,9 @@ export const PRODUCT_MESSAGES = {
   relatedSelf: "A product can\u2019t be related to itself.",
   relatedUnknown: "Choose products from the list.",
   alreadyPublished: "This product is already published.",
-  notPublished: "Only a published product can be hidden.",
+  notPublished: "Only a published or coming-soon product can be hidden.",
+  alreadyComingSoon: "This product is already marked coming soon.",
+  publishedNotComingSoon: "A published product can\u2019t be marked coming soon. Hide it first if it was published by mistake.",
   categoryIdTaken: "A category with this id already exists.",
   categoryInUse: (n: number) => `Move its ${n === 1 ? "product" : `${n} products`} to another category first.`,
 } as const;
@@ -136,7 +147,7 @@ function productWhere(query: Pick<ProductListQuery, "q" | "filters">): Prisma.Pr
   const status = query.filters.status?.toUpperCase();
   return {
     ...(query.filters.category ? { categoryId: query.filters.category } : {}),
-    ...(status === "PUBLISHED" || status === "HIDDEN" || status === "DRAFT" ? { status } : {}),
+    ...(status === "PUBLISHED" || status === "HIDDEN" || status === "DRAFT" || status === "COMING_SOON" ? { status } : {}),
     ...(searchWhere<Prisma.ProductWhereInput>(query.q, ["name", "shortName", "code", "id", "category.name"]) ?? {}),
   };
 }
@@ -166,7 +177,7 @@ const detailInclude = {
 
 type DetailProduct = Prisma.ProductGetPayload<{ include: typeof detailInclude }>;
 
-function toDetail(p: DetailProduct, codeLocked: boolean): AdminProductDetail {
+function toDetail(p: DetailProduct, codeLocked: boolean, hasOrders: boolean, waitlistCount: number): AdminProductDetail {
   const onSale = p.plans.filter((plan) => !plan.archived);
   const content = readProductContent(p.content);
   const contentValid = productContentSchema.safeParse(p.content).success;
@@ -201,6 +212,21 @@ function toDetail(p: DetailProduct, codeLocked: boolean): AdminProductDetail {
             mainPlansOnSale: onSale.filter((plan) => isMainPlanType(plan.type)).length,
             publishedStableReleases: publishable.length,
           }),
+    comingSoonBlockers:
+      p.status === "COMING_SOON"
+        ? []
+        : productComingSoonBlockers({
+            status: p.status,
+            name: p.name,
+            tagline: p.tagline,
+            summary: p.summary,
+            categoryId: p.categoryId,
+            icon: p.icon,
+            contentValid,
+            hasLicenses: codeLocked,
+            hasOrders,
+          }),
+    waitlistCount,
     createdAt: p.createdAt.toISOString(),
   };
 }
@@ -209,11 +235,19 @@ async function hasLicenses(client: PrismaClient | Tx, productId: string): Promis
   return (await client.license.findFirst({ where: { productId }, select: { id: true } })) !== null;
 }
 
+/** Whether any order (any status) has an item for one of these plans: such a product has been sold. */
+async function hasOrders(client: PrismaClient | Tx, planIds: readonly string[]): Promise<boolean> {
+  if (planIds.length === 0) return false;
+  return (await client.orderItem.findFirst({ where: { planId: { in: [...planIds] } }, select: { id: true } })) !== null;
+}
+
 /** The product drawer, or null for an unknown id. */
 export async function getProductDetail(id: string, client: PrismaClient | Tx = defaultDb): Promise<AdminProductDetail | null> {
   const product = await client.product.findUnique({ where: { id }, include: detailInclude });
   if (!product) return null;
-  return toDetail(product, await hasLicenses(client, id));
+  const waitlist = await client.lead.count({ where: { kind: "WAITLIST", productId: id } });
+  const ordered = await hasOrders(client, product.plans.map((plan) => plan.id));
+  return toDetail(product, await hasLicenses(client, id), ordered, waitlist);
 }
 
 async function requireDetail(id: string, client: PrismaClient | Tx): Promise<AdminProductDetail> {
@@ -376,21 +410,30 @@ export type StatusChangeContext = {
   input: DestructiveInput;
 };
 
+export type ProductStatusAction = "publish" | "hide" | "coming_soon";
+
+const STATUS_WORD: Record<ProductStatusKey, string> = { DRAFT: "Draft", HIDDEN: "Hidden", PUBLISHED: "Published", COMING_SOON: "Coming soon" };
+const ACTION_TARGET: Record<ProductStatusAction, ProductStatusKey> = { publish: "PUBLISHED", hide: "HIDDEN", coming_soon: "COMING_SOON" };
+const ACTION_RULE = { publish: "products.publish", hide: "products.hide", coming_soon: "products.coming_soon" } as const;
+
 /**
- * Publish (from DRAFT or HIDDEN; 409 `not_ready` with `blockers` while the page content, a plan on sale or a published
- * release is missing) or hide (from PUBLISHED) a product. Destructive rule: reason required, exactly one audit row
- * ("Published product" / "Hid product") in the same transaction.
+ * Publish (from DRAFT, HIDDEN or COMING_SOON; 409 `not_ready` with `blockers` while the page content, a plan on sale or
+ * a published release is missing), hide (from PUBLISHED or COMING_SOON) or mark coming soon (from DRAFT or HIDDEN; 409
+ * `not_ready` with `blockers` while the storefront copy is incomplete or licenses exist; plans and releases are not
+ * needed) a product. Destructive rule: reason required, exactly one audit row ("Published product" / "Hid product" /
+ * "Marked product coming soon", detail "Draft → Coming soon") in the same transaction.
  */
 export async function setProductStatus(
   id: string,
-  action: "publish" | "hide",
+  action: ProductStatusAction,
   ctx: StatusChangeContext,
   client: PrismaClient = defaultDb,
 ): Promise<AdminProductDetail> {
   const existing = await client.product.findUnique({ where: { id }, select: { name: true } });
   if (!existing) throw errors.notFound("Product");
+  const to = ACTION_TARGET[action];
   await runDestructive(
-    action === "publish" ? "products.publish" : "products.hide",
+    ACTION_RULE[action],
     {
       staff: ctx.staff,
       actor: ctx.actor,
@@ -398,22 +441,25 @@ export async function setProductStatus(
       targetId: id,
       target: existing.name,
       targetType: "product",
-      detail: (d: { from: string }) => `${d.from} \u2192 ${action === "publish" ? "Published" : "Hidden"}`,
+      detail: (d: { from: string }) => `${d.from} \u2192 ${STATUS_WORD[to]}`,
       client,
     },
     async (tx) => {
       await lockProduct(tx, id);
       const current = await requireDetail(id, tx);
+      const notReady = (blockers: string[]) => new ApiError(409, "not_ready", blockers.join(" "), { details: { blockers } });
       if (action === "publish") {
         if (current.status === "PUBLISHED") throw errors.conflict("already_published", PRODUCT_MESSAGES.alreadyPublished);
-        if (current.publishBlockers.length > 0) {
-          throw new ApiError(409, "not_ready", current.publishBlockers.join(" "), { details: { blockers: current.publishBlockers } });
-        }
-      } else if (current.status !== "PUBLISHED") {
-        throw errors.conflict("not_published", PRODUCT_MESSAGES.notPublished);
+        if (current.publishBlockers.length > 0) throw notReady(current.publishBlockers);
+      } else if (action === "hide") {
+        if (current.status !== "PUBLISHED" && current.status !== "COMING_SOON") throw errors.conflict("not_published", PRODUCT_MESSAGES.notPublished);
+      } else {
+        if (current.status === "COMING_SOON") throw errors.conflict("already_coming_soon", PRODUCT_MESSAGES.alreadyComingSoon);
+        if (current.status === "PUBLISHED") throw errors.conflict("published", PRODUCT_MESSAGES.publishedNotComingSoon);
+        if (current.comingSoonBlockers.length > 0) throw notReady(current.comingSoonBlockers);
       }
-      await tx.product.update({ where: { id }, data: { status: action === "publish" ? "PUBLISHED" : "HIDDEN" } });
-      return { from: current.status === "DRAFT" ? "Draft" : current.status === "HIDDEN" ? "Hidden" : "Published" };
+      await tx.product.update({ where: { id }, data: { status: to } });
+      return { from: STATUS_WORD[current.status] };
     },
   );
   revalidateCatalog();
@@ -424,20 +470,23 @@ export async function setProductStatus(
 
 type CategoryRecord = { id: string; name: string; blurb: string | null; tone: string; icon: string; sortOrder: number };
 
-async function categoryCounts(client: PrismaClient | Tx): Promise<Map<string, { total: number; published: number }>> {
+type CategoryCounts = { total: number; published: number; comingSoon: number };
+
+async function categoryCounts(client: PrismaClient | Tx): Promise<Map<string, CategoryCounts>> {
   const groups = await client.product.groupBy({ by: ["categoryId", "status"], _count: { _all: true } });
-  const out = new Map<string, { total: number; published: number }>();
+  const out = new Map<string, CategoryCounts>();
   for (const g of groups) {
-    const entry = out.get(g.categoryId) ?? { total: 0, published: 0 };
+    const entry = out.get(g.categoryId) ?? { total: 0, published: 0, comingSoon: 0 };
     entry.total += g._count._all;
     if (g.status === "PUBLISHED") entry.published += g._count._all;
+    if (g.status === "COMING_SOON") entry.comingSoon += g._count._all;
     out.set(g.categoryId, entry);
   }
   return out;
 }
 
-function toCategoryRow(c: CategoryRecord, counts: Map<string, { total: number; published: number }>): AdminCategoryRow {
-  const n = counts.get(c.id) ?? { total: 0, published: 0 };
+function toCategoryRow(c: CategoryRecord, counts: Map<string, CategoryCounts>): AdminCategoryRow {
+  const n = counts.get(c.id) ?? { total: 0, published: 0, comingSoon: 0 };
   return {
     id: c.id,
     name: c.name,
@@ -447,6 +496,7 @@ function toCategoryRow(c: CategoryRecord, counts: Map<string, { total: number; p
     sortOrder: c.sortOrder,
     productCount: n.total,
     publishedCount: n.published,
+    comingSoonCount: n.comingSoon,
   };
 }
 

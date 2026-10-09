@@ -14,9 +14,13 @@
 #
 # Order: preflight -> copy the source into a new release -> link shared/.env.production -> pnpm install
 # --frozen-lockfile (devDependencies included: the build needs them) -> prisma generate -> check env, PostgreSQL
-# (UTF8) and Redis -> pre-deploy backup -> prisma migrate deploy -> (--first-run) bootstrap catalog + Owner ->
-# next build (prerenders from the database, so it runs after the migration) -> switch current -> pm2
-# startOrReload --update-env -> /api/health -> pm2 save -> keep the newest AXS_KEEP_RELEASES (3) releases.
+# (UTF8) and Redis -> pre-deploy backup -> prisma migrate deploy -> (--first-run / --bootstrap) bootstrap catalog +
+# Owner -> next build (prerenders from the database, so it runs after the migration) -> switch current -> pm2
+# startOrReload --update-env -> /api/health -> pm2 save -> (--first-run / --bootstrap while an older release was live)
+# catalog additions -> keep the newest AXS_KEEP_RELEASES (3) releases.
+# Catalog additions (new categories and products, e.g. COMING_SOON ones) wait until the new release is live and
+# healthy: the older release's Prisma client cannot read a status value it does not know and would fail on admin pages
+# that list every product, during the build and after a failed build. On a first deploy they run before the build.
 # A failure before the switch leaves the live site untouched and deletes the half-built release (--keep-failed
 # keeps it). Automatic rollback: when PM2 cannot start the new release or /api/health does not answer 200 within
 # AXS_HEALTH_TIMEOUT after the switch, `current` goes back to the previous release, PM2 reloads it and the health
@@ -45,8 +49,9 @@ Usage: bash deploy/deploy.sh --source <dir | archive.tar.gz | git-url> [options]
   --first-run         first deploy: also run the production bootstrap (catalog, settings and the first Owner from
                       BOOTSTRAP_OWNER_* in shared/.env.production or exported in the shell). Safe to repeat;
                       required while no release exists
-  --bootstrap         run the bootstrap on a later deploy too (adds settings and counters a newer version
-                      introduced; once the Owner exists it needs no BOOTSTRAP_OWNER_* at all: unset them all)
+  --bootstrap         run the bootstrap on a later deploy too (adds settings, counters and catalog additions,
+                      e.g. new coming-soon products, that a newer version introduced, each addition once; once the
+                      Owner exists it needs no BOOTSTRAP_OWNER_* at all: unset them all)
   --base DIR          deployment root (default /www/wwwroot/axiomatic, or $AXS_BASE)
   --keep N            releases to keep (default 3, or AXS_KEEP_RELEASES)
   --skip-backup       no pre-deploy pg_dump (not recommended when migrations are pending)
@@ -101,7 +106,7 @@ if [[ -n "$KEEP_OPT" ]]; then AXS_KEEP_RELEASES="$KEEP_OPT"; fi
 refuse_root "$ALLOW_ROOT"
 load_deploy_settings
 
-STEP_TOTAL=13 STEP_NO=0 STEP_NAME="start" STEP_HINT="" SWITCHED=0 REL="" RELEASE_NAME="" PREV_RELEASE=""
+STEP_TOTAL=14 STEP_NO=0 STEP_NAME="start" STEP_HINT="" SWITCHED=0 REL="" RELEASE_NAME="" PREV_RELEASE=""
 STAGE_TMP="" DEPLOY_LOG="" STARTED_AT=$SECONDS
 # HEALTHY: the new release passed the health check after the switch. ROLLBACK: "" (not needed), "done" (the previous
 # release is live and healthy again), "failed" (it is live again but not healthy) or "none" (nothing to go back to).
@@ -361,7 +366,13 @@ in_release env NODE_ENV=production "${PNPM[@]}" exec prisma migrate deploy
 step "Production bootstrap (catalog, settings, first Owner)" \
   "the bootstrap names the variable or rule above (BOOTSTRAP_OWNER_* in $AXS_ENV_FILE); it is safe to run again"
 if (( FIRST_RUN || RUN_BOOTSTRAP )); then
-  in_release env NODE_ENV=production "$AXS_NODE" --import tsx scripts/bootstrap-production.ts
+  if [[ -n "$PREV_RELEASE" ]]; then
+    # $PREV_RELEASE keeps serving until the switch: it must not see rows only this release understands.
+    in_release env NODE_ENV=production "$AXS_NODE" --import tsx scripts/bootstrap-production.ts --skip-additions
+    say "catalog additions run after the switch, once this release is live (step 13)"
+  else
+    in_release env NODE_ENV=production "$AXS_NODE" --import tsx scripts/bootstrap-production.ts
+  fi
 else
   say "skipped (runs with --first-run or --bootstrap)"
 fi
@@ -395,6 +406,18 @@ step "Start or reload the app with PM2, then check /api/health" \
 if ! reload_app "$REL"; then auto_rollback; fi
 HEALTHY=1
 touch "$REL/.deploy-ok"
+
+# ------------------------------------------------------------------------------------------------------------------
+step "Catalog additions (new categories and products)" \
+  "the new release is live; run them again: cd $REL && NODE_ENV=production $AXS_NODE --import tsx scripts/bootstrap-production.ts --additions-only"
+if (( FIRST_RUN || RUN_BOOTSTRAP )) && [[ -n "$PREV_RELEASE" ]]; then
+  in_release env NODE_ENV=production "$AXS_NODE" --import tsx scripts/bootstrap-production.ts --additions-only
+  say "the storefront lists new products within 5 minutes (page cache)"
+elif (( FIRST_RUN || RUN_BOOTSTRAP )); then
+  say "done by the bootstrap before the build (first deploy)"
+else
+  say "skipped (runs with --first-run or --bootstrap)"
+fi
 
 # ------------------------------------------------------------------------------------------------------------------
 step "Clean up old releases"

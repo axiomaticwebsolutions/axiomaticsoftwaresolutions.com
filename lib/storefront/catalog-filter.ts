@@ -4,9 +4,11 @@
  * - facets: OR within a group, AND across groups; each option's count = products matching every OTHER active filter
  *   plus that option (the group's own selection is skipped);
  * - price bands compare the starting price EXCLUDING GST, whatever the price display;
- * - sorts: featured (rank), starting price, name (A–Z), newest (latest published release).
- * The query lives in the URL (/software?q=&category=&price=&os=&license=&sort=, docs/decisions.md), so the server page
- * renders the same results the client computes.
+ * - sorts: featured (rank), starting price, name (A–Z), newest (latest published release); whatever the sort,
+ *   products on sale come first and COMING_SOON products after them (decisions.md 2026-10-09);
+ * - availability: all, available now (on sale) or coming soon.
+ * The query lives in the URL (/software?q=&category=&availability=&price=&os=&license=&sort=, docs/decisions.md), so
+ * the server page renders the same results the client computes.
  */
 import {
   LICENSE_TYPE_KEYS,
@@ -61,6 +63,30 @@ export function inPriceBand(paise: number | null, band: PriceBandKey): boolean {
   return paise > BAND_HIGH;
 }
 
+// ---------- Availability ----------
+
+export type AvailabilityKey = "all" | "available" | "coming-soon";
+
+export const AVAILABILITY_KEYS: readonly AvailabilityKey[] = ["all", "available", "coming-soon"];
+
+export const AVAILABILITY_LABELS: Readonly<Record<AvailabilityKey, string>> = {
+  all: "All",
+  available: "Available now",
+  "coming-soon": "Coming soon",
+};
+
+export function isAvailabilityKey(value: string): value is AvailabilityKey {
+  return (AVAILABILITY_KEYS as readonly string[]).includes(value);
+}
+
+export function matchesAvailability(item: Pick<CatalogItem, "comingSoon">, availability: AvailabilityKey): boolean {
+  if (availability === "all") return true;
+  return availability === "coming-soon" ? item.comingSoon : !item.comingSoon;
+}
+
+/** The catalog filtered to coming-soon products (the header menu's "N coming soon" link). */
+export const COMING_SOON_CATALOG_HREF = "/software?availability=coming-soon";
+
 // ---------- Sorts ----------
 
 export type CatalogSort = "featured" | "price-asc" | "price-desc" | "name" | "newest";
@@ -85,6 +111,7 @@ export type CatalogQuery = {
   q: string;
   /** Category slugs, in the order they were picked. */
   category: string[];
+  availability: AvailabilityKey;
   price: PriceBandKey;
   os: Platform[];
   license: LicenseTypeKey[];
@@ -92,11 +119,12 @@ export type CatalogQuery = {
 };
 
 /** Filter groups in the sidebar. */
-export type CatalogFacet = "category" | "price" | "os" | "license";
+export type CatalogFacet = "category" | "availability" | "price" | "os" | "license";
 
 export const DEFAULT_CATALOG_QUERY: Readonly<CatalogQuery> = Object.freeze({
   q: "",
   category: [],
+  availability: "all",
   price: "any",
   os: [],
   license: [],
@@ -137,11 +165,13 @@ export function parseCatalogParams(src: CatalogParamSource, opts: ParseCatalogOp
   const q = (rawValues(src, "q")[0] ?? "").slice(0, CATALOG_QUERY_MAX_LENGTH);
   const known = opts.categoryIds;
   const category = listValues(src, "category").filter((c) => (known ? known.includes(c) : SLUG.test(c)));
+  const availability = rawValues(src, "availability")[0]?.trim() ?? "";
   const price = rawValues(src, "price")[0]?.trim() ?? "";
   const sort = rawValues(src, "sort")[0]?.trim() ?? "";
   return {
     q,
     category,
+    availability: isAvailabilityKey(availability) ? availability : "all",
     price: isPriceBandKey(price) ? price : "any",
     os: listValues(src, "os").filter(isPlatform),
     license: listValues(src, "license").filter(isLicenseTypeKey),
@@ -155,13 +185,14 @@ function encodeValue(value: string): string {
 
 /**
  * The query string for a catalog query ("" when everything is default), e.g.
- * "?q=gst+billing&category=pharmacy,retail&price=3000-7000&os=windows&license=trial&sort=price-asc".
+ * "?q=gst+billing&category=pharmacy,retail&availability=available&price=3000-7000&os=windows&license=trial&sort=price-asc".
  */
 export function catalogSearch(query: CatalogQuery): string {
   const parts: string[] = [];
   const q = query.q.trim();
   if (q) parts.push(`q=${encodeValue(q)}`);
   if (query.category.length) parts.push(`category=${query.category.map(encodeValue).join(",")}`);
+  if (query.availability !== "all") parts.push(`availability=${query.availability}`);
   if (query.price !== "any") parts.push(`price=${query.price}`);
   if (query.os.length) parts.push(`os=${query.os.join(",")}`);
   if (query.license.length) parts.push(`license=${query.license.join(",")}`);
@@ -186,6 +217,8 @@ export type CatalogItem = {
   tone: Tone;
   categoryId: string;
   categoryName: string;
+  /** COMING_SOON: a "Coming soon" badge instead of a price, no Compare (never sold). */
+  comingSoon: boolean;
   platforms: Platform[];
   licenseTypes: LicenseTypeKey[];
   hasTrial: boolean;
@@ -211,6 +244,7 @@ export function toCatalogItem(p: StoreProduct): CatalogItem {
     tone: p.tone,
     categoryId: p.category.id,
     categoryName: p.category.name,
+    comingSoon: p.comingSoon,
     platforms: [...p.platforms],
     licenseTypes: licenseTypeKeys(p),
     hasTrial: hasTrial(p),
@@ -234,6 +268,7 @@ export function matchesCatalogQuery(item: CatalogItem, query: CatalogQuery, skip
   const q = normalizeSearch(query.q);
   if (q && !item.searchText.includes(q)) return false;
   if (skip !== "category" && query.category.length && !query.category.includes(item.categoryId)) return false;
+  if (skip !== "availability" && !matchesAvailability(item, query.availability)) return false;
   if (skip !== "os" && query.os.length && !query.os.some((os) => item.platforms.includes(os))) return false;
   if (skip !== "license" && query.license.length && !query.license.some((l) => item.licenseTypes.includes(l))) {
     return false;
@@ -267,9 +302,13 @@ const COMPARATORS: Readonly<Record<CatalogSort, (a: CatalogItem, b: CatalogItem)
   newest: byNewest,
 };
 
-/** A sorted copy (stable: ties keep the input order, which is rank order from the data layer). */
+/**
+ * A sorted copy: products on sale first, then coming-soon products, each group in the chosen order (stable: ties keep
+ * the input order, which is rank order from the data layer).
+ */
 export function sortCatalog(items: readonly CatalogItem[], sort: CatalogSort): CatalogItem[] {
-  return [...items].sort(COMPARATORS[sort]);
+  const compare = COMPARATORS[sort];
+  return [...items].sort((a, b) => Number(a.comingSoon) - Number(b.comingSoon) || compare(a, b));
 }
 
 /** The results for a query: matching items, sorted. */
@@ -294,6 +333,7 @@ export type FacetOption<V extends string> = {
 
 export type CatalogFacets = {
   category: FacetOption<string>[];
+  availability: FacetOption<AvailabilityKey>[];
   price: FacetOption<PriceBandKey>[];
   os: FacetOption<Platform>[];
   license: FacetOption<LicenseTypeKey>[];
@@ -313,6 +353,12 @@ export function catalogFacets(
       label: c.name,
       checked: query.category.includes(c.id),
       count: count("category", (item) => item.categoryId === c.id),
+    })),
+    availability: AVAILABILITY_KEYS.map((key) => ({
+      value: key,
+      label: AVAILABILITY_LABELS[key],
+      checked: query.availability === key,
+      count: key === "all" ? null : count("availability", (item) => matchesAvailability(item, key)),
     })),
     price: PRICE_BAND_KEYS.map((band) => ({
       value: band,
@@ -352,12 +398,18 @@ export function toggleFacetValue(query: CatalogQuery, facet: CatalogListFacet, v
 
 /** "Clear all filters" / "Clear search and filters": search and every filter group; the sort stays. */
 export function clearCatalogFilters(query: CatalogQuery): CatalogQuery {
-  return { q: "", category: [], price: "any", os: [], license: [], sort: query.sort };
+  return { q: "", category: [], availability: "all", price: "any", os: [], license: [], sort: query.sort };
 }
 
 /** Number of active filters (the "Filters (n)" button); the search text is not counted. */
 export function activeFilterCount(query: CatalogQuery): number {
-  return query.category.length + query.os.length + query.license.length + (query.price !== "any" ? 1 : 0);
+  return (
+    query.category.length +
+    query.os.length +
+    query.license.length +
+    (query.price !== "any" ? 1 : 0) +
+    (query.availability !== "all" ? 1 : 0)
+  );
 }
 
 export type CatalogChip = {
@@ -369,7 +421,7 @@ export type CatalogChip = {
   label: string;
 };
 
-/** Removable chips, in prototype order: search term, categories, price band, operating systems, license types. */
+/** Removable chips: search term, categories, availability, price band, operating systems, license types. */
 export function catalogChips(query: CatalogQuery, categories: readonly CatalogCategoryOption[]): CatalogChip[] {
   const chips: CatalogChip[] = [];
   const q = query.q.trim();
@@ -377,6 +429,9 @@ export function catalogChips(query: CatalogQuery, categories: readonly CatalogCa
   for (const id of query.category) {
     const label = categories.find((c) => c.id === id)?.name ?? id;
     chips.push({ key: `category:${id}`, facet: "category", value: id, label });
+  }
+  if (query.availability !== "all") {
+    chips.push({ key: "availability", facet: "availability", value: query.availability, label: AVAILABILITY_LABELS[query.availability] });
   }
   if (query.price !== "any") {
     chips.push({ key: "price", facet: "price", value: query.price, label: PRICE_BAND_LABELS[query.price] });
@@ -395,6 +450,8 @@ export function removeCatalogChip(query: CatalogQuery, chip: Pick<CatalogChip, "
       return { ...query, q: "" };
     case "price":
       return { ...query, price: "any" };
+    case "availability":
+      return { ...query, availability: "all" };
     case "category":
       return { ...query, category: query.category.filter((v) => v !== chip.value) };
     case "os":

@@ -95,11 +95,21 @@ type DrawerProps = {
 
 const HIDE_CONSEQUENCE = "It disappears from the catalog and search. Existing customers keep their licenses and downloads.";
 const PUBLISH_CONSEQUENCE = "It becomes visible in the catalog.";
+const PUBLISH_COMING_SOON_CONSEQUENCE = "It goes on sale: plans, prices, cart and trials appear on its page. The waitlist is not emailed automatically.";
+const COMING_SOON_CONSEQUENCE =
+  "It appears in the catalog with a \u201cComing soon\u201d badge and a \u201cNotify me\u201d form, without prices. It can\u2019t be bought until you publish it.";
+
+/** "/admin/leads?filter[kind]=waitlist" (Leads inbox, waitlist sign-ups). */
+const WAITLIST_LEADS_HREF = "/admin/leads?filter%5Bkind%5D=waitlist";
+
+function peopleLabel(n: number): string {
+  return `${n} ${n === 1 ? "person" : "people"}`;
+}
 
 /**
  * Product drawer (Admin Console.dc.html products detail): facts, "Storefront listing" (products.manage; read only
- * otherwise), page content and related products, plans, what publishing still needs, and Publish / Hide (reason,
- * audited) plus "View on site".
+ * otherwise), page content and related products, plans, what publishing still needs, the launch waitlist, and Publish /
+ * Mark coming soon / Hide (reason, audited) plus "View on site".
  */
 export function ProductDrawer({ id, open, onOpenChange, options, onChanged }: DrawerProps) {
   const { can } = useAdmin();
@@ -112,13 +122,15 @@ export function ProductDrawer({ id, open, onOpenChange, options, onChanged }: Dr
   };
   const formKey = p ? `${p.id}:${p.updatedAt}` : "none";
 
-  async function changeStatus(action: "publish" | "hide", reason: string) {
+  async function changeStatus(action: "publish" | "hide" | "coming-soon", reason: string) {
     if (!p) return;
     const res = await apiFetch<{ product: AdminProductDetail }>(`/api/admin/products/${encodeURIComponent(p.id)}/${action}`, { method: "POST", body: { reason } });
     saved(res.product);
   }
 
   const published = p?.status === "PUBLISHED";
+  const comingSoon = p?.status === "COMING_SOON";
+  const listed = published || comingSoon;
   return (
     <AdminDrawer
       open={open}
@@ -138,6 +150,7 @@ export function ProductDrawer({ id, open, onOpenChange, options, onChanged }: Dr
               { label: "License prefix", value: p.code, mono: true },
               { label: "Trial", value: p.hasTrial ? "Yes" : "No" },
               { label: "Demo requests", value: p.demoEnabled ? "Enabled" : "Off" },
+              ...(comingSoon || p.waitlistCount > 0 ? [{ label: "Launch waitlist", value: peopleLabel(p.waitlistCount) }] : []),
             ]
           : undefined
       }
@@ -155,6 +168,32 @@ export function ProductDrawer({ id, open, onOpenChange, options, onChanged }: Dr
                           {p.publishBlockers.map((b) => (
                             <SectionRow key={b} title={b} />
                           ))}
+                        </SectionRows>
+                      ),
+                    },
+                  ]
+                : []),
+              ...(comingSoon || p.waitlistCount > 0
+                ? [
+                    {
+                      id: "waitlist",
+                      title: "Launch waitlist",
+                      // The count is an aggregate for every role; the sign-ups themselves need Leads access.
+                      ...(can("leads.view")
+                        ? {
+                            action: (
+                              <AdminAction size="xs" href={WAITLIST_LEADS_HREF} icon="notifications">
+                                View sign-ups
+                              </AdminAction>
+                            ),
+                          }
+                        : {}),
+                      content: (
+                        <SectionRows aria-label="Launch waitlist">
+                          <SectionRow
+                            title={`${peopleLabel(p.waitlistCount)} asked to hear when it launches`}
+                            detail={"Sign-ups from the \u201cNotify me\u201d form on its page, in Leads. Emailing them at launch is not automatic yet."}
+                          />
                         </SectionRows>
                       ),
                     },
@@ -200,7 +239,19 @@ export function ProductDrawer({ id, open, onOpenChange, options, onChanged }: Dr
       footer={
         p ? (
           <>
-            {published ? (
+            {published ? null : (
+              <DestructiveAction
+                actionKey="products.publish"
+                targetId={p.id}
+                targetLabel={p.shortName}
+                confirmLabel="Confirm"
+                consequence={comingSoon ? PUBLISH_COMING_SOON_CONSEQUENCE : PUBLISH_CONSEQUENCE}
+                successMessage="Product updated"
+                disabledReason={p.publishBlockers[0]}
+                onConfirm={({ reason }) => changeStatus("publish", reason)}
+              />
+            )}
+            {listed ? (
               <DestructiveAction
                 actionKey="products.hide"
                 targetId={p.id}
@@ -213,14 +264,14 @@ export function ProductDrawer({ id, open, onOpenChange, options, onChanged }: Dr
               />
             ) : (
               <DestructiveAction
-                actionKey="products.publish"
+                actionKey="products.coming_soon"
                 targetId={p.id}
                 targetLabel={p.shortName}
                 confirmLabel="Confirm"
-                consequence={PUBLISH_CONSEQUENCE}
+                consequence={COMING_SOON_CONSEQUENCE}
                 successMessage="Product updated"
-                disabledReason={p.publishBlockers[0]}
-                onConfirm={({ reason }) => changeStatus("publish", reason)}
+                disabledReason={p.comingSoonBlockers[0]}
+                onConfirm={({ reason }) => changeStatus("coming-soon", reason)}
               />
             )}
             <AdminAction
@@ -228,7 +279,7 @@ export function ProductDrawer({ id, open, onOpenChange, options, onChanged }: Dr
               icon="open_in_new"
               href={`/software/${encodeURIComponent(p.id)}`}
               newTab
-              disabledReason={published ? undefined : "Not on the storefront until it\u2019s published"}
+              disabledReason={listed ? undefined : "Not on the storefront until it\u2019s published or marked coming soon"}
             >
               View on site
             </AdminAction>

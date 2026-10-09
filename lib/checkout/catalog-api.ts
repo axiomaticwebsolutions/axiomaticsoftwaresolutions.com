@@ -1,6 +1,7 @@
 /**
  * Public catalog API views (docs/api-contracts.md section 2): thin, read-only mappings over lib/storefront/data so the
- * JSON matches what the storefront pages render. Only PUBLISHED products, live plans and published releases/FAQs.
+ * JSON matches what the storefront pages render. Only listed products (PUBLISHED, and COMING_SOON ones with no plans
+ * or releases in the catalog and product routes; compare is PUBLISHED only), live plans and published releases/FAQs.
  */
 import type { CatalogItem } from "@/lib/storefront/catalog-filter";
 import { latestRelease } from "@/lib/storefront/derive";

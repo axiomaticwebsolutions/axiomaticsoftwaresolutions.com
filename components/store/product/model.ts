@@ -36,6 +36,12 @@ export function productSections(product: SectionSource, faqCount: number): Produ
   return PRODUCT_SECTIONS.filter((s) => has[s.id]).map((s) => ({ id: s.id, label: s.label }));
 }
 
+/** Sections of a coming-soon page: features, requirements and FAQs when present (no plans, installation, releases or policy). */
+export function comingSoonSections(product: SectionSource, faqCount: number): ProductNavSection[] {
+  const kept: ReadonlySet<ProductSectionId> = new Set<ProductSectionId>(["features", "requirements", "faqs"]);
+  return productSections(product, faqCount).filter((s) => kept.has(s.id));
+}
+
 /** Hero chip: "15-day free trial". */
 export function trialChipLabel(plan: Pick<StorePlan, "trialDays">): string {
   return `${plan.trialDays ?? 0}-day free trial`;

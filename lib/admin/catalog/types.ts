@@ -7,7 +7,8 @@ export type CatalogTone = "sage" | "peach" | "blue" | "lavender" | "pink";
 export type CatalogPlatform = "windows" | "macos" | "android";
 export type PlanTypeKey = "TRIAL" | "ONE_TIME" | "ANNUAL" | "SUBSCRIPTION" | "DEVICE_ADDON" | "MAINTENANCE";
 export type BillingIntervalKey = "MONTH" | "YEAR";
-export type ProductStatusKey = "DRAFT" | "PUBLISHED" | "HIDDEN";
+/** COMING_SOON: listed on the storefront with a waitlist form, never sold (lib/catalog/status.ts). */
+export type ProductStatusKey = "DRAFT" | "PUBLISHED" | "HIDDEN" | "COMING_SOON";
 export type ReleaseRawStatus = "DRAFT" | "PUBLISHED" | "WITHDRAWN";
 /** Release status as the list shows it: "latest" = the newest published stable release of its product. */
 export type ReleaseStatusKey = "latest" | "published" | "draft" | "withdrawn";
@@ -22,9 +23,10 @@ export type AdminCategoryRow = {
   tone: CatalogTone;
   icon: string;
   sortOrder: number;
-  /** Products in the category (any status) and how many of them are published. */
+  /** Products in the category (any status), how many of them are published and how many are coming soon. */
   productCount: number;
   publishedCount: number;
+  comingSoonCount: number;
 };
 
 export type AdminProductRow = {
@@ -81,6 +83,10 @@ export type AdminProductDetail = AdminProductRow & {
   plans: AdminProductPlanSummary[];
   /** What publishing still needs ([] when it can be published). */
   publishBlockers: string[];
+  /** What marking it "Coming soon" still needs ([] when it can be; only DRAFT and HIDDEN products can be). */
+  comingSoonBlockers: string[];
+  /** Launch waitlist sign-ups (WAITLIST leads) for the product. */
+  waitlistCount: number;
   createdAt: string;
 };
 

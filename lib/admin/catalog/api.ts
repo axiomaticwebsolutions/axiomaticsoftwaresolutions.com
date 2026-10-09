@@ -78,7 +78,7 @@ export function filtersDetail(query: { q: string; filters: Record<string, string
   return parts.length > 0 ? parts.join(" \u00B7 ") : null;
 }
 
-const STATUS_WORDS: Record<string, string> = { PUBLISHED: "Published", HIDDEN: "Hidden", DRAFT: "Draft" };
+const STATUS_WORDS: Record<string, string> = { PUBLISHED: "Published", COMING_SOON: "Coming soon", HIDDEN: "Hidden", DRAFT: "Draft" };
 
 export const PRODUCT_CSV_COLUMNS: readonly CsvColumn<AdminProductRow>[] = [
   { header: "Product", value: (r) => r.name },

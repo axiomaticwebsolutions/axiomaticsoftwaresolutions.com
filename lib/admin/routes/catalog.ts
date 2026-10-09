@@ -17,6 +17,7 @@ export const ROUTES: readonly AdminRouteSpec[] = [
   { method: "GET", path: "/api/admin/products/[id]", perm: null },
   { method: "PATCH", path: "/api/admin/products/[id]", perm: "products.manage" },
   { method: "POST", path: "/api/admin/products/[id]/publish", perm: "products.manage" },
+  { method: "POST", path: "/api/admin/products/[id]/coming-soon", perm: "products.manage" },
   { method: "POST", path: "/api/admin/products/[id]/hide", perm: "products.manage" },
   // Categories
   { method: "GET", path: "/api/admin/categories", perm: null },

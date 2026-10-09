@@ -80,6 +80,7 @@ export const STATUS_META = {
   },
   product: {
     published: { label: "Published", tone: "sage" },
+    coming_soon: { label: "Coming soon", tone: "lavender" },
     hidden: { label: "Hidden", tone: "slate" },
     draft: { label: "Draft", tone: "peach" },
   },

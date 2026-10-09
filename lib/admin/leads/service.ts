@@ -66,6 +66,7 @@ export function toLeadDto(lead: Lead, productNames: Readonly<Record<string, stri
     phone: formatLeadPhone(lead.phone),
     productId: lead.productId,
     productName: lead.productId ? (productNames[lead.productId] ?? lead.productId) : lead.kind === "DEMO" ? "Not sure yet" : null,
+    // WAITLIST leads always carry the product they wait for.
     countersLabel: labelOf(LEAD_COUNTER_LABELS, lead.countersBand),
     preferredLabel: preferredLabel(lead),
     topicLabel: labelOf(LEAD_TOPIC_LABELS, lead.topic),

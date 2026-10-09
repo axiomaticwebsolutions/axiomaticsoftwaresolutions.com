@@ -1,6 +1,7 @@
 /**
  * POST /api/admin/products/:id/hide (products.manage) { reason } -> { product }. Destructive rule products.hide:
- * reason required (422 reason_required), one audit row in the same transaction.
+ * reason required (422 reason_required), one audit row in the same transaction. From PUBLISHED or COMING_SOON
+ * (409 not_published otherwise).
  */
 import { setProductStatus } from "@/lib/admin/catalog/products";
 import { destructiveBodySchema } from "@/lib/admin/destructive";

@@ -1,7 +1,7 @@
 /**
  * GET /api/catalog/compare?ids=a,b,c: up to 3 PUBLISHED products side by side with their live plans and latest
  * release (api-contracts section 2). Ids are normalised like /compare (valid slugs, deduplicated, first 3 kept);
- * unknown or unpublished ids are dropped. 200 { ids, products }. Public and cacheable.
+ * unknown, unpublished and coming-soon ids are dropped. 200 { ids, products }. Public and cacheable.
  */
 import { CATALOG_CACHE_CONTROL, toCompareProduct } from "@/lib/checkout/catalog-api";
 import { parseCompareParam } from "@/lib/compare/store";

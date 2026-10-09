@@ -7,7 +7,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { PLATFORM_ICONS, PLATFORM_LABELS, productHref, startingPlan, unitLabel } from "@/lib/storefront/derive";
 import type { StoreFaq, StoreProduct } from "@/lib/storefront/types";
 import { cn } from "@/lib/utils";
-import { INSTALL_GUIDE_HREF, PRODUCT_COPY, type InstallStep, type PolicyCard } from "./copy";
+import { COMING_SOON_COPY, INSTALL_GUIDE_HREF, PRODUCT_COPY, type InstallStep, type PolicyCard } from "./copy";
 import { ProductSection } from "./product-section";
 import { PRODUCT_TONES } from "./tones";
 
@@ -15,12 +15,15 @@ import { PRODUCT_TONES } from "./tones";
 const H2 = "leading-[normal]";
 const GRID_2 = "grid grid-cols-[repeat(auto-fit,minmax(min(100%,380px),1fr))] gap-8";
 
+/** A coming-soon product's page says "Planned features" and "What it will do for your business". */
 export function FeaturesSection({ product }: { product: StoreProduct }) {
   const t = PRODUCT_TONES[product.tone];
   const { features, benefits } = product.content;
+  const title = product.comingSoon ? COMING_SOON_COPY.featuresTitle : PRODUCT_COPY.featuresTitle;
+  const benefitsTitle = product.comingSoon ? COMING_SOON_COPY.benefitsTitle : PRODUCT_COPY.benefitsTitle;
   return (
     <ProductSection id="features" labelledBy="features-title" divider={false}>
-      <SectionHeading id="features-title" title={PRODUCT_COPY.featuresTitle} titleClassName={H2} />
+      <SectionHeading id="features-title" title={title} titleClassName={H2} />
       <ul className="m-0 mt-7 grid list-none grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))] gap-4 p-0">
         {features.map((f) => (
           <li key={f.title} className="rounded-20 border border-line bg-surface p-6">
@@ -39,7 +42,7 @@ export function FeaturesSection({ product }: { product: StoreProduct }) {
             t.bg,
           )}
         >
-          <h3 className="m-0 text-[22px] font-extrabold tracking-[-0.02em]">{PRODUCT_COPY.benefitsTitle}</h3>
+          <h3 className="m-0 text-[22px] font-extrabold tracking-[-0.02em]">{benefitsTitle}</h3>
           <ul className="contents">
             {benefits.map((b) => (
               <li key={b.title} className="list-none">
@@ -59,7 +62,11 @@ export function RequirementsSection({ product }: { product: StoreProduct }) {
   return (
     <ProductSection id="requirements" labelledBy="requirements-title" className={GRID_2}>
       <div>
-        <SectionHeading id="requirements-title" title={PRODUCT_COPY.requirementsTitle} titleClassName={H2} />
+        <SectionHeading
+          id="requirements-title"
+          title={product.comingSoon ? COMING_SOON_COPY.requirementsTitle : PRODUCT_COPY.requirementsTitle}
+          titleClassName={H2}
+        />
         {product.platforms.length > 0 ? (
           <ul className="m-0 mt-3.5 flex list-none flex-wrap gap-2 p-0">
             {product.platforms.map((p) => (
@@ -193,7 +200,9 @@ export function RelatedSection({ products, ratePct }: { products: readonly Store
                 </span>
                 <span className="flex-1">
                   <span className="block font-extrabold">{r.name}</span>
-                  {from ? (
+                  {r.comingSoon ? (
+                    <span className="mt-[3px] block text-[14px] font-semibold text-lavender-fg">{` ${PRODUCT_COPY.relatedComingSoon}`}</span>
+                  ) : from ? (
                     <span className="mt-[3px] block text-[14px] text-ink-2">
                       {/* Spaces inside the text nodes: Chrome drops whitespace-only nodes from the link's name. */}
                       {`${PRODUCT_COPY.from} `}

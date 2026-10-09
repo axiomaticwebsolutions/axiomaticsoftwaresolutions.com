@@ -33,11 +33,13 @@ const CSRF_SECRET = "test-csrf-secret-0123456789abcdef0123456789";
 const APP_URL = "http://localhost:3000";
 
 const mocks = vi.hoisted(() => ({
-  products: [] as Array<{ id: string; demoEnabled: boolean }>,
+  products: [] as Array<{ id: string; name?: string; demoEnabled: boolean }>,
+  comingSoon: [] as Array<{ id: string; name: string; demoEnabled: boolean }>,
   productsError: null as Error | null,
   hit: vi.fn(),
   transaction: vi.fn(),
   createLead: vi.fn(),
+  createWaitlistLead: vi.fn(),
   auth: vi.fn(),
 }));
 
@@ -51,6 +53,7 @@ vi.mock("@/lib/storefront/data", () => ({
     if (mocks.productsError) throw mocks.productsError;
     return mocks.products;
   },
+  getComingSoonProducts: async () => mocks.comingSoon,
   getStoreSettings: async () => ({ business: { salesEmail: "sales@axiomatic.example" } }),
 }));
 vi.mock("@/lib/db", () => ({ db: { $transaction: mocks.transaction } }));
@@ -61,6 +64,7 @@ vi.mock("@/lib/auth/rate-limit", async (importOriginal) => ({
 vi.mock("@/lib/leads", async (importOriginal) => ({
   ...(await importOriginal<typeof LeadsModule>()),
   createLead: mocks.createLead,
+  createWaitlistLead: mocks.createWaitlistLead,
 }));
 
 // ---------- Schema ----------
@@ -344,7 +348,9 @@ describe("POST /api/contact", () => {
       { id: "medical-billing", demoEnabled: true },
       { id: "cheque-printing", demoEnabled: false },
     ];
+    mocks.comingSoon = [{ id: "payroll", name: "Payroll & Attendance Software", demoEnabled: false }];
     mocks.productsError = null;
+    mocks.createWaitlistLead.mockReset().mockResolvedValue({ lead: { id: "WAIT-1001" }, created: true });
     mocks.auth.mockReset().mockResolvedValue(null);
     mocks.hit.mockReset().mockResolvedValue({ allowed: true, count: 1, limit: 5, remaining: 4, retryAfterSec: 0, resetAt: new Date() });
     mocks.transaction.mockReset().mockImplementation(async (fn: (tx: unknown) => unknown) => fn({}));
@@ -429,5 +435,70 @@ describe("POST /api/contact", () => {
   it("answers 503 when the catalog cannot be read", async () => {
     mocks.productsError = new Error("catalog down");
     expect((await post(demoBody())).status).toBe(503);
+  });
+
+  const waitlistBody = (patch: Record<string, unknown> = {}) => ({
+    kind: "waitlist",
+    name: "Asha Rao",
+    email: "Asha@Example.com",
+    phone: "",
+    businessName: "Rao Traders",
+    product: "payroll",
+    website: "",
+    source: "product:payroll",
+    ...patch,
+  });
+
+  it("stores a waitlist sign-up for a coming-soon product and answers { ok: true } without a reference", async () => {
+    const res = await post(waitlistBody());
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ ok: true });
+    expect(mocks.hit).toHaveBeenCalledOnce();
+    expect(mocks.createLead).not.toHaveBeenCalled();
+    expect(mocks.createWaitlistLead).toHaveBeenCalledWith(
+      {},
+      expect.objectContaining({
+        kind: "WAITLIST",
+        productId: "payroll",
+        email: "asha@example.com",
+        phone: null,
+        businessName: "Rao Traders",
+        ipPrefix: "103.21.44.x",
+        notify: { salesEmail: "sales@axiomatic.example", productName: "Payroll & Attendance Software" },
+      }),
+    );
+    expect(logLines.join("\n")).not.toMatch(/asha|Rao/i);
+  });
+
+  it("answers a repeated sign-up exactly like a new one (no enumeration)", async () => {
+    const first = await post(waitlistBody());
+    mocks.createWaitlistLead.mockResolvedValue({ lead: { id: "WAIT-1001" }, created: false });
+    const again = await post(waitlistBody());
+    expect(again.status).toBe(first.status);
+    expect(again.json).toEqual(first.json);
+    expect(logLines.join("\n")).toContain("lead_waitlist_repeat");
+  });
+
+  it("refuses a waitlist sign-up for a product that is not coming soon", async () => {
+    for (const product of ["medical-billing", "nope", ""]) {
+      const res = await post(waitlistBody({ product }));
+      expect(res.status, product).toBe(422);
+      expect(res.json.error?.fieldErrors).toEqual({ product: [LEAD_ERRORS.waitlistProduct] });
+    }
+    mocks.comingSoon = [];
+    expect((await post(waitlistBody())).status).toBe(422);
+    expect(mocks.createWaitlistLead).not.toHaveBeenCalled();
+  });
+
+  it("applies the CSRF check, the honeypot and the per-IP rate limit to waitlist sign-ups too", async () => {
+    expect((await post(waitlistBody(), { csrf: false })).status).toBe(403);
+    const trap = await post(waitlistBody({ website: "https://spam.example" }));
+    expect(trap.status).toBe(200);
+    expect(trap.json).toEqual({ ok: true });
+    expect(mocks.hit).not.toHaveBeenCalled();
+    mocks.hit.mockResolvedValue({ allowed: false, count: 6, limit: 5, remaining: 0, retryAfterSec: 60, resetAt: new Date() });
+    const limited = await post(waitlistBody());
+    expect(limited.status).toBe(429);
+    expect(mocks.createWaitlistLead).not.toHaveBeenCalled();
   });
 });

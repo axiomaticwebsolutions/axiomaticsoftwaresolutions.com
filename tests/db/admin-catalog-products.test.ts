@@ -1,7 +1,7 @@
 /**
  * Admin Products & categories API (decisions.md Phase 6): create (DRAFT), listing and content edits, code lock once
- * licenses exist, publish / hide (reason, blockers, exactly one audit row), category CRUD, list filters, CSV export
- * (reports.export, audited) and storefront revalidation.
+ * licenses exist, publish / hide / mark coming soon (reason, blockers, exactly one audit row), category CRUD, list
+ * filters, CSV export (reports.export, audited) and storefront revalidation.
  */
 import type * as NextCache from "next/cache";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,10 +11,11 @@ import * as productsRoute from "@/app/api/admin/products/route";
 import * as productRoute from "@/app/api/admin/products/[id]/route";
 import * as publishRoute from "@/app/api/admin/products/[id]/publish/route";
 import * as hideRoute from "@/app/api/admin/products/[id]/hide/route";
+import * as comingSoonRoute from "@/app/api/admin/products/[id]/coming-soon/route";
 import * as exportRoute from "@/app/api/admin/products/export.csv/route";
 import { db } from "@/lib/db";
 import { callRoute, errorCodeOf, makeAdminCallers, type AdminCallers } from "../support/admin-fixtures";
-import { auditRows, makeCategory, makePlan, makeProduct, makeRelease, tag, VALID_CONTENT } from "./admin-catalog-fixtures";
+import { auditRows, makeCategory, makeLicenseRow, makePlan, makeProduct, makeRelease, tag, VALID_CONTENT } from "./admin-catalog-fixtures";
 
 const jar = vi.hoisted(() => new Map<string, string>());
 const revalidateTag = vi.hoisted(() => vi.fn());
@@ -374,5 +375,115 @@ describe("list and export", () => {
     const csv = await res.text();
     expect(csv).toContain("License prefix");
     expect(await db.auditLog.count({ where: { action: "Exported report", target: "Products" } })).toBe(before + 1);
+  });
+});
+
+describe("coming soon", () => {
+  const post = (route: typeof comingSoonRoute.POST, action: string, id: string, reason: string | undefined, session: AdminCallers["OWNER"]) =>
+    callRoute(jar, route, { method: "POST", path: `/api/admin/products/${id}/${action}`, params: { id }, body: reason === undefined ? {} : { reason }, session });
+
+  it("marks a draft coming soon once its page copy is ready (no plans or releases needed), with one audit row", async () => {
+    const product = await makeProduct();
+    const detail = async () =>
+      (await body(await callRoute(jar, productRoute.GET, { path: `/api/admin/products/${product.id}`, params: { id: product.id }, session: callers.OWNER })))
+        .product as Json;
+    expect((await detail()).comingSoonBlockers).toEqual(["Add at least one feature to the product page content."]);
+
+    expect(await errorCodeOf(await post(comingSoonRoute.POST, "coming-soon", product.id, undefined, callers.OWNER))).toBe("reason_required");
+    expect((await post(comingSoonRoute.POST, "coming-soon", product.id, "Announce it", callers.FINANCE)).status).toBe(403);
+    const blocked = await post(comingSoonRoute.POST, "coming-soon", product.id, "Announce it", callers.OWNER);
+    expect(blocked.status).toBe(409);
+    expect(((await body(blocked)).error as Json).code).toBe("not_ready");
+    expect(await auditRows(product.id)).toHaveLength(0);
+
+    await db.product.update({ where: { id: product.id }, data: { content: VALID_CONTENT } });
+    const marked = await post(comingSoonRoute.POST, "coming-soon", product.id, "Announce it", callers.ADMIN);
+    expect(marked.status).toBe(200);
+    const shown = (await body(marked)).product as Json;
+    expect(shown).toMatchObject({ status: "COMING_SOON", comingSoonBlockers: [], waitlistCount: 0, planCount: 0 });
+    expect(shown.publishBlockers).toEqual(["Put at least one plan on sale (not an add-on or maintenance plan).", "Publish a stable release with an installer."]);
+    expect(revalidateTag).toHaveBeenCalledWith("catalog");
+    expect((await auditRows(product.id)).map((r) => [r.action, r.reason, r.detail])).toEqual([["Marked product coming soon", "Announce it", "Draft \u2192 Coming soon"]]);
+    expect(await errorCodeOf(await post(comingSoonRoute.POST, "coming-soon", product.id, "Again", callers.ADMIN))).toBe("already_coming_soon");
+
+    // Publishing it later still needs a plan on sale and a published release.
+    const notReady = await post(publishRoute.POST, "publish", product.id, "Launch", callers.OWNER);
+    expect(notReady.status).toBe(409);
+    expect(((await body(notReady)).error as Json).blockers).toHaveLength(2);
+    await makePlan(product.id);
+    await makeRelease(product.id, { status: "PUBLISHED", withFile: true });
+    const launched = await post(publishRoute.POST, "publish", product.id, "Launch", callers.OWNER);
+    expect(launched.status).toBe(200);
+    expect((await auditRows(product.id)).at(-1)?.detail).toBe("Coming soon \u2192 Published");
+    expect(await errorCodeOf(await post(comingSoonRoute.POST, "coming-soon", product.id, "Back", callers.OWNER))).toBe("published");
+  });
+
+  it("hides a coming-soon product, and never marks a product with licenses coming soon", async () => {
+    const product = await makeProduct({ status: "COMING_SOON", content: VALID_CONTENT });
+    const hidden = await post(hideRoute.POST, "hide", product.id, "Not this year", callers.OWNER);
+    expect(hidden.status).toBe(200);
+    expect(((await body(hidden)).product as Json).status).toBe("HIDDEN");
+    expect((await auditRows(product.id)).at(-1)?.detail).toBe("Coming soon \u2192 Hidden");
+
+    const plan = await makePlan(product.id);
+    await makeLicenseRow(product.id, plan.id, null);
+    const refused = await post(comingSoonRoute.POST, "coming-soon", product.id, "Again", callers.OWNER);
+    expect(refused.status).toBe(409);
+    expect(String(((await body(refused)).error as Json).message)).toContain("Customers already have licenses");
+    expect((await db.product.findUniqueOrThrow({ where: { id: product.id } })).status).toBe("HIDDEN");
+  });
+
+  it("never marks a product with orders coming soon, even an unpaid one without licenses", async () => {
+    const product = await makeProduct({ status: "HIDDEN", content: VALID_CONTENT });
+    const plan = await makePlan(product.id);
+    const orderId = `AX-CS${tag().toUpperCase()}`;
+    await db.order.create({
+      data: {
+        id: orderId,
+        email: `coming-soon.${tag()}@example.test`,
+        billing: { name: "Pending Buyer", state: "Maharashtra" },
+        status: "PENDING",
+        subtotalPaise: 100_000,
+        taxablePaise: 100_000,
+        cgstPaise: 9_000,
+        sgstPaise: 9_000,
+        totalPaise: 118_000,
+        placeOfSupply: "Maharashtra",
+        items: { create: [{ planId: plan.id, unitPricePaise: 100_000, taxablePaise: 100_000, taxPaise: 18_000 }] },
+      },
+    });
+    try {
+      const refused = await post(comingSoonRoute.POST, "coming-soon", product.id, "Announce it", callers.OWNER);
+      expect(refused.status).toBe(409);
+      const error = (await body(refused)).error as Json;
+      expect(error.code).toBe("not_ready");
+      expect(String(error.message)).toContain("Orders exist for this product");
+      expect((await db.product.findUniqueOrThrow({ where: { id: product.id } })).status).toBe("HIDDEN");
+      expect(await auditRows(product.id)).toHaveLength(0);
+    } finally {
+      await db.order.delete({ where: { id: orderId } });
+    }
+  });
+
+  it("shows the waitlist count, filters by status, counts per category and exports the status", async () => {
+    const category = await makeCategory();
+    const soon = await makeProduct({ categoryId: category.id, status: "COMING_SOON", content: VALID_CONTENT });
+    await makeProduct({ categoryId: category.id, status: "PUBLISHED" });
+    for (const [i, email] of ["a@example.com", "b@example.com"].entries()) {
+      await db.lead.create({ data: { id: `WAIT-T${tag()}${i}`, kind: "WAITLIST", name: "Visitor", email, productId: soon.id } });
+    }
+    await db.lead.create({ data: { id: `DEMO-T${tag()}`, kind: "DEMO", name: "Visitor", email: "c@example.com", productId: soon.id } });
+    const detail = await callRoute(jar, productRoute.GET, { path: `/api/admin/products/${soon.id}`, params: { id: soon.id }, session: callers.SUPPORT });
+    expect(((await body(detail)).product as Json).waitlistCount).toBe(2);
+
+    const list = await callRoute(jar, productsRoute.GET, { path: `/api/admin/products?filter[category]=${category.id}&filter[status]=coming_soon`, session: callers.SUPPORT });
+    expect(((await body(list)).items as Json[]).map((p) => [p.id, p.status, p.fromPricePaise])).toEqual([[soon.id, "COMING_SOON", null]]);
+
+    const categories = await callRoute(jar, categoriesRoute.GET, { path: "/api/admin/categories", session: callers.SUPPORT });
+    const row = ((await body(categories)).items as Json[]).find((c) => c.id === category.id);
+    expect(row).toMatchObject({ productCount: 2, publishedCount: 1, comingSoonCount: 1 });
+
+    const csv = await callRoute(jar, exportRoute.GET, { path: `/api/admin/products/export.csv?filter[category]=${category.id}&filter[status]=coming_soon`, session: callers.OWNER });
+    expect(await csv.text()).toContain("Coming soon");
   });
 });

@@ -53,6 +53,8 @@ function isPendingRoute(url) {
 const FIXED_ROUTES = [
   { path: "/" },
   { path: "/software" },
+  // 2026-10-09: the coming-soon view of the catalog (coming-soon product pages come from the sitemap).
+  { path: "/software?availability=coming-soon", expectText: "Coming soon" },
   { path: "/software/unknown", status: 404 },
   { path: "/compare?ids=medical-billing,cheque-printing" },
   { path: "/pricing" },

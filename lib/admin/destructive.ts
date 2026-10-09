@@ -1,6 +1,7 @@
 /**
  * Destructive admin actions (DESTRUCTIVE_ACTIONS in lib/rbac.ts; decisions.md Phase 6): refund, revoke, suspend,
  * reinstate, extend, reset devices, deactivate a device, manual issue, archive/restore plans, hide/publish products,
+ * mark products coming soon,
  * delete coupons, FAQs, empty categories, draft releases and their installers, staff role changes, (de)activation,
  * revoking staff invitations, marking a customer email verified, creating a set-password link and cancelling an unpaid
  * order (admin records).
@@ -44,6 +45,7 @@ export const DESTRUCTIVE_AUDIT_ACTIONS: Record<DestructiveActionKey, string> = {
   "plans.restore": "Restored plan",
   "products.hide": "Hid product",
   "products.publish": "Published product",
+  "products.coming_soon": "Marked product coming soon",
   "categories.delete": "Deleted category",
   "releases.delete": "Deleted release draft",
   "releases.remove_installer": "Removed installer",

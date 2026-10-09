@@ -14,15 +14,29 @@ export const PLATFORMS: readonly Platform[] = ["windows", "macos", "android"];
 // The schema lives in lib so storefront and admin code never import from prisma/.
 export { productContentSchema, type ProductContent } from "@/lib/catalog/content";
 
-/** `blurb` is the category card copy from Home.dc.html. */
+/** `blurb` is the category card copy from Home.dc.html (the last three came with the coming-soon catalog). */
 export type SeedCategory = { id: string; name: string; blurb: string; tone: Tone; icon: string };
 
+/** Category.sortOrder is the position in this list. */
 export const CATEGORIES: readonly SeedCategory[] = [
   { id: "pharmacy", name: "Medical & Pharmacy", blurb: "Billing with batch and expiry tracking for chemists and medical stores.", tone: "sage", icon: "local_pharmacy" },
   { id: "restaurant", name: "Restaurants & Cafés", blurb: "Table billing, KOTs and day-end reports for food businesses.", tone: "peach", icon: "room_service" },
   { id: "retail", name: "Retail & Grocery", blurb: "GST invoicing, barcode billing and stock for general stores.", tone: "blue", icon: "shopping_basket" },
   { id: "finance", name: "Finance & Office", blurb: "Cheque printing and payment records for any business.", tone: "lavender", icon: "account_balance" },
+  // Added 2026-10-09 with the coming-soon catalog (prisma/seed-data/coming-soon.ts, additions.ts).
+  { id: "jewellery", name: "Jewellery", blurb: "Billing with daily gold rates, HUID and tags for jewellers.", tone: "pink", icon: "workspace_premium" },
+  { id: "wholesale", name: "Wholesale & Distribution", blurb: "Billing, schemes and collections for distributors, stockists and traders.", tone: "peach", icon: "warehouse" },
+  { id: "industry", name: "Manufacturing & Logistics", blurb: "Software for factories, transporters and fuel stations.", tone: "blue", icon: "factory" },
 ];
+
+/** Position of a category in CATEGORIES (Category.sortOrder). */
+export function categorySortOrder(categoryId: string): number {
+  const i = CATEGORIES.findIndex((c) => c.id === categoryId);
+  if (i < 0) throw new RangeError(`Unknown category ${categoryId}`);
+  return i;
+}
+
+export { COMING_SOON_PRODUCTS, COMING_SOON_PRODUCT_IDS, findComingSoonProduct, type SeedComingSoonProduct } from "./coming-soon";
 
 export type SeedRelease = { version: string; /** IST calendar date */ date: string; size: string; notes: string[] };
 /** `href`: optional "Read the guide" link (support FAQs), e.g. "/docs/activate". */

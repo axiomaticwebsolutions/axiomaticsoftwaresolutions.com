@@ -199,10 +199,13 @@ model Category {
   products  Product[]
 }
 
+/// COMING_SOON: listed on the storefront (catalog, product page with a "Notify me" waitlist form) but not sold:
+/// no prices, cart, checkout, trials, downloads or activation (decisions.md 2026-10-09).
 enum PublishStatus {
   DRAFT
   PUBLISHED
   HIDDEN
+  COMING_SOON
 }
 
 model Product {
@@ -744,6 +747,7 @@ model OutboxEmail {
 enum LeadKind {
   DEMO
   CONTACT
+  WAITLIST // "Notify me when it launches" on a COMING_SOON product page
 }
 
 enum LeadStatus {
@@ -755,7 +759,7 @@ enum LeadStatus {
 }
 
 model Lead {
-  id             String     @id // human id from Counter "lead": "DEMO-1001" or "MSG-1001"
+  id             String     @id // human id from Counter "lead": "DEMO-1001", "MSG-1001" or "WAIT-1001"
   kind           LeadKind
   status         LeadStatus @default(NEW)
   name           String

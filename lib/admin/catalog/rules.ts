@@ -38,6 +38,49 @@ export const PUBLISH_BLOCKERS = {
   release: "Publish a stable release with an installer.",
 } as const;
 
+export const COMING_SOON_BLOCKERS = {
+  name: "Add a product name.",
+  tagline: "Add a tagline.",
+  summary: "Add a summary.",
+  category: "Choose a category.",
+  icon: "Choose an icon.",
+  content: "Add at least one feature to the product page content.",
+  licensed: "Customers already have licenses for this product. Hide it instead: Coming soon is for products that have never been sold.",
+  ordered: "Orders exist for this product. Hide it instead: Coming soon is for products that have never been sold.",
+  status: "Only a draft or hidden product can be marked coming soon.",
+} as const;
+
+/**
+ * What marking a product "Coming soon" still needs ([] when it can be): the storefront copy (name, tagline, summary,
+ * category, icon and at least one feature), no licenses ever issued and no orders ever placed (a pending payment could
+ * still be captured and issue a license that a coming-soon product refuses to activate), and status DRAFT or HIDDEN.
+ * Plans and releases are NOT needed (publishing later still needs them: productPublishBlockers).
+ */
+export function productComingSoonBlockers(input: {
+  status: string;
+  name: string;
+  tagline: string;
+  summary: string;
+  categoryId: string;
+  icon: string;
+  contentValid: boolean;
+  hasLicenses: boolean;
+  /** Any order item for one of its plans, whatever the order status. */
+  hasOrders: boolean;
+}): string[] {
+  const out: string[] = [];
+  if (input.status !== "DRAFT" && input.status !== "HIDDEN") out.push(COMING_SOON_BLOCKERS.status);
+  if (!input.name.trim()) out.push(COMING_SOON_BLOCKERS.name);
+  if (!input.tagline.trim()) out.push(COMING_SOON_BLOCKERS.tagline);
+  if (!input.summary.trim()) out.push(COMING_SOON_BLOCKERS.summary);
+  if (!input.categoryId.trim()) out.push(COMING_SOON_BLOCKERS.category);
+  if (!input.icon.trim()) out.push(COMING_SOON_BLOCKERS.icon);
+  if (!input.contentValid) out.push(COMING_SOON_BLOCKERS.content);
+  if (input.hasLicenses) out.push(COMING_SOON_BLOCKERS.licensed);
+  else if (input.hasOrders) out.push(COMING_SOON_BLOCKERS.ordered);
+  return out;
+}
+
 /** What a product still needs before it can be published ([] when it can be). */
 export function productPublishBlockers(input: { contentValid: boolean; mainPlansOnSale: number; publishedStableReleases: number }): string[] {
   const out: string[] = [];

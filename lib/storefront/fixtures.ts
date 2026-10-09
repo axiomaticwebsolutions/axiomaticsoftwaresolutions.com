@@ -1,17 +1,20 @@
 /**
  * CATALOG_SOURCE=fixtures: the storefront view built from the SAMPLE seed data (prisma/seed-data), so pages render
  * without PostgreSQL in development and tests. Mirrors what the seed writes and prisma-source.ts reads back (same
- * ids, order and labels; every sample product is PUBLISHED). Refused in production by lib/env.ts.
+ * ids, order and labels): the 4 sample products are PUBLISHED, the coming-soon catalog (prisma/seed-data/coming-soon.ts)
+ * is COMING_SOON (no plans, releases or FAQs). Refused in production by lib/env.ts.
  * Every call returns fresh objects, so callers may not mutate shared state by accident.
  */
 import "server-only";
 import { startOfDayIST } from "@/lib/dates";
 import {
   CATEGORIES,
+  COMING_SOON_PRODUCTS,
   PLANS,
   PRODUCTS,
   parseSizeBytes,
   planSortOrder,
+  type SeedComingSoonProduct,
   type SeedFaq,
   type SeedPlan,
   type SeedProduct,
@@ -77,9 +80,21 @@ function toRelease(product: SeedProduct, r: SeedRelease): StoreRelease {
   };
 }
 
+/** Every listed product id (published and coming soon): related links point at these only. */
+const LISTED_IDS: ReadonlySet<string> = new Set([...PRODUCTS.map((p) => p.id), ...COMING_SOON_PRODUCTS.map((p) => p.id)]);
+
+function categoryOf(categoryId: string) {
+  const category = CATEGORIES.find((c) => c.id === categoryId);
+  if (!category) throw new RangeError(`Unknown category ${categoryId}`);
+  return category;
+}
+
+function byRank(a: StoreProduct, b: StoreProduct): number {
+  return a.rank - b.rank || a.name.localeCompare(b.name);
+}
+
 function toProduct(p: SeedProduct): StoreProduct {
-  const category = CATEGORIES.find((c) => c.id === p.categoryId);
-  if (!category) throw new RangeError(`Unknown category ${p.categoryId}`);
+  const category = categoryOf(p.categoryId);
   return {
     id: p.id,
     code: p.code,
@@ -92,15 +107,42 @@ function toProduct(p: SeedProduct): StoreProduct {
     category: { id: category.id, name: category.name, tone: category.tone, icon: category.icon },
     platforms: canonicalPlatforms(p.platforms),
     demoEnabled: p.demoEnabled,
+    comingSoon: false,
     rank: p.rank,
     content: structuredClone(p.content),
-    relatedIds: p.relatedIds.filter((id) => PRODUCTS.some((x) => x.id === id)),
+    relatedIds: p.relatedIds.filter((id) => LISTED_IDS.has(id)),
     createdAt: startOfDayIST(p.added).toISOString(),
     plans: PLANS.filter((plan) => plan.productId === p.id)
       .map(toPlan)
       .sort((a, b) => a.sortOrder - b.sortOrder),
     releases: p.releases.map((r) => toRelease(p, r)).sort((a, b) => b.releasedAt.localeCompare(a.releasedAt)),
     faqs: toFaqs(p.id, p.faqs),
+  };
+}
+
+/** A coming-soon product as the database source maps it: the category's tone, no plans, releases or FAQs. */
+function toComingSoonProduct(p: SeedComingSoonProduct): StoreProduct {
+  const category = categoryOf(p.categoryId);
+  return {
+    id: p.id,
+    code: p.code,
+    name: p.name,
+    shortName: p.shortName,
+    tagline: p.tagline,
+    summary: p.summary,
+    icon: p.icon,
+    tone: category.tone,
+    category: { id: category.id, name: category.name, tone: category.tone, icon: category.icon },
+    platforms: canonicalPlatforms(p.platforms),
+    demoEnabled: false,
+    comingSoon: true,
+    rank: p.rank,
+    content: structuredClone(p.content),
+    relatedIds: p.relatedIds.filter((id) => id !== p.id && LISTED_IDS.has(id)),
+    createdAt: startOfDayIST(p.added).toISOString(),
+    plans: [],
+    releases: [],
+    faqs: [],
   };
 }
 
@@ -117,17 +159,30 @@ export function fixtureCategories(): StoreCategory[] {
     icon: c.icon,
     sortOrder: i,
     productCount: PRODUCTS.filter((p) => p.categoryId === c.id).length,
+    comingSoonCount: COMING_SOON_PRODUCTS.filter((p) => p.categoryId === c.id).length,
   }));
 }
 
-/** Every sample product (all PUBLISHED), by rank then name. */
+/** The PUBLISHED sample products (the ones that are sold), by rank then name. */
 export function fixtureProducts(): StoreProduct[] {
-  return PRODUCTS.map(toProduct).sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
+  return PRODUCTS.map(toProduct).sort(byRank);
 }
 
+/** The COMING_SOON products, by rank then name. */
+export function fixtureComingSoonProducts(): StoreProduct[] {
+  return COMING_SOON_PRODUCTS.map(toComingSoonProduct).sort(byRank);
+}
+
+/** One PUBLISHED sample product, or null (coming-soon and unknown slugs). */
 export function fixtureProduct(slug: string): StoreProduct | null {
   const found = PRODUCTS.find((p) => p.id === slug);
   return found ? toProduct(found) : null;
+}
+
+/** One listed product, published or coming soon, or null. */
+export function fixtureCatalogProduct(slug: string): StoreProduct | null {
+  const coming = COMING_SOON_PRODUCTS.find((p) => p.id === slug);
+  return coming ? toComingSoonProduct(coming) : fixtureProduct(slug);
 }
 
 /** FAQs for "home", "pricing", "support" or a product slug; [] for anything else. */

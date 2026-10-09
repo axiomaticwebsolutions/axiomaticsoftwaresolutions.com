@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type * as EnvModule from "@/lib/env";
 import sitemap from "@/app/sitemap";
 import { ROBOTS_DISALLOW } from "@/lib/seo/metadata";
-import { fixtureProducts } from "@/lib/storefront/fixtures";
+import { fixtureComingSoonProducts, fixtureProducts } from "@/lib/storefront/fixtures";
 
 // The storefront data layer reads CATALOG_SOURCE through getEnv(): serve the fixtures (no database needed).
 vi.mock("@/lib/env", async (importOriginal) => ({
@@ -24,7 +24,7 @@ afterAll(() => {
 });
 
 describe("sitemap.xml", () => {
-  it("lists the public pages, published products, docs guides and legal documents as absolute URLs", async () => {
+  it("lists the public pages, published and coming-soon products, docs guides and legal documents as absolute URLs", async () => {
     const entries = await sitemap();
     expect(entries.map((e) => e.url)).toEqual([
       `${ORIGIN}/`,
@@ -33,6 +33,7 @@ describe("sitemap.xml", () => {
       `${ORIGIN}/software/restaurant-billing`,
       `${ORIGIN}/software/general-store-gst`,
       `${ORIGIN}/software/cheque-printing`,
+      ...fixtureComingSoonProducts().map((p) => `${ORIGIN}/software/${p.id}`),
       `${ORIGIN}/pricing`,
       `${ORIGIN}/about`,
       `${ORIGIN}/contact`,
@@ -58,6 +59,11 @@ describe("sitemap.xml", () => {
     for (const product of fixtureProducts()) {
       const entry = entries.find((e) => e.url === `${ORIGIN}/software/${product.id}`);
       expect(entry?.lastModified).toBe(product.releases[0]?.releasedAt);
+    }
+    // Coming-soon products have no release yet, so no lastModified.
+    for (const product of fixtureComingSoonProducts()) {
+      const entry = entries.find((e) => e.url === `${ORIGIN}/software/${product.id}`);
+      expect(entry).toEqual({ url: `${ORIGIN}/software/${product.id}` });
     }
     // Medical Store Billing 4.2.1 was released on 15 Sep 2026 (IST).
     expect(entries.find((e) => e.url.endsWith("/software/medical-billing"))?.lastModified).toBe("2026-09-14T18:30:00.000Z");
