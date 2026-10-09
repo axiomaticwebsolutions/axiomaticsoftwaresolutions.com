@@ -9,10 +9,11 @@
  *            at 360px): the skip link comes first and moves focus into <main>; every stop has a visible focus
  *            indicator (outline or box-shadow), is not covered by a sticky header, tray or overlay (WCAG 2.4.7, 2.4.11)
  *            and is never hidden or off screen.
- *   store    Widgets: Software menu (arrows, Escape returns focus), mobile menu and catalog filters drawers at 360px
- *            (focus moves in, Tab is trapped, Escape closes and focus returns), product tabs, the add-to-cart toast
- *            (polite live region; Alt+T reaches it and pauses its timer), the cart, and the checkout error summary
- *            (focused; fields carry aria-invalid and a described message). axe runs in each open state.
+ *   store    Widgets: Software menu at 1024 and 1280px (inside the viewport, coming-soon links named "..., coming
+ *            soon", arrows, Escape returns focus), mobile menu (a "Coming soon" category expanded) and catalog filters
+ *            drawers at 360px (focus moves in, Tab is trapped, Escape closes and focus returns), product tabs, the
+ *            add-to-cart toast (polite live region; Alt+T reaches it and pauses its timer), the cart, and the checkout
+ *            error summary (focused; fields carry aria-invalid and a described message). axe runs in each open state.
  *   auth     Sign-in, register and forgot-password error states (summary focus, aria-invalid/aria-describedby), a
  *            refused password (alert banner, focus kept), and the two-step code step (focus on the labelled numeric
  *            one-time-code field) for a staff sign-in that is never completed. Two-step is opt-in, so the seeded
@@ -443,7 +444,40 @@ async function modalCheck(page, label, trigger, { axeLabel = label, afterOpen } 
   return true;
 }
 
+/**
+ * The open Software menu (design C, decisions.md 2026-10-09): it stays inside the viewport and the page does not
+ * scroll sideways, and every link of its "Coming soon" directory is named "<product>, coming soon".
+ */
+async function softwareMenuChecks(page, label) {
+  const facts = await page.evaluate(() => {
+    const t = [...document.querySelectorAll("header button[aria-controls]")].find((b) => b.textContent?.includes("Software"));
+    const menu = t && document.getElementById(t.getAttribute("aria-controls") ?? "");
+    if (!menu || menu.hidden) return null;
+    const r = menu.getBoundingClientRect();
+    const doc = document.documentElement;
+    return { left: Math.round(r.left), right: Math.round(r.right), bottom: Math.round(r.bottom), vw: doc.clientWidth, vh: window.innerHeight, overflow: doc.scrollWidth - doc.clientWidth };
+  });
+  if (!check(facts, `${label}: the menu is open`)) return;
+  const inside = facts.left >= 0 && facts.right <= facts.vw && facts.bottom <= facts.vh && facts.overflow <= 0;
+  check(inside, `${label}: the menu stays inside the viewport (no sideways scroll)`, JSON.stringify(facts));
+  const soon = page.getByRole("group", { name: "Coming soon", exact: true });
+  const all = await soon.locator("a[href^='/software/']").count();
+  const named = await soon.getByRole("link", { name: /, coming soon$/ }).count();
+  check(all > 0, `${label}: the "Coming soon" directory lists coming-soon products`, all);
+  check(named === all, `${label}: every coming-soon link's name ends with "coming soon"`, `${named} of ${all}`);
+}
+
 async function scenarioStore() {
+  // Software menu (1024): the panel moves left to stay inside the window.
+  const narrow = await open({ width: 1024, height: 768 });
+  await go(narrow.page, "/pricing");
+  await hydrated(narrow.page, "#site-header");
+  await narrow.page.locator("header button[aria-controls]", { hasText: "Software" }).first().click();
+  await sleep(300);
+  await softwareMenuChecks(narrow.page, "Software menu @1024");
+  await axe(narrow.page, "Software menu (open, 1024)");
+  await close(narrow, "store 1024");
+
   // Software menu (1280).
   const s = await open({ width: 1280 });
   const { page } = s;
@@ -460,6 +494,7 @@ async function scenarioStore() {
     return !!menu && menu.contains(document.activeElement);
   });
   check(inMenu, "Software menu: focus moves to the first link", await focused(page));
+  await softwareMenuChecks(page, "Software menu @1280");
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("End");
   await axe(page, "Software menu (open)");
@@ -565,7 +600,24 @@ async function scenarioStore() {
   const m = await open({ width: 360, height: 780 });
   await go(m.page, "/");
   await hydrated(m.page, "#site-header");
-  await modalCheck(m.page, "mobile menu (360)", m.page.getByRole("button", { name: "Menu", exact: true }));
+  await modalCheck(m.page, "mobile menu (360)", m.page.getByRole("button", { name: "Menu", exact: true }), {
+    afterOpen: async () => {
+      // A "Coming soon" category opens from the keyboard and lists its products, each named "..., coming soon".
+      const soon = m.page.getByRole("dialog").getByRole("group", { name: "Coming soon", exact: true });
+      const category = soon.getByRole("button").first();
+      await category.focus();
+      await m.page.keyboard.press("Enter");
+      await sleep(150);
+      check((await category.getAttribute("aria-expanded")) === "true", "mobile menu (360): Enter expands a Coming soon category");
+      const named = await soon.getByRole("link", { name: /, coming soon$/ }).count();
+      check(named > 0, 'mobile menu (360): the open category lists links named "..., coming soon"', named);
+      const sideways = await m.page.evaluate(() => {
+        const nav = document.querySelector("nav[aria-label='Mobile']");
+        return nav ? nav.scrollWidth - nav.clientWidth : -1;
+      });
+      check(sideways === 0, "mobile menu (360): no sideways scroll with a category open", sideways);
+    },
+  });
   await go(m.page, "/software");
   await hydrated(m.page);
   await modalCheck(m.page, "catalog filters drawer (360)", m.page.getByRole("button", { name: /^Filters/ }));

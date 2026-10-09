@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Logo } from "@/components/brand/logo";
 import { AccountMenu } from "@/components/store/account-menu";
-import { STORE_PATHS, type NavProduct } from "@/components/store/active-nav";
+import { STORE_PATHS, type NavComingSoonGroup, type NavProduct } from "@/components/store/active-nav";
 import { CartButton } from "@/components/store/cart-button";
 import { Container } from "@/components/store/container";
 import { HeaderHeightSync, HeaderNav } from "@/components/store/header-nav";
@@ -25,8 +25,8 @@ export function defaultHeaderHeight(sampleNoticeShown: boolean): number {
 export type SiteHeaderProps = {
   /** Published products by rank, for the Software menu and the mobile panel. */
   products: readonly NavProduct[];
-  /** COMING_SOON products: the menus link to them as "N more coming soon" (0 = no link). */
-  comingSoonCount?: number;
+  /** COMING_SOON products by category, for the "Coming soon" directory of both menus ([] = no section). */
+  comingSoon?: readonly NavComingSoonGroup[];
   /** settings["content.sampleNotice"].text when enabled, else null. */
   sampleNotice: string | null;
 };
@@ -37,7 +37,7 @@ export type SiteHeaderProps = {
  * session exists) and Request a demo, or the hamburger below 960px. Strip and bar stick together. Server component;
  * the interactive parts are client islands, so pages stay static.
  */
-export function SiteHeader({ products, comingSoonCount = 0, sampleNotice }: SiteHeaderProps) {
+export function SiteHeader({ products, comingSoon, sampleNotice }: SiteHeaderProps) {
   return (
     <header id="site-header" className="sticky top-0 z-50">
       <HeaderHeightSync />
@@ -51,7 +51,7 @@ export function SiteHeader({ products, comingSoonCount = 0, sampleNotice }: Site
           >
             <Logo className="gap-[11px]" />
           </Link>
-          <HeaderNav products={products} comingSoonCount={comingSoonCount} />
+          <HeaderNav products={products} comingSoon={comingSoon} />
           <div className="ml-auto flex items-center gap-2">
             <CartButton />
             <div className="hidden items-center gap-2 nav:flex">
@@ -60,7 +60,7 @@ export function SiteHeader({ products, comingSoonCount = 0, sampleNotice }: Site
                 <Link href={demoHref()}>Request a demo</Link>
               </Button>
             </div>
-            <MobileNav products={products} comingSoonCount={comingSoonCount} sampleNotice={sampleNotice} />
+            <MobileNav products={products} comingSoon={comingSoon} sampleNotice={sampleNotice} />
           </div>
         </Container>
       </div>

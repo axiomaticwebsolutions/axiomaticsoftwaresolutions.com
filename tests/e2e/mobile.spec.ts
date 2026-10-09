@@ -1,7 +1,7 @@
 /**
- * Test plan E2E 6 at 360 px (project "mobile"): the storefront navigation menu, the catalog filters drawer, the portal
- * and admin sidebars as drawers, and data tables shown as cards. No page may scroll sideways, and every open drawer
- * passes axe (WCAG 2.0 A/AA, 2.1 AA).
+ * Test plan E2E 6 at 360 px (project "mobile"): the storefront navigation menu (with its "Coming soon" category
+ * disclosures, decisions.md 2026-10-09), the catalog filters drawer, the portal and admin sidebars as drawers, and
+ * data tables shown as cards. No page may scroll sideways, and every open drawer passes axe (WCAG 2.0 A/AA, 2.1 AA).
  */
 import type { Page } from "@playwright/test";
 import { expectNoAxeViolations } from "./support/a11y";
@@ -31,7 +31,22 @@ test("storefront: the navigation menu opens, links and closes", async ({ page, p
   await expect(menu).toBeVisible();
   const nav = menu.getByRole("navigation", { name: "Mobile" });
   await expect(nav.getByRole("link", { name: /Medical Store Billing/ })).toBeVisible();
+  // Coming soon: one collapsed disclosure per category; expanding one shows its products, each named "..., coming soon".
+  const soon = nav.getByRole("group", { name: "Coming soon", exact: true });
+  const soonLinks = soon.getByRole("link", { name: /, coming soon$/ });
+  await expect(soonLinks).toHaveCount(0);
+  const category = soon.getByRole("button", { name: /^Retail & Grocery/ });
+  await expect(category).toHaveAttribute("aria-expanded", "false");
+  await category.click();
+  await expect(category).toHaveAttribute("aria-expanded", "true");
+  await expect(soonLinks.first()).toBeVisible();
+  await expect(soon.getByRole("link", { name: /^See all coming soon/ })).toHaveAttribute("href", "/software?availability=coming-soon");
+  expect(await overflow(page)).toBeLessThanOrEqual(0);
+  expect(await nav.evaluate((el) => el.scrollWidth - el.clientWidth), "the panel does not scroll sideways").toBeLessThanOrEqual(0);
   await expectNoAxeViolations(page, "storefront menu open");
+  await category.click();
+  await expect(category).toHaveAttribute("aria-expanded", "false");
+  await expect(soonLinks).toHaveCount(0);
   await nav.getByRole("link", { name: /Browse all software/ }).click();
   await page.waitForURL((url) => url.pathname === "/software");
   await expect(menu).toBeHidden();

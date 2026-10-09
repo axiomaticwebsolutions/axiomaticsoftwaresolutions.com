@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { STATUS_META, statusMeta } from "@/components/admin/model";
 import { COMING_SOON_CATALOG_HREF as MENU_HREF } from "@/lib/storefront/catalog-filter";
-import { comingSoonLinkLabel } from "@/components/store/active-nav";
+import { SEE_ALL_COMING_SOON_LABEL, comingSoonLinkName } from "@/components/store/active-nav";
 import { toCartPlanCatalog } from "@/components/store/cart/cart-model";
 import { buildPricingMatrix } from "@/components/store/pricing/pricing-model";
 import { COMING_SOON_COPY } from "@/components/store/product/copy";
@@ -138,7 +138,8 @@ describe("catalog with coming-soon products", () => {
   it("links the header menu to the coming-soon view of the catalog", () => {
     expect(MENU_HREF).toBe("/software?availability=coming-soon");
     expect(parseCatalogParams(new URL(`https://x${MENU_HREF}`).searchParams).availability).toBe("coming-soon");
-    expect(comingSoonLinkLabel(20)).toBe("20 more coming soon");
+    expect(SEE_ALL_COMING_SOON_LABEL).toBe("See all coming soon");
+    expect(comingSoonLinkName("Payroll & Attendance")).toBe("Payroll & Attendance, coming soon");
   });
 });
 

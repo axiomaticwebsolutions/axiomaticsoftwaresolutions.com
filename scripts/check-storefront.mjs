@@ -12,7 +12,8 @@
  *
  * Every HTML route is loaded at each width and must: answer with the expected status, log no console errors or page
  * errors, have exactly one <h1> and one <main> landmark, a non-empty <title>, valid JSON-LD, no horizontal overflow at
- * widths below 768px, and no axe-core violations for WCAG 2.0 A/AA and 2.1 AA. Exit code 1 when anything fails.
+ * widths below 768px, and no axe-core violations for WCAG 2.0 A/AA and 2.1 AA. The header's Software menu is also
+ * opened at 1024 and 1280px (checkSoftwareMenu; `--only=menu` runs just that). Exit code 1 when anything fails.
  */
 import { writeFileSync } from "node:fs";
 import AxeBuilder from "@axe-core/playwright";
@@ -293,6 +294,64 @@ async function checkPage(browser, route, width) {
   }
 }
 
+/**
+ * The header's Software menu (design C, decisions.md 2026-10-09), opened at each MENU_WIDTHS width on /pricing: the
+ * panel stays inside the viewport, the page does not scroll sideways, the "Coming soon" directory lists the seeded
+ * coming-soon products and names each link "<product>, coming soon", and axe passes with the menu open.
+ */
+const MENU_LABEL = "Software menu";
+const MENU_WIDTHS = [1024, 1280];
+const MENU_CHECK = !opt.only || opt.only === "menu";
+
+async function checkSoftwareMenu(browser, width) {
+  const context = await browser.newContext({ viewport: { width, height: 900 }, deviceScaleFactor: 1, reducedMotion: "reduce", isMobile: false });
+  const page = await context.newPage();
+  const entry = { path: MENU_LABEL, width, status: null, violations: [] };
+  report.routes.push(entry);
+  try {
+    const response = await page.goto(`${BASE}/pricing`, { waitUntil: "load", timeout: 120_000 });
+    entry.status = response?.status() ?? null;
+    const selector = "#site-header nav button[aria-controls]";
+    await page.waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel);
+        return !!el && Object.keys(el).some((k) => k.startsWith("__react"));
+      },
+      selector,
+      { timeout: 60_000 },
+    );
+    const trigger = page.locator(selector, { hasText: "Software" }).first();
+    await trigger.click();
+    const menu = page.locator(`[id="${await trigger.getAttribute("aria-controls")}"]`);
+    await menu.waitFor({ state: "visible", timeout: 10_000 });
+    await page.waitForTimeout(300);
+    const facts = await menu.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const doc = document.documentElement;
+      return { left: Math.round(r.left), right: Math.round(r.right), bottom: Math.round(r.bottom), vw: doc.clientWidth, vh: window.innerHeight, overflow: doc.scrollWidth - doc.clientWidth };
+    });
+    Object.assign(entry, { menu: facts });
+    if (facts.left < 0 || facts.right > facts.vw || facts.bottom > facts.vh) {
+      fail(MENU_LABEL, width, `the open menu leaves the viewport: x ${facts.left}..${facts.right} of ${facts.vw}px, bottom ${facts.bottom} of ${facts.vh}px`);
+    }
+    if (facts.overflow > 0) fail(MENU_LABEL, width, `horizontal overflow of ${facts.overflow}px with the menu open`);
+    const soon = menu.getByRole("group", { name: "Coming soon", exact: true });
+    const all = await soon.locator("a[href^='/software/']").count();
+    const named = await soon.getByRole("link", { name: /, coming soon$/ }).count();
+    entry.comingSoonLinks = all;
+    if (all === 0) fail(MENU_LABEL, width, 'no links in the "Coming soon" directory (the seed has coming-soon products)');
+    if (named !== all) fail(MENU_LABEL, width, `${all - named} of ${all} coming-soon links lack "coming soon" in their accessible name`);
+    const axe = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
+    entry.violations = axe.violations.map((v) => ({ id: v.id, impact: v.impact, help: v.help, nodes: v.nodes.length, targets: v.nodes.slice(0, 5).map((n) => n.target.join(" ")) }));
+    for (const v of entry.violations) fail(MENU_LABEL, width, `axe ${v.id} (${v.impact}, ${v.nodes} nodes): ${v.help} -> ${v.targets.join(" | ")}`);
+  } catch (error) {
+    fail(MENU_LABEL, width, `crashed: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await context.close();
+    if (VERBOSE) console.info(`checked ${MENU_LABEL} @${width}`);
+  }
+}
+
 async function pool(items, size, worker) {
   const queue = [...items];
   await Promise.all(
@@ -312,6 +371,7 @@ try {
   for (const route of htmlRoutes) await fetch(BASE + route.path).catch(() => {});
   const jobs = htmlRoutes.flatMap((route) => WIDTHS.map((width) => ({ route, width })));
   await pool(jobs, CONCURRENCY, ({ route, width }) => checkPage(browser, route, width));
+  if (MENU_CHECK) for (const width of MENU_WIDTHS) await checkSoftwareMenu(browser, width);
 } finally {
   await browser.close();
 }

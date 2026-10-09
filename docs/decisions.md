@@ -1930,3 +1930,53 @@ and collect "Notify me when it launches" sign-ups.
   the products up within the 300 s storefront cache; product pages render on demand (dynamicParams stays on). Rolling
   back to an older release once those rows exist needs the SQL in deploy/README.md "Rolling back past a new status".
   Production already has an Owner, so no BOOTSTRAP_OWNER_* variable is needed. Runbook: docs/server-runbook.md.
+
+## Software menu shows every product: design C "Featured + directory" (owner decision, 2026-10-09)
+
+- **Request.** "All those products should show in the mega menu, so update it nicely." Of three layouts the owner
+  chose design C. It replaces the single "20 more coming soon" link of the coming-soon entry above.
+- **Desktop menu** (`components/store/mega-menu.tsx`, from the 960px nav breakpoint as before). One panel, up to
+  920px wide (`min(920px, 100vw - 64px)`): "Available now" shows every PUBLISHED product as the existing tiles (tone
+  icon, name, tagline) in two columns. Below it, "Coming soon" lists every COMING_SOON product as a directory: grouped
+  by category in category sortOrder, products by rank, each a 22px tone tile with the short name on one line (it
+  wraps to a second line only when the user's text spacing makes it longer, so it is never cut off). The groups sit in
+  three balanced columns (`balanceComingSoonColumns`): in category order, each group goes into the column that is
+  shortest so far, so the first three categories head the columns and the last ones end up lowest; a group never
+  splits, and the columns read top to bottom, left to right. Plain CSS columns had to keep the groups contiguous and
+  left a 135px hole under the first column; this split is 10/10/7 rows with the seeded catalog. "See all
+  coming soon" on the right of that heading opens `/software?availability=coming-soon`. A bottom bar has "Browse all
+  software" and the Explore links (Compare products, Licensing explained, Book a demo). Either section is left out when
+  it has no products. The panel opens under the trigger. When its right edge would come within 24px of the window
+  edge (the header's side padding), it moves left, so at 1024px it ends in line with "Request a demo"
+  (`softwareMenuLeft`, measured before paint and on resize). It is never taller than the window below the sticky
+  header: on short windows the product sections scroll inside (thin `scrollbar-subtle`) and the bottom bar stays in
+  view. While more is below, their last 36px fade out, so a cut row reads as "scroll for more"; scroll padding keeps a
+  focused link and its focus ring clear of the edges and the fade. Below 760px of window height the rows are a little
+  tighter. The seeded catalog (4 + 20 products) fits without scrolling at 1024x768 and 1536x730 (1920x1080 at 125%).
+  The directory links do not prefetch (about 20 routes on every opening). The behaviour is unchanged. It is a
+  button with aria-expanded/aria-controls; a click toggles it; Escape closes it and returns focus. An outside click or
+  tabbing out closes it. ArrowDown/ArrowUp/Home/End move through every link in DOM order (tiles, "See all coming soon",
+  directory, bottom bar). Following a link or navigating closes it. aria-current marks the current product page. It
+  enters with animate-enter-up, which reduced motion turns off.
+- **Mobile panel** (`components/store/mobile-nav.tsx`). "Available now" lists the published products as before. Under
+  "Coming soon", each category is a disclosure button (aria-expanded/aria-controls, count pill). Each time the panel
+  opens, every category is collapsed except the one holding the coming-soon page being viewed. A category lists its
+  coming-soon products as links. "See all coming soon" follows the list.
+  The drawer's focus trap, Escape and focus return are unchanged. There is no sideways scroll at 320-360px (names keep
+  to one line and wrap only under larger text spacing).
+- **Accessibility.** The sections and each category are labelled groups (`role="group"` + `aria-labelledby`), not
+  headings, so the page's heading outline stays the page's own. Each coming-soon link is named by `aria-label`
+  "<short name>, coming soon" (`comingSoonLinkName`), so it is clear out of context. The name starts with the visible
+  text (WCAG 2.5.3). A visually hidden suffix was tried first, but Chromium put a space before its comma. Category
+  buttons are named "<category>, N products" (`comingSoonCategoryName`).
+- **Data.** The store layout reads `getComingSoonProducts()` and `getStoreCategories()` from the same cached source as
+  before: prisma-source or the fixtures, with tag `catalog`. An Admin publish, "mark coming soon" or hide changes the
+  menu once the tag is revalidated. `groupComingSoonByCategory()` (`components/store/active-nav.ts`) turns these into
+  small rows (slug, short name, icon, tone, href; no tagline, summary or features). It also keeps a product whose
+  category is missing from the categories list (cached separately) in a group of its own after the others.
+- **Tests.** `tests/unit/software-menu.test.ts` covers grouping and order, column balancing, link and button names,
+  labels, bottom-bar links and placement at 960-1920px. `tests/e2e/store-menu.spec.ts` checks, at 1024 and 1280px, that every coming-soon product
+  in the database is listed with its name, the panel stays inside the viewport, axe passes and an outside click closes
+  it; it also checks the keyboard walk, Escape and a link closing the menu. `tests/e2e/mobile.spec.ts` expands a
+  category. `scripts/check-a11y.mjs` (store) and `scripts/check-storefront.mjs` (`--only=menu`) open the menu at 1024
+  and 1280px.

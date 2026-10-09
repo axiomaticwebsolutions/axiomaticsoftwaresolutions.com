@@ -3,25 +3,25 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import * as React from "react";
-import { HEADER_LINKS, activeNavFor, ariaCurrentFor, type NavProduct } from "@/components/store/active-nav";
+import { HEADER_LINKS, activeNavFor, ariaCurrentFor, type NavComingSoonGroup, type NavProduct } from "@/components/store/active-nav";
 import { MegaMenu, navItemClassName } from "@/components/store/mega-menu";
 
 export type HeaderNavProps = {
   products: readonly NavProduct[];
-  /** COMING_SOON products ("N more coming soon" link in the Software menu). */
-  comingSoonCount?: number;
+  /** COMING_SOON products by category (the Software menu's "Coming soon" directory). */
+  comingSoon?: readonly NavComingSoonGroup[];
 };
 
 /**
  * Primary navigation (960px and up): the Software menu, then Pricing, Resources and Support. The item for the current
  * section gets the lavender background and aria-current ("page" on its own page, "true" inside its section).
  */
-export function HeaderNav({ products, comingSoonCount = 0 }: HeaderNavProps) {
+export function HeaderNav({ products, comingSoon }: HeaderNavProps) {
   const pathname = usePathname() ?? "/";
   const active = activeNavFor(pathname);
   return (
     <nav aria-label="Primary" className="hidden items-center gap-1 text-[15px] font-semibold leading-[21px] nav:flex">
-      <MegaMenu products={products} comingSoonCount={comingSoonCount} pathname={pathname} active={active === "software"} />
+      <MegaMenu products={products} comingSoon={comingSoon} pathname={pathname} active={active === "software"} />
       {HEADER_LINKS.map((link) => (
         <Link
           key={link.key}
